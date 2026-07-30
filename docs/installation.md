@@ -1,3 +1,8 @@
+---
+layout: default
+title: Installation
+---
+
 # Installation
 
 This guide applies to **TFM2 Editor v0.2.19** with **Teamfight Manager 2 v0.5.2**.

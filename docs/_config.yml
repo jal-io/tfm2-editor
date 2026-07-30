@@ -1,0 +1,5 @@
+title: TFM2 Editor
+description: Unofficial editor and companion tool for Teamfight Manager 2
+url: "https://jal-io.github.io"
+baseurl: "/tfm2-editor"
+markdown: kramdown

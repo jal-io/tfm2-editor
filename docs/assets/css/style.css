@@ -1,0 +1,57 @@
+/* GitHub-inspired dark theme */
+:root {
+  color-scheme: dark;
+  --bg:#0d1117; --panel:#161b22; --panel2:#21262d; --border:#30363d;
+  --text:#e6edf3; --muted:#8b949e; --link:#58a6ff; --link2:#79c0ff;
+  --green:#238636; --green2:#2ea043;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text)}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+  font-size:16px;line-height:1.6
+}
+.shell{width:min(980px,calc(100% - 40px));margin:0 auto}
+.site-header{
+  position:sticky;top:0;z-index:10;background:rgba(13,17,23,.94);
+  border-bottom:1px solid var(--border);backdrop-filter:blur(10px)
+}
+.header-inner{
+  min-height:64px;display:flex;align-items:center;justify-content:space-between;gap:24px
+}
+.brand{color:var(--text);text-decoration:none;font-size:18px;font-weight:700}
+.nav{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.nav a{color:var(--muted);text-decoration:none;font-size:14px;font-weight:600}
+.nav a:hover{color:var(--text)}
+.nav .download{
+  padding:6px 12px;border:1px solid rgba(240,246,252,.1);border-radius:6px;
+  background:var(--green);color:white
+}
+.nav .download:hover{background:var(--green2);color:white}
+.content{padding:44px 0 64px}
+h1,h2,h3,h4{color:var(--text);line-height:1.25}
+h1{font-size:2em;padding-bottom:.3em;border-bottom:1px solid var(--border)}
+h2{font-size:1.5em;margin-top:1.8em;padding-bottom:.3em;border-bottom:1px solid var(--border)}
+h3{margin-top:1.5em}
+a{color:var(--link)} a:hover{color:var(--link2)}
+strong{color:#f0f6fc}
+blockquote{margin:1em 0;padding:.4em 1em;border-left:.25em solid var(--border);color:var(--muted)}
+blockquote p{color:var(--muted)}
+code{
+  padding:.2em .4em;border-radius:6px;background:var(--panel2);
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:85%
+}
+pre{overflow:auto;padding:16px;border:1px solid var(--border);border-radius:6px;background:var(--panel)}
+pre code{padding:0;background:transparent;font-size:14px}
+hr{height:1px;border:0;background:var(--border);margin:24px 0}
+table{width:100%;border-collapse:collapse}
+th,td{padding:8px 12px;border:1px solid var(--border)}
+tr:nth-child(2n){background:var(--panel)}
+img{max-width:100%;border:1px solid var(--border);border-radius:8px}
+.site-footer{padding:28px 0;border-top:1px solid var(--border);color:var(--muted);font-size:13px}
+@media(max-width:720px){
+  .shell{width:min(100% - 24px,980px)}
+  .header-inner{padding:12px 0;align-items:flex-start;flex-direction:column;gap:8px}
+  .nav{gap:12px}
+  .content{padding-top:28px}
+}

@@ -1,6 +1,6 @@
 ---
 layout: default
-title: TFM2 Editor Guide
+title: Guide
 ---
 
 # TFM2 Editor Guide
@@ -9,12 +9,12 @@ Welcome to the user guide for **TFM2 Editor**, an unofficial editor and companio
 
 Created and maintained by **jal-io**.
 
-> **Current release:** v0.2.19
+> **Current release:** v0.2.19  
 > **Supported game version:** Teamfight Manager 2 v0.5.2
 
 ## Getting Started
 
-- [Installation](installation.md)
+- [Installation](installation.html)
 
 ## Current Features
 
@@ -52,13 +52,6 @@ Editing game data may cause unexpected behavior or save corruption. Use the edit
 ## Bug Reports
 
 If you find a bug, please report it through the repository's [Issues](https://github.com/jal-io/tfm2-editor/issues) page.
-
-When possible, include:
-
-- TFM2 Editor version
-- Teamfight Manager 2 version
-- What you were trying to do
-- What happened instead
 
 ## Source & Attribution
 
