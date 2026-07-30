@@ -1,3 +1,8 @@
+---
+layout: default
+title: TFM2 Editor Guide
+---
+
 # TFM2 Editor Guide
 
 Welcome to the user guide for **TFM2 Editor**, an unofficial editor and companion tool for **Teamfight Manager 2**.
