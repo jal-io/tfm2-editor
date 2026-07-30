@@ -9,12 +9,13 @@ Welcome to the user guide for **TFM2 Editor**, an unofficial editor and companio
 
 Created and maintained by **jal-io**.
 
-> **Current release:** v0.2.19  
+> **Current release:** v0.2.19
 > **Supported game version:** Teamfight Manager 2 v0.5.2
 
 ## Getting Started
 
 - [Installation](installation.html)
+- [Features](features.html)
 
 ## Current Features
 
