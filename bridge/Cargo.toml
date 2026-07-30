@@ -1,0 +1,12 @@
+[package]
+name = "tfm2_modifier_bridge"
+version = "0.2.17"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# mod_api is injected by the Teamfight Manager 2 Mod SDK build scripts.
+
+[workspace]

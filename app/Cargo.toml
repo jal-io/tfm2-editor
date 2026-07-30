@@ -1,0 +1,13 @@
+[package]
+name = "tfm2_editor"
+version = "0.2.19"
+edition = "2021"
+
+[features]
+default = []
+dev = []
+
+[dependencies]
+eframe = "0.31.1"
+egui_extras = "0.31.1"
+rfd = "0.15"

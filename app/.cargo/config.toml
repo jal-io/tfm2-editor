@@ -1,0 +1,3 @@
+[alias]
+release-community = "build --release"
+release-dev = "build --release --features dev"
