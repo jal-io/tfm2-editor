@@ -1,0 +1,17 @@
+# Rust build output
+/target/
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.bak
+
+# Logs
+*.log
