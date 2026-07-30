@@ -1,0 +1,125 @@
+TFM2 Editor Source-Available Attribution License
+Version 1.0 — 30 July 2026
+
+Copyright © 2026 jal-io. All rights reserved except for the permissions
+expressly granted by this license.
+
+This license applies to the original source code, binaries, documentation,
+and other original material in the TFM2 Editor project and TFM2 Modifier
+Bridge that is authored by jal-io ("the Software"). Third-party components
+remain subject to their own licenses and rights.
+
+1. PERMITTED USE
+
+You may:
+
+- view, study, and inspect the source code;
+- copy and fork the source code;
+- modify the Software for personal or private use;
+- compile and run private builds;
+- submit patches, pull requests, and other contributions;
+- publicly redistribute the Software, including modified or derivative
+  versions, subject to the conditions below.
+
+2. PUBLIC REDISTRIBUTION AND DERIVATIVE WORKS
+
+If you publicly redistribute the Software, or release a modified or
+derivative version, you must:
+
+a. Retain this license and all existing copyright and attribution notices.
+
+b. Clearly credit the original project and creator in a prominent location,
+   such as the project README, release page, or equivalent documentation.
+
+   The attribution must identify:
+
+       TFM2 Editor by jal-io
+       https://github.com/jal-io/tfm2-editor
+
+c. Clearly state when the Software has been modified and identify the
+   redistributed project as a modified or derivative version.
+
+d. Not claim or imply that TFM2 Editor, TFM2 Modifier Bridge, or substantial
+   portions of the original Software were independently created by you.
+
+e. Not imply that a modified or derivative release is an official release
+   by jal-io unless jal-io has explicitly approved it.
+
+3. PROJECT NAME AND BRANDING
+
+The names "TFM2 Editor" and "TFM2 Modifier Bridge" may always be used for
+truthful attribution and descriptive reference to the original project.
+
+A modified or derivative public release must not use the original project
+name or branding in a way that could reasonably cause users to believe it is
+an official release maintained or approved by jal-io.
+
+Use of the original project name or branding as the primary identity of a
+modified public release requires prior permission from jal-io.
+
+4. COPYRIGHT AND ATTRIBUTION
+
+You may not remove, hide, or replace copyright notices, authorship
+information, or attribution that identifies jal-io as the creator of the
+original TFM2 Editor project and TFM2 Modifier Bridge.
+
+This license does not grant permission to represent the original work as
+your own original creation.
+
+5. CONTRIBUTIONS
+
+Unless otherwise agreed in writing, contributions intentionally submitted to
+the official TFM2 Editor repository may be included in the project and
+distributed under this license.
+
+Contributors retain any rights they hold in their own original contributions.
+
+6. THIRD-PARTY RIGHTS
+
+This license grants rights only to material for which jal-io has the right to
+grant those permissions.
+
+It does not grant rights to Teamfight Manager 2, Team Samoyed, third-party
+libraries, dependencies, trademarks, game assets, or other material owned by
+third parties. Such material remains subject to its respective licenses and
+rights holders.
+
+7. NO AFFILIATION OR ENDORSEMENT
+
+TFM2 Editor is an unofficial community project and is not affiliated with,
+sponsored by, or endorsed by Team Samoyed.
+
+Teamfight Manager 2 and related names, assets, and content belong to their
+respective rights holders.
+
+8. NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+USE OF THE SOFTWARE IS AT YOUR OWN RISK. EDITING GAME DATA MAY CAUSE
+UNEXPECTED BEHAVIOR, DATA LOSS, OR SAVE FILE CORRUPTION. USERS SHOULD BACK UP
+THEIR SAVE FILES BEFORE USING THE SOFTWARE.
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE COPYRIGHT HOLDER AND
+CONTRIBUTORS SHALL NOT BE LIABLE FOR ANY CLAIM, DAMAGES, DATA LOSS, OR OTHER
+LIABILITY ARISING FROM THE SOFTWARE OR ITS USE.
+
+9. TERMINATION
+
+Your rights under this license terminate automatically if you materially
+violate its terms and do not correct the violation after becoming aware of
+it.
+
+Upon termination, you must stop distributing any version of the Software
+that does not comply with this license. Rights may be restored by written
+permission from jal-io or by bringing the distribution into compliance.
+
+10. ADDITIONAL PERMISSION
+
+Permissions beyond this license may be granted separately by jal-io.
+
+For permission requests, use the official project repository:
+
+https://github.com/jal-io/tfm2-editor
