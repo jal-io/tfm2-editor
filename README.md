@@ -78,6 +78,13 @@ When possible, include:
 - What you were trying to do
 - What happened instead
 
+## Support
+
+TFM2 Editor is free to use.
+
+If you enjoy the project and want to support continued development, you can support me on Ko-fi:
+
+[Support me on Ko-fi](https://ko-fi.com/jalio)
 ## Disclaimer
 
 TFM2 Editor is an unofficial community project and is not affiliated with or endorsed by Team Samoyed.
