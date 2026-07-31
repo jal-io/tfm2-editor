@@ -6,7 +6,7 @@ It connects to the running game through TFM2 Modifier Bridge, allowing you to in
 
 Created and maintained by **jal-io**.
 
-**Current release:** v0.2.19 
+**Current release:** v0.2.19  
 **Supported game version:** Teamfight Manager 2 v0.5.2
 
 ## What is a Live Editor?
