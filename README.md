@@ -1,21 +1,32 @@
 # TFM2 Editor
 
-**Unofficial editor and companion tool for Teamfight Manager 2.**
+**TFM2 Editor is an unofficial live editor and companion tool for Teamfight Manager 2.**
+
+It connects to the running game through TFM2 Modifier Bridge, allowing you to inspect and modify your active career while the game is running.
 
 Created and maintained by **jal-io**.
 
-TFM2 Editor provides tools for editing player data, economy values, recruitment, and searching the player database.
+**Current release:** v0.2.19
+**Supported game version:** Teamfight Manager 2 v0.5.2
 
-> **Current release:** v0.2.19
-> **Supported game version:** Teamfight Manager 2 v0.5.2
+## What is a Live Editor?
+
+Unlike a traditional save or database editor, TFM2 Editor works with the currently running game.
+
+Start Teamfight Manager 2, load your career, then launch TFM2 Editor to view and modify supported game data through the bridge.
 
 ## Features
 
-- Economy editor
-- Player editor
-- Player positions, Actual Potential, salary, and attributes
+- Economy editing
+- Player Editor
+- All 12 player attributes
+- Player positions and proficiency
+- Actual Potential editing
+- Salary editing
 - Recruitment tools
-- Move players between teams
+- Transfer Always Success
+- Instant Retry
+- Move contracted players between teams
 - Player database search
 - Quick Filters
 - Advanced Search
