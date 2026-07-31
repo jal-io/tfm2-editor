@@ -6,7 +6,7 @@ It connects to the running game through TFM2 Modifier Bridge, allowing you to in
 
 Created and maintained by **jal-io**.
 
-**Current release:** v0.2.19
+**Current release:** v0.2.30  
 **Supported game version:** Teamfight Manager 2 v0.5.2
 
 ## What is a Live Editor?
@@ -23,6 +23,8 @@ Start Teamfight Manager 2, load your career, then launch TFM2 Editor to view and
 - Player positions and proficiency
 - Actual Potential editing
 - Salary editing
+- Champion Mastery editing
+- Individual and bulk Champion Mastery changes
 - Recruitment tools
 - Transfer Always Success
 - Instant Retry
@@ -62,6 +64,14 @@ Editing game data may cause unexpected behavior or save corruption.
 
 Use TFM2 Editor at your own risk.
 
+## Known Issues
+
+- The Champion Mastery window may occasionally open at a very large size, especially when viewing a player whose mastery values have already been set to 100.
+- The Champion Mastery window may also expand when positioned close to the right edge of the main TFM2 Editor window.
+- If this happens, manually resizing the Champion Mastery window restores the normal layout.
+
+These are currently UI issues and do not affect Champion Mastery editing itself.
+
 ## Source & Attribution
 
 TFM2 Editor and TFM2 Modifier Bridge were created by **jal-io**.
@@ -96,6 +106,7 @@ TFM2 Editor is free to use.
 If you enjoy the project and want to support continued development, you can support me on Ko-fi:
 
 [Support me on Ko-fi](https://ko-fi.com/jalio)
+
 ## Disclaimer
 
 TFM2 Editor is an unofficial community project and is not affiliated with or endorsed by Team Samoyed.
