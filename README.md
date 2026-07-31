@@ -6,7 +6,7 @@ It connects to the running game through TFM2 Modifier Bridge, allowing you to in
 
 Created and maintained by **jal-io**.
 
-**Current release:** v0.2.30  
+**Current release:** v0.2.19 
 **Supported game version:** Teamfight Manager 2 v0.5.2
 
 ## What is a Live Editor?
@@ -23,8 +23,6 @@ Start Teamfight Manager 2, load your career, then launch TFM2 Editor to view and
 - Player positions and proficiency
 - Actual Potential editing
 - Salary editing
-- Champion Mastery editing
-- Individual and bulk Champion Mastery changes
 - Recruitment tools
 - Transfer Always Success
 - Instant Retry
@@ -35,6 +33,16 @@ Start Teamfight Manager 2, load your career, then launch TFM2 Editor to view and
 - Saved Filters
 
 Some features are still under development.
+
+## In Development
+
+The next release is already in development.
+
+Planned for the next release:
+
+- Champion Mastery editing
+- Individual and bulk Champion Mastery changes
+- Redesigned Primary / Secondary / Tertiary position UI
 
 ## Installation
 
@@ -66,11 +74,21 @@ Use TFM2 Editor at your own risk.
 
 ## Known Issues
 
+The current development version contains a few UI issues related to the Champion Mastery window:
+
 - The Champion Mastery window may occasionally open at a very large size, especially when viewing a player whose mastery values have already been set to 100.
 - The Champion Mastery window may also expand when positioned close to the right edge of the main TFM2 Editor window.
 - If this happens, manually resizing the Champion Mastery window restores the normal layout.
 
 These are currently UI issues and do not affect Champion Mastery editing itself.
+
+## Documentation
+
+User guides, installation instructions, and feature screenshots are available through the project documentation:
+
+- [TFM2 Editor Documentation](https://jal-io.github.io/tfm2-editor/)
+- [Installation Guide](https://jal-io.github.io/tfm2-editor/installation.html)
+- [Feature Guide](https://jal-io.github.io/tfm2-editor/features.html)
 
 ## Source & Attribution
 
@@ -84,9 +102,7 @@ If you publicly redistribute or release a modified or derivative version, clear 
 
 Do not present modified or derivative versions as entirely original work, and do not remove existing copyright or attribution notices.
 
-## Documentation
-
-A short user guide will be available through the repository documentation.
+See the repository `LICENSE` file for the full terms.
 
 ## Issues
 
