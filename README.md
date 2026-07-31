@@ -36,16 +36,6 @@ Start Teamfight Manager 2, load your career, then launch TFM2 Editor to view and
 
 Some features are still under development.
 
-## In Development
-
-The next release is already in development.
-
-Planned for the next release:
-
-- Champion Mastery editing
-- Individual and bulk Champion Mastery changes
-- Redesigned Primary / Secondary / Tertiary position UI
-
 ## Installation
 
 1. Download the latest release from the [Releases](https://github.com/jal-io/tfm2-editor/releases) page and extract the archive.
@@ -103,7 +93,6 @@ If you publicly redistribute or release a modified or derivative version, clear 
 Do not present modified or derivative versions as entirely original work, and do not remove existing copyright or attribution notices.
 
 See the repository `LICENSE` file for the full terms.
-See the repository `LICENSE` file for the full terms.
 
 ## Issues
 
@@ -123,7 +112,6 @@ TFM2 Editor is free to use.
 If you enjoy the project and want to support continued development, you can support me on Ko-fi:
 
 [Support me on Ko-fi](https://ko-fi.com/jalio)
-
 
 ## Disclaimer
 
