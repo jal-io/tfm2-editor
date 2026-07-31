@@ -6,8 +6,8 @@ It connects to the running game through TFM2 Modifier Bridge, allowing you to in
 
 Created and maintained by **jal-io**.
 
-**Current release:** v0.2.19  
-**Supported game version:** Teamfight Manager 2 v0.5.2
+**Current release:** v0.2.31
+**Supported game version:** Teamfight Manager 2 v0.5.3
 
 ## What is a Live Editor?
 
@@ -20,9 +20,11 @@ Start Teamfight Manager 2, load your career, then launch TFM2 Editor to view and
 - Economy editing
 - Player Editor
 - All 12 player attributes
-- Player positions and proficiency
+- Primary / Secondary / Tertiary position editing and proficiency
 - Actual Potential editing
 - Salary editing
+- Champion Mastery editing
+- Individual and bulk Champion Mastery changes
 - Recruitment tools
 - Transfer Always Success
 - Instant Retry
@@ -74,10 +76,8 @@ Use TFM2 Editor at your own risk.
 
 ## Known Issues
 
-The current development version contains a few UI issues related to the Champion Mastery window:
-
-- The Champion Mastery window may occasionally open at a very large size, especially when viewing a player whose mastery values have already been set to 100.
-- The Champion Mastery window may also expand when positioned close to the right edge of the main TFM2 Editor window.
+- The Champion Mastery window may occasionally open at a very large size.
+- It may also expand when positioned close to the right edge of the main TFM2 Editor window.
 - If this happens, manually resizing the Champion Mastery window restores the normal layout.
 
 These are currently UI issues and do not affect Champion Mastery editing itself.
@@ -103,6 +103,7 @@ If you publicly redistribute or release a modified or derivative version, clear 
 Do not present modified or derivative versions as entirely original work, and do not remove existing copyright or attribution notices.
 
 See the repository `LICENSE` file for the full terms.
+See the repository `LICENSE` file for the full terms.
 
 ## Issues
 
@@ -122,6 +123,7 @@ TFM2 Editor is free to use.
 If you enjoy the project and want to support continued development, you can support me on Ko-fi:
 
 [Support me on Ko-fi](https://ko-fi.com/jalio)
+
 
 ## Disclaimer
 

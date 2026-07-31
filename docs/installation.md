@@ -5,7 +5,7 @@ title: Installation
 
 # Installation
 
-This guide applies to **TFM2 Editor v0.2.19** with **Teamfight Manager 2 v0.5.2**.
+This guide applies to **TFM2 Editor v0.2.31** with **Teamfight Manager 2 v0.5.3**.
 
 ## 1. Download TFM2 Editor
 
@@ -16,9 +16,9 @@ Extract the downloaded ZIP file.
 The release package contains:
 
 ```text
-TFM2 Editor v0.2.19/
+TFM2 Editor v0.2.31 (Release)/
 ├── README.txt
-├── tfm2_editor v0.2.19.exe
+├── tfm2_editor.exe
 └── tfm2_modifier_bridge/
     ├── mod.mod_info
     └── tfm2_modifier_bridge.dll

@@ -5,12 +5,12 @@ title: Guide
 
 # TFM2 Editor Guide
 
-Welcome to the user guide for **TFM2 Editor**, an unofficial editor and companion tool for **Teamfight Manager 2**.
+Welcome to the user guide for **TFM2 Editor**, an unofficial live editor and companion tool for **Teamfight Manager 2**.
 
 Created and maintained by **jal-io**.
 
-> **Current release:** v0.2.19
-> **Supported game version:** Teamfight Manager 2 v0.5.2
+> **Current release:** v0.2.31  
+> **Supported game version:** Teamfight Manager 2 v0.5.3
 
 ## Getting Started
 
@@ -23,7 +23,7 @@ Created and maintained by **jal-io**.
 Edit your current money, transfer budget, and salary budget.
 
 ### Player Editor
-Search for players and edit attributes, positions, Actual Potential, and salary.
+Search for players and edit attributes, positions, Actual Potential, salary, and Champion Mastery.
 
 ### Recruitment
 Use recruitment tools such as Transfer Always Success, Instant Retry, and Move Player to Team.
@@ -39,6 +39,9 @@ Build more detailed searches using multiple player conditions.
 
 ### Saved Filters
 Save, load, import, and export reusable search filters.
+
+### Champion Mastery
+Edit individual champion mastery values or apply bulk changes to selected champions.
 
 ## Features Under Development
 
