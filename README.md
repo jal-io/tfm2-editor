@@ -2,12 +2,13 @@
 
 **TFM2 Editor is an unofficial live editor and companion tool for Teamfight Manager 2.**
 
-It connects to the running game through TFM2 Modifier Bridge, allowing you to inspect and modify your active career while the game is running.
+It connects to the running game through TFM2 Editor Bridge, allowing you to inspect and modify your active career while the game is running.
 
 Created and maintained by **jal-io**.
 
-**Current release:** v0.2.31
+**Current release:** v0.3.0
 **Supported game version:** Teamfight Manager 2 v0.5.3
+**Bridge version:** v0.2.38
 
 ## What is a Live Editor?
 
@@ -17,18 +18,64 @@ Start Teamfight Manager 2, load your career, then launch TFM2 Editor to view and
 
 ## Features
 
+### Economy
+
 - Economy editing
-- Player Editor
+
+### Player Editor
+
 - All 12 player attributes
 - Primary / Secondary / Tertiary position editing and proficiency
-- Actual Potential editing
+- Actual Potential editing with automatic Potential Grade updates
+- Player Communication editing
 - Salary editing
 - Champion Mastery editing
 - Individual and bulk Champion Mastery changes
-- Recruitment tools
+
+### Player Contract & Finance
+
+View complete active player contract information, including:
+
+- Current team
+- Contract start and end dates
+- Annual and weekly salary
+- Transfer fee
+- Squad Status
+- POG Award Bonus
+- League Rank Bonus and required rank
+- Match Appearance Bonus
+- Match Win Bonus
+
+Active player contracts can be edited directly through the Player Contract Editor.
+
+### Staff Editor
+
+- Staff search and selection
+- Staff attribute editing
+- Staff salary
+- Staff Communication editing
+- Staff contract information
+- Active staff contract editing
+
+### Player and Staff Management
+
+- Move contracted players between teams
+- Move contracted staff between teams
+- Set contracted players to free agency
+- Set contracted staff to free agency
+- Create a contract and move a free-agent player to any selected team
+- Create a contract and move a free-agent staff member to any selected team
+
+Free-agent contract forms are automatically filled with valid starting values and can be reviewed or changed before the move is applied.
+
+### Recruitment
+
 - Transfer Always Success
 - Instant Retry
-- Move contracted players between teams
+- Separate Player Management and Staff Management tools
+
+### Player Database
+
 - Player database search
 - Quick Filters
 - Advanced Search
@@ -36,23 +83,37 @@ Start Teamfight Manager 2, load your career, then launch TFM2 Editor to view and
 
 Some features are still under development.
 
+## Contract Editing Note
+
+TFM2 Editor supports editing existing active player and staff contracts.
+
+Full contract renewal, where the game creates a separate replacement contract, is not included yet.
+
 ## Installation
 
-1. Download the latest release from the [Releases](https://github.com/jal-io/tfm2-editor/releases) page and extract the archive.
+### Recommended: Steam Workshop
 
-2. Move the entire `tfm2_modifier_bridge` folder to your Teamfight Manager 2 mods folder.
+1. Subscribe to [TFM2 Editor Bridge](https://steamcommunity.com/sharedfiles/filedetails/?id=3775240765) on Steam Workshop.
 
-   Example:
+2. Download the latest desktop editor from the [Releases](https://github.com/jal-io/tfm2-editor/releases) page and extract the archive.
 
-   ```text
-   C:\Program Files (x86)\Steam\steamapps\common\Teamfight Manager2\mods
-   ```
+3. Start Teamfight Manager 2, enable **TFM2 Editor Bridge**, then restart the game.
 
-   Your Steam installation path may be different.
+4. Load your career, then start **TFM2 Editor**.
 
-3. Start Teamfight Manager 2, enable **TFM2 Modifier Bridge**, then restart the game.
+### Manual Bridge Installation
 
-4. Start **TFM2 Editor** and load your save.
+The release archive also contains the `tfm2_modifier_bridge` folder.
+
+Move the entire folder to your Teamfight Manager 2 mods directory.
+
+Example:
+
+```text
+C:\Program Files (x86)\Steam\steamapps\common\Teamfight Manager2\mods
+```
+
+Your Steam installation path may be different.
 
 ## Important
 
@@ -82,7 +143,7 @@ User guides, installation instructions, and feature screenshots are available th
 
 ## Source & Attribution
 
-TFM2 Editor and TFM2 Modifier Bridge were created by **jal-io**.
+TFM2 Editor and TFM2 Editor Bridge were created by **jal-io**.
 
 Copyright © 2026 jal-io.
 
