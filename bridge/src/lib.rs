@@ -12,7 +12,7 @@ use game_core::{Contract, Incentive, PaperState, SquadStatus};
 
 const MOD_ID: &str = "tfm2_modifier_bridge";
 const BRIDGE_ADDR: &str = "127.0.0.1:28452";
-const BRIDGE_VERSION: &str = "0.2.38";
+const BRIDGE_VERSION: &str = "0.2.39";
 
 #[derive(Debug, Clone, Copy)]
 struct EconomyValues {
@@ -2365,6 +2365,7 @@ fn parse_squad_status(value: &str) -> Result<SquadStatus, &'static str> {
         "Important" => Ok(SquadStatus::Important),
         "General" => Ok(SquadStatus::General),
         "Sub" => Ok(SquadStatus::Sub),
+        "Prospect" => Ok(SquadStatus::Prospect),
         _ => Err("INVALID_SQUAD_STATUS"),
     }
 }

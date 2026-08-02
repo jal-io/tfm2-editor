@@ -13,7 +13,7 @@ const BRIDGE_ADDR: &str = "127.0.0.1:28452";
 #[cfg(feature = "dev")]
 const APP_VERSION: &str = "0.3.9b";
 #[cfg(not(feature = "dev"))]
-const APP_VERSION: &str = "0.3.0";
+const APP_VERSION: &str = "0.3.1";
 
 #[cfg(feature = "dev")]
 fn display_version() -> String {
@@ -589,6 +589,7 @@ enum SquadStatusChoice {
     Important,
     General,
     Sub,
+    Prospect,
 }
 
 impl Default for SquadStatusChoice {
@@ -598,7 +599,13 @@ impl Default for SquadStatusChoice {
 }
 
 impl SquadStatusChoice {
-    const ALL: [Self; 4] = [Self::Core, Self::Important, Self::General, Self::Sub];
+    const ALL: [Self; 5] = [
+        Self::Core,
+        Self::Important,
+        Self::General,
+        Self::Sub,
+        Self::Prospect,
+    ];
 
     fn internal(self) -> &'static str {
         match self {
@@ -606,6 +613,7 @@ impl SquadStatusChoice {
             Self::Important => "Important",
             Self::General => "General",
             Self::Sub => "Sub",
+            Self::Prospect => "Prospect",
         }
     }
 
@@ -615,6 +623,7 @@ impl SquadStatusChoice {
             Self::Important => "Important Player",
             Self::General => "Starter",
             Self::Sub => "Substitute",
+            Self::Prospect => "Prospect",
         }
     }
 
@@ -623,6 +632,7 @@ impl SquadStatusChoice {
             "Core" => Self::Core,
             "Important" => Self::Important,
             "Sub" => Self::Sub,
+            "Prospect" => Self::Prospect,
             _ => Self::General,
         }
     }
