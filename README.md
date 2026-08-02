@@ -6,9 +6,9 @@ It connects to the running game through TFM2 Editor Bridge, allowing you to insp
 
 Created and maintained by **jal-io**.
 
-**Current release:** v0.3.0
+**Current release:** v0.3.1
 **Supported game version:** Teamfight Manager 2 v0.5.3
-**Bridge version:** v0.2.38
+**Bridge version:** v0.2.39
 
 ## What is a Live Editor?
 
@@ -20,7 +20,10 @@ Start Teamfight Manager 2, load your career, then launch TFM2 Editor to view and
 
 ### Economy
 
-- Economy editing
+- Money editing
+- Transfer Budget editing
+- Salary Budget editing
+- Scout Budget editing
 
 ### Player Editor
 
@@ -47,6 +50,14 @@ View complete active player contract information, including:
 - Match Win Bonus
 
 Active player contracts can be edited directly through the Player Contract Editor.
+
+Supported Squad Status options include:
+
+- Core Player
+- Key Player
+- Starter
+- Substitute
+- Prospect
 
 ### Staff Editor
 
