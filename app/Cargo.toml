@@ -1,7 +1,11 @@
 [package]
 name = "tfm2_editor"
-version = "0.2.19"
+version = "0.3.0"
 edition = "2021"
+
+[package.metadata.tfm2]
+community_version = "0.3.0"
+dev_version = "0.3.9b"
 
 [features]
 default = []

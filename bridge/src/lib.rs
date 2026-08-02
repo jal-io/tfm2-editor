@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -8,17 +8,30 @@ use std::thread;
 use std::time::Duration;
 
 use mod_api::*;
-use game_core::{Contract, PaperState};
+use game_core::{Contract, Incentive, PaperState, SquadStatus};
 
 const MOD_ID: &str = "tfm2_modifier_bridge";
 const BRIDGE_ADDR: &str = "127.0.0.1:28452";
-const BRIDGE_VERSION: &str = "0.2.17";
+const BRIDGE_VERSION: &str = "0.2.38";
 
 #[derive(Debug, Clone, Copy)]
 struct EconomyValues {
     money: f64,
     transfer_budget: f64,
     salary_budget: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ContractDefaultsEntity {
+    Player,
+    Staff,
+}
+
+#[derive(Debug, Clone)]
+struct ContractDefaults {
+    start_date: String,
+    end_date: String,
+    annual_salary: String,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +60,77 @@ struct PlayerListEntry {
     roaming: String,
     aggressive: String,
     ego: String,
+}
+
+#[derive(Debug, Clone)]
+struct StaffListEntry {
+    id: usize,
+    name: String,
+    age: String,
+    team: String,
+    role: String,
+}
+
+#[derive(Debug, Clone)]
+struct StaffSnapshot {
+    id: usize,
+    name: String,
+    age: String,
+    role: String,
+    team: String,
+    banpick: String,
+    strategy: String,
+    negotiation: String,
+    judge_ability: String,
+    judge_potential: String,
+    feedback: String,
+    power_analysis: String,
+    control_coaching: String,
+    judgment_coaching: String,
+    mental_coaching: String,
+    annual_salary: String,
+    contract_team_id: String,
+    contract_start_date: String,
+    contract_end_date: String,
+    communication_raw: String,
+}
+
+#[derive(Debug, Clone)]
+struct StaffStatValues {
+    banpick: String,
+    strategy: String,
+    negotiation: String,
+    judge_ability: String,
+    judge_potential: String,
+    feedback: String,
+    power_analysis: String,
+    control_coaching: String,
+    judgment_coaching: String,
+    mental_coaching: String,
+}
+
+
+#[derive(Debug, Clone)]
+struct StaffSalaryValue {
+    annual_salary: String,
+}
+
+#[derive(Debug, Clone)]
+struct StaffContractEndValue {
+    end_date: String,
+}
+
+#[derive(Debug, Clone)]
+struct StaffContractValue {
+    team_id: usize,
+    start_date: String,
+    end_date: String,
+    annual_salary: String,
+}
+
+#[derive(Debug, Clone)]
+struct StaffCommunicationValues {
+    entries: Vec<(usize, u16)>,
 }
 
 #[derive(Debug, Clone)]
@@ -81,9 +165,20 @@ struct PlayerSnapshot {
     support: String,
     potential: String,
     annual_salary: String,
+    weekly_salary: String,
+    contract_team_id: String,
+    contract_start_date: String,
     contract_end_date: String,
+    transfer_fee: String,
+    squad_status: String,
+    incentive_pog_bonus: String,
+    incentive_league_bonus: String,
+    incentive_league_rank: String,
+    incentive_match_bonus: String,
+    incentive_win_bonus: String,
     primary_region: String,
     communication_raw: String,
+    communication_xp_raw: String,
 }
 
 #[derive(Debug, Clone)]
@@ -126,10 +221,35 @@ struct PlayerContractEndValue {
     end_date: String,
 }
 
+#[derive(Debug, Clone)]
+struct PlayerContractValue {
+    team_id: usize,
+    start_date: String,
+    end_date: String,
+    annual_salary: String,
+    transfer_fee: String,
+    squad_status: String,
+    pog_enabled: bool,
+    pog_bonus: String,
+    league_enabled: bool,
+    league_bonus: String,
+    league_rank: String,
+    match_enabled: bool,
+    match_bonus: String,
+    win_enabled: bool,
+    win_bonus: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct PlayerCommunicationValue {
     region_id: usize,
-    level: i32,
+    level: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ChampionMasteryValue {
+    champion_id: String,
+    mastery: u16,
 }
 
 enum GameRequest {
@@ -143,7 +263,57 @@ enum GameRequest {
     GetPlayers {
         reply: Sender<String>,
     },
+    GetStaffs {
+        reply: Sender<String>,
+    },
+    GetStaff {
+        staff_id: usize,
+        reply: Sender<String>,
+    },
+    GetStaffContractProbe {
+        staff_id: usize,
+        reply: Sender<String>,
+    },
+    SetStaffStats {
+        staff_id: usize,
+        values: StaffStatValues,
+        reply: Sender<String>,
+    },
+    SetStaffSalary {
+        staff_id: usize,
+        values: StaffSalaryValue,
+        reply: Sender<String>,
+    },
+    SetStaffContractEnd {
+        staff_id: usize,
+        values: StaffContractEndValue,
+        reply: Sender<String>,
+    },
+    SetStaffContract {
+        staff_id: usize,
+        values: StaffContractValue,
+        reply: Sender<String>,
+    },
+    SetStaffCommunication {
+        staff_id: usize,
+        values: StaffCommunicationValues,
+        reply: Sender<String>,
+    },
     GetTeams {
+        reply: Sender<String>,
+    },
+    GetContractDefaults {
+        entity: ContractDefaultsEntity,
+        team_id: usize,
+        reply: Sender<String>,
+    },
+    MoveStaffToTeam {
+        staff_id: usize,
+        team_id: usize,
+        reply: Sender<String>,
+    },
+    SetStaffFreeAgent {
+        staff_id: usize,
         reply: Sender<String>,
     },
     MovePlayerToTeam {
@@ -151,7 +321,15 @@ enum GameRequest {
         team_id: usize,
         reply: Sender<String>,
     },
+    SetPlayerFreeAgent {
+        athlete_id: usize,
+        reply: Sender<String>,
+    },
     GetPlayer {
+        athlete_id: usize,
+        reply: Sender<String>,
+    },
+    GetPlayerContractProbe {
         athlete_id: usize,
         reply: Sender<String>,
     },
@@ -180,6 +358,11 @@ enum GameRequest {
         values: PlayerContractEndValue,
         reply: Sender<String>,
     },
+    SetPlayerContract {
+        athlete_id: usize,
+        values: PlayerContractValue,
+        reply: Sender<String>,
+    },
     SetPlayerCommunication {
         athlete_id: usize,
         values: PlayerCommunicationValue,
@@ -195,6 +378,15 @@ enum GameRequest {
     },
     SetRecruitmentInstantRetry {
         enabled: bool,
+        reply: Sender<String>,
+    },
+    GetChampionMasteryProbe {
+        athlete_id: usize,
+        reply: Sender<String>,
+    },
+    SetChampionMastery {
+        athlete_id: usize,
+        values: Vec<ChampionMasteryValue>,
         reply: Sender<String>,
     },
 }
@@ -213,6 +405,14 @@ struct ContractEndOverride {
 }
 
 static CONTRACT_END_OVERRIDES: OnceLock<Mutex<HashMap<usize, ContractEndOverride>>> = OnceLock::new();
+
+#[derive(Debug, Clone)]
+struct StaffContractEndOverride {
+    values: StaffContractEndValue,
+    remaining_after_ticks: u8,
+}
+
+static STAFF_CONTRACT_END_OVERRIDES: OnceLock<Mutex<HashMap<usize, StaffContractEndOverride>>> = OnceLock::new();
 
 fn contract_end_overrides() -> &'static Mutex<HashMap<usize, ContractEndOverride>> {
     CONTRACT_END_OVERRIDES.get_or_init(|| Mutex::new(HashMap::new()))
@@ -262,12 +462,183 @@ fn enforce_contract_end_overrides(ctx: &mut ServerModContext, decrement: bool) {
     }
 }
 
+fn staff_contract_end_overrides() -> &'static Mutex<HashMap<usize, StaffContractEndOverride>> {
+    STAFF_CONTRACT_END_OVERRIDES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn queue_staff_contract_end_override(staff_id: usize, values: StaffContractEndValue) {
+    if let Ok(mut overrides) = staff_contract_end_overrides().lock() {
+        overrides.insert(
+            staff_id,
+            StaffContractEndOverride {
+                values,
+                remaining_after_ticks: 3,
+            },
+        );
+    }
+}
+
+fn clear_staff_contract_end_overrides() {
+    if let Ok(mut overrides) = staff_contract_end_overrides().lock() {
+        overrides.clear();
+    }
+}
+
+fn enforce_staff_contract_end_overrides(ctx: &mut ServerModContext, decrement: bool) {
+    let pending = if let Ok(overrides) = staff_contract_end_overrides().lock() {
+        overrides
+            .iter()
+            .map(|(staff_id, entry)| (*staff_id, entry.values.clone()))
+            .collect::<Vec<_>>()
+    } else {
+        return;
+    };
+
+    for (staff_id, values) in pending {
+        if let Some(staff) = ctx.database.staffs.get_mut(staff_id) {
+            let _ = apply_staff_contract_end(&mut staff.contract, &values);
+        }
+    }
+
+    if decrement {
+        if let Ok(mut overrides) = staff_contract_end_overrides().lock() {
+            overrides.retain(|_, entry| {
+                entry.remaining_after_ticks = entry.remaining_after_ticks.saturating_sub(1);
+                entry.remaining_after_ticks > 0
+            });
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ActivePlayerContractOverride {
+    values: PlayerContractValue,
+    remaining_after_ticks: u8,
+}
+
+static ACTIVE_PLAYER_CONTRACT_OVERRIDES: OnceLock<Mutex<HashMap<usize, ActivePlayerContractOverride>>> = OnceLock::new();
+
+#[derive(Debug, Clone)]
+struct ActiveStaffContractOverride {
+    values: StaffContractValue,
+    remaining_after_ticks: u8,
+}
+
+static ACTIVE_STAFF_CONTRACT_OVERRIDES: OnceLock<Mutex<HashMap<usize, ActiveStaffContractOverride>>> = OnceLock::new();
+
+fn active_player_contract_overrides() -> &'static Mutex<HashMap<usize, ActivePlayerContractOverride>> {
+    ACTIVE_PLAYER_CONTRACT_OVERRIDES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn active_staff_contract_overrides() -> &'static Mutex<HashMap<usize, ActiveStaffContractOverride>> {
+    ACTIVE_STAFF_CONTRACT_OVERRIDES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn queue_active_player_contract_override(athlete_id: usize, values: PlayerContractValue) {
+    if let Ok(mut overrides) = active_player_contract_overrides().lock() {
+        overrides.insert(
+            athlete_id,
+            ActivePlayerContractOverride {
+                values,
+                remaining_after_ticks: 3,
+            },
+        );
+    }
+}
+
+fn queue_active_staff_contract_override(staff_id: usize, values: StaffContractValue) {
+    if let Ok(mut overrides) = active_staff_contract_overrides().lock() {
+        overrides.insert(
+            staff_id,
+            ActiveStaffContractOverride {
+                values,
+                remaining_after_ticks: 3,
+            },
+        );
+    }
+}
+
+fn clear_active_contract_overrides() {
+    if let Ok(mut overrides) = active_player_contract_overrides().lock() {
+        overrides.clear();
+    }
+    if let Ok(mut overrides) = active_staff_contract_overrides().lock() {
+        overrides.clear();
+    }
+}
+
+fn enforce_active_player_contract_overrides(ctx: &mut ServerModContext, decrement: bool) {
+    let pending = if let Ok(overrides) = active_player_contract_overrides().lock() {
+        overrides
+            .iter()
+            .map(|(athlete_id, entry)| (*athlete_id, entry.values.clone()))
+            .collect::<Vec<_>>()
+    } else {
+        return;
+    };
+
+    for (athlete_id, values) in pending {
+        if let Some(athlete) = ctx.database.athletes.get_mut(athlete_id) {
+            let _ = apply_player_contract_values(athlete, &values);
+        }
+    }
+
+    if decrement {
+        if let Ok(mut overrides) = active_player_contract_overrides().lock() {
+            overrides.retain(|_, entry| {
+                entry.remaining_after_ticks = entry.remaining_after_ticks.saturating_sub(1);
+                entry.remaining_after_ticks > 0
+            });
+        }
+    }
+}
+
+fn enforce_active_staff_contract_overrides(ctx: &mut ServerModContext, decrement: bool) {
+    let pending = if let Ok(overrides) = active_staff_contract_overrides().lock() {
+        overrides
+            .iter()
+            .map(|(staff_id, entry)| (*staff_id, entry.values.clone()))
+            .collect::<Vec<_>>()
+    } else {
+        return;
+    };
+
+    for (staff_id, values) in pending {
+        if let Some(staff) = ctx.database.staffs.get_mut(staff_id) {
+            let _ = apply_active_contract_fields(
+                &mut staff.contract,
+                values.team_id,
+                &values.start_date,
+                &values.end_date,
+                &values.annual_salary,
+                "0",
+            );
+        }
+    }
+
+    if decrement {
+        if let Ok(mut overrides) = active_staff_contract_overrides().lock() {
+            overrides.retain(|_, entry| {
+                entry.remaining_after_ticks = entry.remaining_after_ticks.saturating_sub(1);
+                entry.remaining_after_ticks > 0
+            });
+        }
+    }
+}
+
 fn response_ok_economy(values: EconomyValues) -> String {
     format!(
         "OK|ECONOMY|{}|{}|{}",
         values.money,
         values.transfer_budget,
         values.salary_budget
+    )
+}
+
+fn response_ok_contract_defaults(values: &ContractDefaults) -> String {
+    format!(
+        "OK|CONTRACT_DEFAULTS|{}|{}|{}",
+        values.start_date, values.end_date, values.annual_salary
     )
 }
 
@@ -322,6 +693,63 @@ fn response_ok_players(players: &[PlayerListEntry]) -> String {
     format!("OK|PLAYERS|{}|{}", players.len(), payload)
 }
 
+fn response_ok_staffs(staffs: &[StaffListEntry]) -> String {
+    let payload = staffs
+        .iter()
+        .map(|staff| {
+            [
+                staff.id.to_string(),
+                hex_encode(&staff.name),
+                hex_encode(&staff.age),
+                hex_encode(&staff.team),
+                hex_encode(&staff.role),
+            ]
+            .join(":")
+        })
+        .collect::<Vec<_>>()
+        .join(";");
+
+    format!("OK|STAFFS|{}|{}", staffs.len(), payload)
+}
+
+fn response_ok_staff(staff: StaffSnapshot) -> String {
+    format!(
+        concat!(
+            "OK|STAFF|{}|{}|{}|{}|{}|",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|",
+            "{}|{}|{}|{}|{}"
+        ),
+        staff.id,
+        hex_encode(&staff.name),
+        hex_encode(&staff.age),
+        hex_encode(&staff.role),
+        hex_encode(&staff.team),
+        staff.banpick,
+        staff.strategy,
+        staff.negotiation,
+        staff.judge_ability,
+        staff.judge_potential,
+        staff.feedback,
+        staff.power_analysis,
+        staff.control_coaching,
+        staff.judgment_coaching,
+        staff.mental_coaching,
+        staff.annual_salary,
+        staff.contract_team_id,
+        hex_encode(&staff.contract_start_date),
+        hex_encode(&staff.contract_end_date),
+        hex_encode(&staff.communication_raw),
+    )
+}
+
+fn response_ok_staff_contract_probe(raw: &str) -> String {
+    format!("OK|STAFF_CONTRACT_PROBE|{}", hex_encode(raw))
+}
+
+fn response_ok_player_contract_probe(raw: &str) -> String {
+    format!("OK|PLAYER_CONTRACT_PROBE|{}", hex_encode(raw))
+}
+
 fn response_ok_teams(teams: &[TeamListEntry]) -> String {
     let payload = teams
         .iter()
@@ -340,13 +768,10 @@ fn response_ok_teams(teams: &[TeamListEntry]) -> String {
 }
 
 fn response_ok_player(player: PlayerSnapshot) -> String {
-    format!(
-        concat!(
-            "OK|PLAYER|{}|{}|",
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|",
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}"
-        ),
-        player.id,
+    [
+        "OK".to_string(),
+        "PLAYER".to_string(),
+        player.id.to_string(),
         hex_encode(&player.name),
         player.last_hit,
         player.skill_avoid,
@@ -367,10 +792,22 @@ fn response_ok_player(player: PlayerSnapshot) -> String {
         player.support,
         player.potential,
         player.annual_salary,
+        player.weekly_salary,
+        player.contract_team_id,
+        hex_encode(&player.contract_start_date),
         hex_encode(&player.contract_end_date),
+        player.transfer_fee,
+        hex_encode(&player.squad_status),
+        player.incentive_pog_bonus,
+        player.incentive_league_bonus,
+        player.incentive_league_rank,
+        player.incentive_match_bonus,
+        player.incentive_win_bonus,
         player.primary_region,
         hex_encode(&player.communication_raw),
-    )
+        hex_encode(&player.communication_xp_raw),
+    ]
+    .join("|")
 }
 
 fn read_economy(scene: &mut Scene) -> Result<EconomyValues, &'static str> {
@@ -560,6 +997,493 @@ fn read_players(scene: &mut Scene) -> Result<Vec<PlayerListEntry>, &'static str>
     Ok(players)
 }
 
+fn read_staffs(scene: &mut Scene) -> Result<Vec<StaffListEntry>, &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    let db = data.db();
+    let mut staffs = db
+        .staffs
+        .iter()
+        .map(|(id, staff)| {
+            let team = match &staff.contract {
+                Contract::InContract { team_id, .. } => db
+                    .teams
+                    .get(team_id)
+                    .map(|team| db.team_display_name(team).to_string())
+                    .unwrap_or_else(|| format!("Team {}", team_id)),
+                Contract::FreeAgent { .. } => "Free Agent".to_string(),
+            };
+
+            StaffListEntry {
+                id: *id,
+                name: staff.name.to_string(),
+                age: staff.age.to_string(),
+                team,
+                role: format!("{:?}", staff.role),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    staffs.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.id.cmp(&b.id))
+    });
+
+    Ok(staffs)
+}
+
+fn read_staff(scene: &mut Scene, staff_id: usize) -> Result<StaffSnapshot, &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    let db = data.db();
+    let Some(staff) = db.staffs.get(&staff_id) else {
+        return Err("STAFF_NOT_FOUND");
+    };
+    let stat = &staff.stat;
+
+    let team = match &staff.contract {
+        Contract::InContract { team_id, .. } => db
+            .teams
+            .get(team_id)
+            .map(|team| db.team_display_name(team).to_string())
+            .unwrap_or_else(|| format!("Team {}", team_id)),
+        Contract::FreeAgent { .. } => "Free Agent".to_string(),
+    };
+
+    let (annual_salary, contract_team_id, contract_start_date, contract_end_date) =
+        match &staff.contract {
+            Contract::InContract {
+                team_id,
+                weekly_salary,
+                start_date,
+                end_date,
+                ..
+            } => (
+                weekly_salary
+                    .to_string()
+                    .parse::<f64>()
+                    .map(|weekly| (weekly * 52.0).to_string())
+                    .unwrap_or_default(),
+                team_id.to_string(),
+                start_date.to_string(),
+                end_date.to_string(),
+            ),
+            Contract::FreeAgent { .. } => (
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ),
+        };
+
+    let mut communication_entries = staff
+        .language
+        .iter()
+        .map(|(region_id, value)| (*region_id, value.to_string()))
+        .collect::<Vec<_>>();
+    communication_entries.sort_by_key(|(region_id, _)| *region_id);
+    let communication_raw = communication_entries
+        .into_iter()
+        .map(|(region_id, value)| format!("{}={}", region_id, value))
+        .collect::<Vec<_>>()
+        .join(";");
+
+    Ok(StaffSnapshot {
+        id: staff_id,
+        name: staff.name.to_string(),
+        age: staff.age.to_string(),
+        role: format!("{:?}", staff.role),
+        team,
+        banpick: stat.banpick.to_string(),
+        strategy: stat.strategy.to_string(),
+        negotiation: stat.negotiation.to_string(),
+        judge_ability: stat.judge_ability.to_string(),
+        judge_potential: stat.judge_potential.to_string(),
+        feedback: stat.feedback.to_string(),
+        power_analysis: stat.power_analysis.to_string(),
+        control_coaching: stat.control_coaching.to_string(),
+        judgment_coaching: stat.judgment_coaching.to_string(),
+        mental_coaching: stat.mental_coaching.to_string(),
+        annual_salary,
+        contract_team_id,
+        contract_start_date,
+        contract_end_date,
+        communication_raw,
+    })
+}
+
+fn validate_staff_stats(values: &StaffStatValues) -> Result<(), &'static str> {
+    for value in [
+        &values.banpick,
+        &values.strategy,
+        &values.negotiation,
+        &values.judge_ability,
+        &values.judge_potential,
+        &values.feedback,
+        &values.power_analysis,
+        &values.control_coaching,
+        &values.judgment_coaching,
+        &values.mental_coaching,
+    ] {
+        validate_stat_text(value)?;
+    }
+    Ok(())
+}
+
+fn staff_stats_payload(staff_id: usize, values: &StaffStatValues) -> Vec<u8> {
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        staff_id,
+        values.banpick,
+        values.strategy,
+        values.negotiation,
+        values.judge_ability,
+        values.judge_potential,
+        values.feedback,
+        values.power_analysis,
+        values.control_coaching,
+        values.judgment_coaching,
+        values.mental_coaching,
+    )
+    .into_bytes()
+}
+
+fn parse_server_staff_stats(payload: &[u8]) -> Result<(usize, StaffStatValues), &'static str> {
+    let text = std::str::from_utf8(payload).map_err(|_| "INVALID_PAYLOAD")?;
+    let mut parts = text.split('|');
+    let staff_id = parse_usize(parts.next())?;
+    let values = StaffStatValues {
+        banpick: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        strategy: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        negotiation: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        judge_ability: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        judge_potential: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        feedback: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        power_analysis: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        control_coaching: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        judgment_coaching: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        mental_coaching: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+    };
+    validate_staff_stats(&values)?;
+    Ok((staff_id, values))
+}
+
+fn write_staff_stats(
+    scene: &mut Scene,
+    staff_id: usize,
+    values: StaffStatValues,
+) -> Result<(), &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    validate_staff_stats(&values)?;
+
+    if !data.send_mod_command(
+        MOD_ID,
+        "set_staff_stats",
+        staff_stats_payload(staff_id, &values),
+    ) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+
+    // Mirror the authoritative write into the current client snapshot so the
+    // Staff Editor updates immediately instead of waiting for the next sync.
+    let mut db = data.db_mut();
+    let Some(staff) = db.staffs.get_mut(&staff_id) else {
+        return Err("STAFF_NOT_FOUND");
+    };
+
+    let stat = &mut staff.stat;
+    stat.banpick = parse_stat_value(&values.banpick)?;
+    stat.strategy = parse_stat_value(&values.strategy)?;
+    stat.negotiation = parse_stat_value(&values.negotiation)?;
+    stat.judge_ability = parse_stat_value(&values.judge_ability)?;
+    stat.judge_potential = parse_stat_value(&values.judge_potential)?;
+    stat.feedback = parse_stat_value(&values.feedback)?;
+    stat.power_analysis = parse_stat_value(&values.power_analysis)?;
+    stat.control_coaching = parse_stat_value(&values.control_coaching)?;
+    stat.judgment_coaching = parse_stat_value(&values.judgment_coaching)?;
+    stat.mental_coaching = parse_stat_value(&values.mental_coaching)?;
+    Ok(())
+}
+
+
+fn staff_salary_payload(staff_id: usize, values: &StaffSalaryValue) -> Vec<u8> {
+    format!("{}|{}", staff_id, values.annual_salary).into_bytes()
+}
+
+fn parse_server_staff_salary(
+    payload: &[u8],
+) -> Result<(usize, StaffSalaryValue), &'static str> {
+    let text = std::str::from_utf8(payload).map_err(|_| "INVALID_PAYLOAD")?;
+    let (staff_id, annual_salary) = text.split_once('|').ok_or("MISSING_VALUE")?;
+    let values = StaffSalaryValue {
+        annual_salary: annual_salary.to_string(),
+    };
+    validate_annual_salary(&values.annual_salary)?;
+    Ok((
+        staff_id.parse::<usize>().map_err(|_| "INVALID_ID")?,
+        values,
+    ))
+}
+
+fn apply_staff_salary_contract(
+    contract: &mut Contract,
+    values: &StaffSalaryValue,
+) -> Result<(), &'static str> {
+    let annual = validate_annual_salary(&values.annual_salary)?;
+    let weekly_text = (annual / 52.0).to_string();
+    match contract {
+        Contract::InContract { weekly_salary, .. } => {
+            *weekly_salary = weekly_text
+                .parse()
+                .map_err(|_| "SALARY_TYPE_ERROR")?;
+            Ok(())
+        }
+        Contract::FreeAgent { .. } => Err("STAFF_FREE_AGENT"),
+    }
+}
+
+fn write_staff_salary(
+    scene: &mut Scene,
+    staff_id: usize,
+    values: StaffSalaryValue,
+) -> Result<(), &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    validate_annual_salary(&values.annual_salary)?;
+    {
+        let db = data.db();
+        let Some(staff) = db.staffs.get(&staff_id) else {
+            return Err("STAFF_NOT_FOUND");
+        };
+        if matches!(&staff.contract, Contract::FreeAgent { .. }) {
+            return Err("STAFF_FREE_AGENT");
+        }
+    }
+
+    if !data.send_mod_command(
+        MOD_ID,
+        "set_staff_salary",
+        staff_salary_payload(staff_id, &values),
+    ) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+
+    let mut db = data.db_mut();
+    let Some(staff) = db.staffs.get_mut(&staff_id) else {
+        return Err("STAFF_NOT_FOUND");
+    };
+    apply_staff_salary_contract(&mut staff.contract, &values)
+}
+
+fn staff_contract_end_payload(staff_id: usize, values: &StaffContractEndValue) -> Vec<u8> {
+    format!("{}|{}", staff_id, values.end_date).into_bytes()
+}
+
+fn write_staff_contract_end(
+    scene: &mut Scene,
+    staff_id: usize,
+    values: StaffContractEndValue,
+) -> Result<StaffSnapshot, &'static str> {
+    validate_contract_end_date_text(&values.end_date)?;
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    if !data.send_mod_command(
+        MOD_ID,
+        "set_staff_contract_end",
+        staff_contract_end_payload(staff_id, &values),
+    ) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+
+    let mut db = data.db_mut();
+    let Some(staff) = db.staffs.get_mut(&staff_id) else {
+        return Err("STAFF_NOT_FOUND");
+    };
+    apply_staff_contract_end(&mut staff.contract, &values)?;
+    drop(db);
+    read_staff(scene, staff_id)
+}
+
+fn parse_server_staff_contract_end(
+    payload: &[u8],
+) -> Result<(usize, StaffContractEndValue), &'static str> {
+    let text = std::str::from_utf8(payload).map_err(|_| "INVALID_PAYLOAD")?;
+    let mut parts = text.split('|');
+    let staff_id = parse_usize(parts.next())?;
+    let end_date = parts.next().ok_or("MISSING_VALUE")?.to_string();
+    validate_contract_end_date_text(&end_date)?;
+    Ok((staff_id, StaffContractEndValue { end_date }))
+}
+
+fn validate_staff_communication(
+    values: &StaffCommunicationValues,
+) -> Result<(), &'static str> {
+    if values.entries.is_empty() {
+        return Err("NO_COMMUNICATION_REGIONS");
+    }
+
+    let mut seen = HashSet::new();
+    for (region_id, value) in &values.entries {
+        if !seen.insert(*region_id) {
+            return Err("DUPLICATE_REGION");
+        }
+        if *value > 100 {
+            return Err("COMMUNICATION_OUT_OF_RANGE");
+        }
+    }
+    Ok(())
+}
+
+fn staff_communication_payload(
+    staff_id: usize,
+    values: &StaffCommunicationValues,
+) -> Vec<u8> {
+    let entries = values
+        .entries
+        .iter()
+        .map(|(region_id, value)| format!("{}={}", region_id, value))
+        .collect::<Vec<_>>()
+        .join(";");
+    format!("{}|{}", staff_id, entries).into_bytes()
+}
+
+fn parse_staff_communication_entries(
+    raw: &str,
+) -> Result<StaffCommunicationValues, &'static str> {
+    let mut entries = Vec::new();
+    for entry in raw.split(';').filter(|entry| !entry.trim().is_empty()) {
+        let (region_id, value) = entry.split_once('=').ok_or("INVALID_COMMUNICATION")?;
+        entries.push((
+            region_id.parse::<usize>().map_err(|_| "INVALID_REGION")?,
+            value.parse::<u16>().map_err(|_| "INVALID_COMMUNICATION")?,
+        ));
+    }
+    let values = StaffCommunicationValues { entries };
+    validate_staff_communication(&values)?;
+    Ok(values)
+}
+
+fn parse_server_staff_communication(
+    payload: &[u8],
+) -> Result<(usize, StaffCommunicationValues), &'static str> {
+    let text = std::str::from_utf8(payload).map_err(|_| "INVALID_PAYLOAD")?;
+    let (staff_id, entries) = text.split_once('|').ok_or("MISSING_VALUE")?;
+    Ok((
+        staff_id.parse::<usize>().map_err(|_| "INVALID_ID")?,
+        parse_staff_communication_entries(entries)?,
+    ))
+}
+
+fn write_staff_communication(
+    scene: &mut Scene,
+    staff_id: usize,
+    values: StaffCommunicationValues,
+) -> Result<(), &'static str> {
+    validate_staff_communication(&values)?;
+
+    let available_regions = detected_region_ids(scene)?;
+    for (region_id, _) in &values.entries {
+        if !available_regions.contains(region_id) {
+            return Err("INVALID_REGION");
+        }
+    }
+
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    {
+        let db = data.db();
+        if db.staffs.get(&staff_id).is_none() {
+            return Err("STAFF_NOT_FOUND");
+        }
+    }
+
+    if !data.send_mod_command(
+        MOD_ID,
+        "set_staff_communication",
+        staff_communication_payload(staff_id, &values),
+    ) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+
+    let mut db = data.db_mut();
+    let Some(staff) = db.staffs.get_mut(&staff_id) else {
+        return Err("STAFF_NOT_FOUND");
+    };
+    for (region_id, value) in &values.entries {
+        let parsed = value
+            .to_string()
+            .parse()
+            .map_err(|_| "COMMUNICATION_TYPE_ERROR")?;
+        staff.language.insert(*region_id, parsed);
+    }
+    Ok(())
+}
+
+fn read_staff_contract_probe(
+    scene: &mut Scene,
+    staff_id: usize,
+) -> Result<String, &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+    let db = data.db();
+    let Some(staff) = db.staffs.get(&staff_id) else {
+        return Err("STAFF_NOT_FOUND");
+    };
+
+    let mut raw = format!(
+        "=== STAFF CONTRACT FLOW PROBE ===\nStaff key: {staff_id}\n\n=== FULL STAFF RECORD ===\n{staff:#?}"
+    );
+    if let Contract::InContract { team_id, .. } = &staff.contract {
+        if let Some(team) = db.teams.get(team_id) {
+            raw.push_str(&format!(
+                "\n\n=== CURRENT CONTRACT TEAM RECORD ===\nTeam key: {team_id}\n{team:#?}"
+            ));
+        }
+    }
+    Ok(raw)
+}
+
+fn read_player_contract_probe(
+    scene: &mut Scene,
+    athlete_id: usize,
+) -> Result<String, &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+    let db = data.db();
+    let Some(athlete) = db.athletes.get(&athlete_id) else {
+        return Err("PLAYER_NOT_FOUND");
+    };
+
+    let mut raw = format!(
+        "=== PLAYER CONTRACT FLOW PROBE ===\nAthlete key: {athlete_id}\n\n=== FULL ATHLETE RECORD ===\n{athlete:#?}"
+    );
+    if let Contract::InContract { team_id, .. } = &athlete.contract {
+        if let Some(team) = db.teams.get(team_id) {
+            raw.push_str(&format!(
+                "\n\n=== CURRENT CONTRACT TEAM RECORD ===\nTeam key: {team_id}\n{team:#?}"
+            ));
+        }
+    }
+    Ok(raw)
+}
+
 fn read_teams(scene: &mut Scene) -> Result<Vec<TeamListEntry>, &'static str> {
     let Scene::InGame { data } = scene else {
         return Err("NOT_IN_GAME");
@@ -588,6 +1512,243 @@ fn read_teams(scene: &mut Scene) -> Result<Vec<TeamListEntry>, &'static str> {
     });
 
     Ok(teams)
+}
+
+fn contract_annual_salary(contract: &Contract) -> Option<f64> {
+    match contract {
+        Contract::InContract { weekly_salary, .. } => weekly_salary
+            .to_string()
+            .parse::<f64>()
+            .ok()
+            .map(|weekly| weekly * 52.0)
+            .filter(|annual| annual.is_finite() && *annual >= 0.0),
+        Contract::FreeAgent { .. } => None,
+    }
+}
+
+fn median_salary(mut salaries: Vec<f64>) -> f64 {
+    salaries.retain(|value| value.is_finite() && *value >= 0.0);
+    if salaries.is_empty() {
+        return 0.0;
+    }
+    salaries.sort_by(|left, right| left.total_cmp(right));
+    let middle = salaries.len() / 2;
+    if salaries.len() % 2 == 0 {
+        (salaries[middle - 1] + salaries[middle]) / 2.0
+    } else {
+        salaries[middle]
+    }
+}
+
+fn read_contract_defaults(
+    scene: &mut Scene,
+    entity: ContractDefaultsEntity,
+    destination_team_id: usize,
+) -> Result<ContractDefaults, &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    let db = data.db();
+    if db.teams.get(&destination_team_id).is_none() {
+        return Err("DESTINATION_TEAM_NOT_FOUND");
+    }
+
+    // Team news is generated from the management timeline and gives us a public,
+    // save-specific date source without relying on private client internals.
+    let mut latest_date = db
+        .teams
+        .iter()
+        .flat_map(|(_, team)| team.news.iter())
+        .filter_map(|news| news.date.to_string().get(..10).map(|value| value.to_string()))
+        .max();
+
+    // A very early save can have little or no news. Active contract starts provide
+    // a safe fallback and are always valid ISO dates in a normal career database.
+    for (_, athlete) in db.athletes.iter() {
+        if let Contract::InContract { start_date, .. } = &athlete.contract {
+            if let Some(date) = start_date.to_string().get(..10).map(|value| value.to_string()) {
+                if latest_date.as_ref().map_or(true, |current| date.as_str() > current.as_str()) {
+                    latest_date = Some(date);
+                }
+            }
+        }
+    }
+    for (_, staff) in db.staffs.iter() {
+        if let Contract::InContract { start_date, .. } = &staff.contract {
+            if let Some(date) = start_date.to_string().get(..10).map(|value| value.to_string()) {
+                if latest_date.as_ref().map_or(true, |current| date.as_str() > current.as_str()) {
+                    latest_date = Some(date);
+                }
+            }
+        }
+    }
+
+    let start_date = latest_date.unwrap_or_else(|| "2026-01-01".to_string());
+    let start_year = start_date
+        .get(..4)
+        .and_then(|year| year.parse::<i32>().ok())
+        .ok_or("INVALID_GAME_DATE")?;
+    let end_date = format!("{}-12-31", start_year + 3);
+
+    let team_salaries = match entity {
+        ContractDefaultsEntity::Player => db
+            .athletes
+            .iter()
+            .filter_map(|(_, athlete)| match &athlete.contract {
+                Contract::InContract { team_id, .. } if *team_id == destination_team_id => {
+                    contract_annual_salary(&athlete.contract)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        ContractDefaultsEntity::Staff => db
+            .staffs
+            .iter()
+            .filter_map(|(_, staff)| match &staff.contract {
+                Contract::InContract { team_id, .. } if *team_id == destination_team_id => {
+                    contract_annual_salary(&staff.contract)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+    };
+
+    let salaries = if team_salaries.is_empty() {
+        match entity {
+            ContractDefaultsEntity::Player => db
+                .athletes
+                .iter()
+                .filter_map(|(_, athlete)| contract_annual_salary(&athlete.contract))
+                .collect::<Vec<_>>(),
+            ContractDefaultsEntity::Staff => db
+                .staffs
+                .iter()
+                .filter_map(|(_, staff)| contract_annual_salary(&staff.contract))
+                .collect::<Vec<_>>(),
+        }
+    } else {
+        team_salaries
+    };
+
+    Ok(ContractDefaults {
+        start_date,
+        end_date,
+        annual_salary: median_salary(salaries).to_string(),
+    })
+}
+
+fn move_staff_to_team_client(
+    scene: &mut Scene,
+    staff_id: usize,
+    destination_team_id: usize,
+) -> Result<(), &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    {
+        let db = data.db();
+        if db.teams.get(&destination_team_id).is_none() {
+            return Err("TEAM_NOT_FOUND");
+        }
+        if db.staffs.get(&staff_id).is_none() {
+            return Err("STAFF_NOT_FOUND");
+        }
+    }
+
+    {
+        let mut db = data.db_mut();
+        let Some(staff) = db.staffs.get_mut(&staff_id) else {
+            return Err("STAFF_NOT_FOUND");
+        };
+        match &mut staff.contract {
+            Contract::InContract {
+                team_id,
+                transfer_requests,
+                recruit_requests,
+                ..
+            } => {
+                *team_id = destination_team_id;
+                transfer_requests.clear();
+                recruit_requests.clear();
+            }
+            Contract::FreeAgent { .. } => return Err("STAFF_FREE_AGENT_NEEDS_CONTRACT"),
+        }
+    }
+
+    let payload = format!("{}|{}", staff_id, destination_team_id).into_bytes();
+    if !data.send_mod_command(MOD_ID, "move_staff_to_team", payload) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+    Ok(())
+}
+
+fn parse_move_staff_payload(payload: &[u8]) -> Result<(usize, usize), &'static str> {
+    let text = std::str::from_utf8(payload).map_err(|_| "INVALID_PAYLOAD")?;
+    let mut parts = text.split('|');
+    Ok((parse_usize(parts.next())?, parse_usize(parts.next())?))
+}
+
+fn move_staff_to_team_server(
+    ctx: &mut ServerModContext,
+    staff_id: usize,
+    destination_team_id: usize,
+) -> Result<(), &'static str> {
+    if ctx.database.teams.get(destination_team_id).is_none() {
+        return Err("TEAM_NOT_FOUND");
+    }
+    let Some(staff) = ctx.database.staffs.get_mut(staff_id) else {
+        return Err("STAFF_NOT_FOUND");
+    };
+    match &mut staff.contract {
+        Contract::InContract {
+            team_id,
+            transfer_requests,
+            recruit_requests,
+            ..
+        } => {
+            *team_id = destination_team_id;
+            transfer_requests.clear();
+            recruit_requests.clear();
+            Ok(())
+        }
+        Contract::FreeAgent { .. } => Err("STAFF_FREE_AGENT_NEEDS_CONTRACT"),
+    }
+}
+
+fn set_staff_free_agent_client(scene: &mut Scene, staff_id: usize) -> Result<(), &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+    {
+        let mut db = data.db_mut();
+        let Some(staff) = db.staffs.get_mut(&staff_id) else {
+            return Err("STAFF_NOT_FOUND");
+        };
+        if matches!(&staff.contract, Contract::FreeAgent { .. }) {
+            return Err("STAFF_ALREADY_FREE_AGENT");
+        }
+        staff.contract = Contract::FreeAgent { requests: Vec::new() };
+    }
+    if !data.send_mod_command(MOD_ID, "set_staff_free_agent", staff_id.to_string().into_bytes()) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+    Ok(())
+}
+
+fn set_staff_free_agent_server(
+    ctx: &mut ServerModContext,
+    staff_id: usize,
+) -> Result<(), &'static str> {
+    let Some(staff) = ctx.database.staffs.get_mut(staff_id) else {
+        return Err("STAFF_NOT_FOUND");
+    };
+    if matches!(&staff.contract, Contract::FreeAgent { .. }) {
+        return Err("STAFF_ALREADY_FREE_AGENT");
+    }
+    staff.contract = Contract::FreeAgent { requests: Vec::new() };
+    Ok(())
 }
 
 fn move_player_to_team_client(
@@ -685,7 +1846,71 @@ fn move_player_to_team_server(
     }
 }
 
+fn set_player_free_agent_client(
+    scene: &mut Scene,
+    athlete_id: usize,
+) -> Result<(), &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    {
+        let mut db = data.db_mut();
+        let Some(athlete) = db.athletes.get_mut(&athlete_id) else {
+            return Err("PLAYER_NOT_FOUND");
+        };
+        if matches!(&athlete.contract, Contract::FreeAgent { .. }) {
+            return Err("PLAYER_ALREADY_FREE_AGENT");
+        }
+        athlete.contract = Contract::FreeAgent { requests: Vec::new() };
+    }
+
+    if !data.send_mod_command(
+        MOD_ID,
+        "set_player_free_agent",
+        athlete_id.to_string().into_bytes(),
+    ) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+
+    Ok(())
+}
+
+fn parse_player_free_agent_payload(payload: &[u8]) -> Result<usize, &'static str> {
+    let text = std::str::from_utf8(payload).map_err(|_| "INVALID_PAYLOAD")?;
+    text.parse::<usize>().map_err(|_| "INVALID_ID")
+}
+
+fn set_player_free_agent_server(
+    ctx: &mut ServerModContext,
+    athlete_id: usize,
+) -> Result<(), &'static str> {
+    let Some(athlete) = ctx.database.athletes.get_mut(athlete_id) else {
+        return Err("PLAYER_NOT_FOUND");
+    };
+    if matches!(&athlete.contract, Contract::FreeAgent { .. }) {
+        return Err("PLAYER_ALREADY_FREE_AGENT");
+    }
+    athlete.contract = Contract::FreeAgent { requests: Vec::new() };
+    Ok(())
+}
+
 fn communication_raw(athlete: &Athlete) -> String {
+    let mut values = athlete
+        .stat
+        .language
+        .iter()
+        .map(|(region_id, value)| (*region_id, *value))
+        .collect::<Vec<_>>();
+    values.sort_by_key(|(region_id, _)| *region_id);
+    values
+        .into_iter()
+        .map(|(region_id, value)| format!("{}:{}", region_id, value))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn communication_xp_raw(athlete: &Athlete) -> String {
     let mut values = athlete
         .training_exp
         .language_by_region
@@ -718,11 +1943,162 @@ fn detected_region_ids(scene: &mut Scene) -> Result<Vec<usize>, &'static str> {
         if let Some(region_id) = athlete.get_primary_region() {
             region_ids.push(region_id);
         }
+        region_ids.extend(athlete.stat.language.keys().copied());
         region_ids.extend(athlete.training_exp.language_by_region.keys().copied());
     }
     region_ids.sort_unstable();
     region_ids.dedup();
     Ok(region_ids)
+}
+
+fn read_champion_mastery_probe(
+    scene: &mut Scene,
+    athlete_id: usize,
+) -> Result<(String, String), &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    let db = data.db();
+    let Some(athlete) = db.athletes.get(&athlete_id) else {
+        return Err("PLAYER_NOT_FOUND");
+    };
+
+    // Second-pass diagnostic: inspect the actual champion proficiency state.
+    let mastery_state = format!(
+        "champion_proficiency:\n{:#?}\n\nrecent_champions:\n{:#?}",
+        athlete.champion_proficiency,
+        athlete.recent_champions,
+    );
+
+    // The active save owns the dynamic champion pool. Never hardcode champions.
+    let available_champions = format!("{:#?}", db.available_champions);
+
+    Ok((mastery_state, available_champions))
+}
+
+fn validate_champion_mastery_values(
+    values: &[ChampionMasteryValue],
+) -> Result<(), &'static str> {
+    if values.is_empty() {
+        return Err("NO_CHAMPIONS_SELECTED");
+    }
+
+    for value in values {
+        if value.champion_id.is_empty()
+            || !value
+                .champion_id
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        {
+            return Err("INVALID_CHAMPION_ID");
+        }
+
+        if value.mastery > 100 {
+            return Err("MASTERY_OUT_OF_RANGE");
+        }
+    }
+
+    Ok(())
+}
+
+fn champion_mastery_payload(
+    athlete_id: usize,
+    values: &[ChampionMasteryValue],
+) -> Vec<u8> {
+    let entries = values
+        .iter()
+        .map(|value| format!("{}:{}", value.champion_id, value.mastery))
+        .collect::<Vec<_>>()
+        .join(";");
+
+    format!("{}|{}", athlete_id, entries).into_bytes()
+}
+
+fn apply_champion_mastery_to_athlete(
+    athlete: &mut Athlete,
+    values: &[ChampionMasteryValue],
+) -> Result<(), &'static str> {
+    validate_champion_mastery_values(values)?;
+
+    for value in values {
+        let Some(proficiency) =
+            athlete.champion_proficiency.get_mut(&value.champion_id)
+        else {
+            return Err("CHAMPION_NOT_FOUND");
+        };
+
+        // Confirmed mapping: in-game mastery 90 == raw ChampionProficiency.value 900.
+        // Do not touch ChampionProficiency.floor.
+        proficiency.value = (value.mastery as i32 * 10) as _;
+    }
+
+    Ok(())
+}
+
+fn write_champion_mastery(
+    scene: &mut Scene,
+    athlete_id: usize,
+    values: Vec<ChampionMasteryValue>,
+) -> Result<usize, &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    validate_champion_mastery_values(&values)?;
+
+    if !data.send_mod_command(
+        MOD_ID,
+        "set_champion_mastery",
+        champion_mastery_payload(athlete_id, &values),
+    ) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+
+    let mut db = data.db_mut();
+    let Some(athlete) = db.athletes.get_mut(&athlete_id) else {
+        return Err("PLAYER_NOT_FOUND");
+    };
+
+    apply_champion_mastery_to_athlete(athlete, &values)?;
+    Ok(values.len())
+}
+
+fn parse_server_champion_mastery(
+    payload: &[u8],
+) -> Result<(usize, Vec<ChampionMasteryValue>), &'static str> {
+    let text = std::str::from_utf8(payload).map_err(|_| "INVALID_PAYLOAD")?;
+    let (athlete_id, entries) = text.split_once('|').ok_or("MISSING_VALUE")?;
+    let athlete_id = athlete_id
+        .parse::<usize>()
+        .map_err(|_| "INVALID_ID")?;
+
+    let mut values = Vec::new();
+    for entry in entries.split(';').filter(|entry| !entry.trim().is_empty()) {
+        let (champion_id, mastery) =
+            entry.split_once(':').ok_or("INVALID_MASTERY_ENTRY")?;
+
+        values.push(ChampionMasteryValue {
+            champion_id: champion_id.to_string(),
+            mastery: mastery
+                .parse::<u16>()
+                .map_err(|_| "INVALID_MASTERY")?,
+        });
+    }
+
+    validate_champion_mastery_values(&values)?;
+    Ok((athlete_id, values))
+}
+
+fn response_ok_champion_mastery_probe(
+    mastery_state: &str,
+    available_champions: &str,
+) -> String {
+    format!(
+        "OK|MASTERY_PROBE|{}|{}",
+        hex_encode(mastery_state),
+        hex_encode(available_champions)
+    )
 }
 
 fn annual_salary_raw(athlete: &Athlete) -> String {
@@ -736,9 +2112,58 @@ fn annual_salary_raw(athlete: &Athlete) -> String {
     }
 }
 
+fn weekly_salary_raw(athlete: &Athlete) -> String {
+    match &athlete.contract {
+        Contract::InContract { weekly_salary, .. } => weekly_salary.to_string(),
+        Contract::FreeAgent { .. } => String::new(),
+    }
+}
+
+fn squad_status_raw(athlete: &Athlete) -> String {
+    format!("{:?}", athlete.squad_status)
+}
+
+fn incentive_values_raw(athlete: &Athlete) -> (String, String, String, String, String) {
+    let mut pog = String::new();
+    let mut league_bonus = String::new();
+    let mut league_rank = String::new();
+    let mut match_bonus = String::new();
+    let mut win_bonus = String::new();
+
+    if let Contract::InContract { incentives, .. } = &athlete.contract {
+        for incentive in incentives {
+            match incentive {
+                Incentive::OnPog { bonus } => pog = bonus.to_string(),
+                Incentive::OnLeagueRank { bonus, rank } => {
+                    league_bonus = bonus.to_string();
+                    league_rank = rank.to_string();
+                }
+                Incentive::OnMatch { bonus, .. } => match_bonus = bonus.to_string(),
+                Incentive::OnWin { bonus } => win_bonus = bonus.to_string(),
+            }
+        }
+    }
+
+    (pog, league_bonus, league_rank, match_bonus, win_bonus)
+}
+
 fn transfer_fee_raw(athlete: &Athlete) -> String {
     match &athlete.contract {
         Contract::InContract { transfer_fee, .. } => transfer_fee.to_string(),
+        Contract::FreeAgent { .. } => String::new(),
+    }
+}
+
+fn contract_team_id_raw(athlete: &Athlete) -> String {
+    match &athlete.contract {
+        Contract::InContract { team_id, .. } => team_id.to_string(),
+        Contract::FreeAgent { .. } => String::new(),
+    }
+}
+
+fn contract_start_date_raw(athlete: &Athlete) -> String {
+    match &athlete.contract {
+        Contract::InContract { start_date, .. } => start_date.to_string(),
         Contract::FreeAgent { .. } => String::new(),
     }
 }
@@ -767,16 +2192,14 @@ fn player_contract_end_payload(athlete_id: usize, values: &PlayerContractEndValu
     format!("{}|{}", athlete_id, values.end_date).into_bytes()
 }
 
-fn apply_contract_end_to_athlete(
-    athlete: &mut Athlete,
-    values: &PlayerContractEndValue,
+fn apply_contract_end_to_contract(
+    contract: &mut Contract,
+    requested: &str,
+    free_agent_error: &'static str,
 ) -> Result<(), &'static str> {
-    let requested = validate_contract_end_date_text(&values.end_date)?;
-    match &mut athlete.contract {
+    let requested = validate_contract_end_date_text(requested)?;
+    match contract {
         Contract::InContract { end_date, .. } => {
-            // Preserve any time/timezone suffix used by the concrete game_core date type.
-            // This lets the editor expose a simple YYYY-MM-DD field while parsing back into
-            // exactly the same type that TFM2 uses internally.
             let current = end_date.to_string();
             let candidate = if current.len() > 10 {
                 format!("{}{}", requested, &current[10..])
@@ -786,8 +2209,476 @@ fn apply_contract_end_to_athlete(
             *end_date = candidate.parse().map_err(|_| "INVALID_CONTRACT_DATE")?;
             Ok(())
         }
+        Contract::FreeAgent { .. } => Err(free_agent_error),
+    }
+}
+
+fn apply_contract_end_to_athlete(
+    athlete: &mut Athlete,
+    values: &PlayerContractEndValue,
+) -> Result<(), &'static str> {
+    apply_contract_end_to_contract(
+        &mut athlete.contract,
+        &values.end_date,
+        "PLAYER_FREE_AGENT",
+    )
+}
+
+fn apply_staff_contract_end(
+    contract: &mut Contract,
+    values: &StaffContractEndValue,
+) -> Result<(), &'static str> {
+    apply_contract_end_to_contract(contract, &values.end_date, "STAFF_FREE_AGENT")
+}
+
+fn validate_contract_dates(start_date: &str, end_date: &str) -> Result<(), &'static str> {
+    let start_date = validate_contract_end_date_text(start_date)?;
+    let end_date = validate_contract_end_date_text(end_date)?;
+    if end_date < start_date {
+        return Err("CONTRACT_END_BEFORE_START");
+    }
+    Ok(())
+}
+
+fn contract_start_text(value: &str) -> Result<String, &'static str> {
+    let value = validate_contract_end_date_text(value)?;
+    Ok(format!("{value}T00:00:00"))
+}
+
+fn contract_end_text(value: &str) -> Result<String, &'static str> {
+    let value = validate_contract_end_date_text(value)?;
+    Ok(format!("{value}T23:59:59"))
+}
+
+fn build_active_contract(
+    team_id: usize,
+    start_date: &str,
+    end_date: &str,
+    annual_salary: &str,
+    transfer_fee: &str,
+) -> Result<Contract, &'static str> {
+    validate_contract_dates(start_date, end_date)?;
+    let annual = validate_annual_salary(annual_salary)?;
+    let transfer = transfer_fee
+        .parse::<f64>()
+        .map_err(|_| "INVALID_TRANSFER_FEE")?;
+    if !transfer.is_finite() || transfer < 0.0 {
+        return Err("TRANSFER_FEE_OUT_OF_RANGE");
+    }
+
+    let weekly_text = (annual / 52.0).to_string();
+    let start_text = contract_start_text(start_date)?;
+    let end_text = contract_end_text(end_date)?;
+
+    Ok(Contract::InContract {
+        team_id,
+        start_date: start_text.parse().map_err(|_| "INVALID_CONTRACT_DATE")?,
+        end_date: end_text.parse().map_err(|_| "INVALID_CONTRACT_DATE")?,
+        weekly_salary: weekly_text.parse().map_err(|_| "SALARY_TYPE_ERROR")?,
+        transfer_fee: transfer.to_string().parse().map_err(|_| "TRANSFER_FEE_TYPE_ERROR")?,
+        incentives: Vec::new(),
+        transfer_requests: Vec::new(),
+        recruit_requests: Vec::new(),
+    })
+}
+
+fn apply_active_contract_fields(
+    contract: &mut Contract,
+    new_team_id: usize,
+    start_date: &str,
+    end_date: &str,
+    annual_salary: &str,
+    transfer_fee: &str,
+) -> Result<(), &'static str> {
+    validate_contract_dates(start_date, end_date)?;
+    let annual = validate_annual_salary(annual_salary)?;
+    let transfer = transfer_fee
+        .parse::<f64>()
+        .map_err(|_| "INVALID_TRANSFER_FEE")?;
+    if !transfer.is_finite() || transfer < 0.0 {
+        return Err("TRANSFER_FEE_OUT_OF_RANGE");
+    }
+
+    if matches!(contract, Contract::FreeAgent { .. }) {
+        *contract = build_active_contract(
+            new_team_id,
+            start_date,
+            end_date,
+            annual_salary,
+            transfer_fee,
+        )?;
+        return Ok(());
+    }
+
+    let start_text = contract_start_text(start_date)?;
+    let end_text = contract_end_text(end_date)?;
+    let weekly_text = (annual / 52.0).to_string();
+
+    match contract {
+        Contract::InContract {
+            team_id,
+            start_date: current_start_date,
+            end_date: current_end_date,
+            weekly_salary,
+            transfer_fee: current_transfer_fee,
+            transfer_requests,
+            recruit_requests,
+            ..
+        } => {
+            let team_changed = *team_id != new_team_id;
+            *team_id = new_team_id;
+            *current_start_date = start_text
+                .parse()
+                .map_err(|_| "INVALID_CONTRACT_DATE")?;
+            *current_end_date = end_text
+                .parse()
+                .map_err(|_| "INVALID_CONTRACT_DATE")?;
+            *weekly_salary = weekly_text
+                .parse()
+                .map_err(|_| "SALARY_TYPE_ERROR")?;
+            *current_transfer_fee = transfer
+                .to_string()
+                .parse()
+                .map_err(|_| "TRANSFER_FEE_TYPE_ERROR")?;
+
+            if team_changed {
+                transfer_requests.clear();
+                recruit_requests.clear();
+            }
+            Ok(())
+        }
+        Contract::FreeAgent { .. } => unreachable!(),
+    }
+}
+
+fn parse_contract_bool(value: &str) -> Result<bool, &'static str> {
+    match value {
+        "1" => Ok(true),
+        "0" => Ok(false),
+        _ => Err("INVALID_BOOLEAN"),
+    }
+}
+
+fn parse_squad_status(value: &str) -> Result<SquadStatus, &'static str> {
+    match value {
+        "Core" => Ok(SquadStatus::Core),
+        "Important" => Ok(SquadStatus::Important),
+        "General" => Ok(SquadStatus::General),
+        "Sub" => Ok(SquadStatus::Sub),
+        _ => Err("INVALID_SQUAD_STATUS"),
+    }
+}
+
+fn validate_contract_bonus(value: &str) -> Result<(), &'static str> {
+    let bonus = value.parse::<f64>().map_err(|_| "INVALID_CONTRACT_BONUS")?;
+    if !bonus.is_finite() || bonus < 0.0 {
+        return Err("CONTRACT_BONUS_OUT_OF_RANGE");
+    }
+    Ok(())
+}
+
+fn validate_player_contract_extras(values: &PlayerContractValue) -> Result<(), &'static str> {
+    let _ = parse_squad_status(&values.squad_status)?;
+    if values.pog_enabled {
+        validate_contract_bonus(&values.pog_bonus)?;
+    }
+    if values.league_enabled {
+        validate_contract_bonus(&values.league_bonus)?;
+        let rank = values
+            .league_rank
+            .parse::<usize>()
+            .map_err(|_| "INVALID_LEAGUE_RANK")?;
+        if !(1..=10).contains(&rank) {
+            return Err("INVALID_LEAGUE_RANK");
+        }
+    }
+    if values.match_enabled {
+        validate_contract_bonus(&values.match_bonus)?;
+    }
+    if values.win_enabled {
+        validate_contract_bonus(&values.win_bonus)?;
+    }
+    Ok(())
+}
+
+fn build_player_incentives(values: &PlayerContractValue) -> Result<Vec<Incentive>, &'static str> {
+    validate_player_contract_extras(values)?;
+    let mut incentives = Vec::new();
+    if values.pog_enabled {
+        incentives.push(Incentive::OnPog {
+            bonus: values.pog_bonus.parse().map_err(|_| "INVALID_CONTRACT_BONUS")?,
+        });
+    }
+    if values.league_enabled {
+        incentives.push(Incentive::OnLeagueRank {
+            bonus: values.league_bonus.parse().map_err(|_| "INVALID_CONTRACT_BONUS")?,
+            rank: values.league_rank.parse().map_err(|_| "INVALID_LEAGUE_RANK")?,
+        });
+    }
+    if values.match_enabled {
+        incentives.push(Incentive::OnMatch {
+            bonus: values.match_bonus.parse().map_err(|_| "INVALID_CONTRACT_BONUS")?,
+            match_id: 0,
+        });
+    }
+    if values.win_enabled {
+        incentives.push(Incentive::OnWin {
+            bonus: values.win_bonus.parse().map_err(|_| "INVALID_CONTRACT_BONUS")?,
+        });
+    }
+    Ok(incentives)
+}
+
+fn apply_player_contract_values(
+    athlete: &mut Athlete,
+    values: &PlayerContractValue,
+) -> Result<(), &'static str> {
+    apply_active_contract_fields(
+        &mut athlete.contract,
+        values.team_id,
+        &values.start_date,
+        &values.end_date,
+        &values.annual_salary,
+        &values.transfer_fee,
+    )?;
+
+    athlete.squad_status = parse_squad_status(&values.squad_status)?;
+    let new_incentives = build_player_incentives(values)?;
+    match &mut athlete.contract {
+        Contract::InContract { incentives, .. } => {
+            *incentives = new_incentives;
+            Ok(())
+        }
         Contract::FreeAgent { .. } => Err("PLAYER_FREE_AGENT"),
     }
+}
+
+fn player_contract_payload(athlete_id: usize, values: &PlayerContractValue) -> Vec<u8> {
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        athlete_id,
+        values.team_id,
+        values.start_date,
+        values.end_date,
+        values.annual_salary,
+        values.transfer_fee,
+        values.squad_status,
+        if values.pog_enabled { 1 } else { 0 },
+        values.pog_bonus,
+        if values.league_enabled { 1 } else { 0 },
+        values.league_bonus,
+        values.league_rank,
+        if values.match_enabled { 1 } else { 0 },
+        values.match_bonus,
+        if values.win_enabled { 1 } else { 0 },
+        values.win_bonus,
+    )
+    .into_bytes()
+}
+
+fn parse_server_player_contract(
+    payload: &[u8],
+) -> Result<(usize, PlayerContractValue), &'static str> {
+    let text = std::str::from_utf8(payload).map_err(|_| "INVALID_PAYLOAD")?;
+    let mut parts = text.split('|');
+    let athlete_id = parse_usize(parts.next())?;
+    let values = PlayerContractValue {
+        team_id: parse_usize(parts.next())?,
+        start_date: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        end_date: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        annual_salary: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        transfer_fee: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        squad_status: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        pog_enabled: parse_contract_bool(parts.next().ok_or("MISSING_VALUE")?)?,
+        pog_bonus: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        league_enabled: parse_contract_bool(parts.next().ok_or("MISSING_VALUE")?)?,
+        league_bonus: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        league_rank: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        match_enabled: parse_contract_bool(parts.next().ok_or("MISSING_VALUE")?)?,
+        match_bonus: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        win_enabled: parse_contract_bool(parts.next().ok_or("MISSING_VALUE")?)?,
+        win_bonus: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+    };
+    validate_contract_dates(&values.start_date, &values.end_date)?;
+    validate_annual_salary(&values.annual_salary)?;
+    let transfer = values
+        .transfer_fee
+        .parse::<f64>()
+        .map_err(|_| "INVALID_TRANSFER_FEE")?;
+    if !transfer.is_finite() || transfer < 0.0 {
+        return Err("TRANSFER_FEE_OUT_OF_RANGE");
+    }
+    validate_player_contract_extras(&values)?;
+    Ok((athlete_id, values))
+}
+
+fn write_player_contract(
+    scene: &mut Scene,
+    athlete_id: usize,
+    values: PlayerContractValue,
+) -> Result<PlayerSnapshot, &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    {
+        let db = data.db();
+        if db.teams.get(&values.team_id).is_none() {
+            return Err("TEAM_NOT_FOUND");
+        }
+        if db.athletes.get(&athlete_id).is_none() {
+            return Err("PLAYER_NOT_FOUND");
+        }
+    }
+
+    if !data.send_mod_command(
+        MOD_ID,
+        "set_player_contract",
+        player_contract_payload(athlete_id, &values),
+    ) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+
+    let mut db = data.db_mut();
+    let Some(athlete) = db.athletes.get_mut(&athlete_id) else {
+        return Err("PLAYER_NOT_FOUND");
+    };
+    apply_player_contract_values(athlete, &values)?;
+
+    // Return the exact client-side object we just edited. Re-reading after
+    // dropping the guard can race a server snapshot and hide a successful
+    // local write behind the previous contract values.
+    let snapshot = snapshot_from_athlete(athlete_id, athlete);
+    if snapshot.contract_team_id != values.team_id.to_string()
+        || !snapshot.contract_start_date.starts_with(&values.start_date)
+        || !snapshot.contract_end_date.starts_with(&values.end_date)
+    {
+        return Err("CONTRACT_WRITE_NOT_APPLIED");
+    }
+    Ok(snapshot)
+}
+
+fn apply_player_contract_server(
+    ctx: &mut ServerModContext,
+    athlete_id: usize,
+    values: &PlayerContractValue,
+) -> Result<(), &'static str> {
+    if ctx.database.teams.get(values.team_id).is_none() {
+        return Err("TEAM_NOT_FOUND");
+    }
+    let Some(athlete) = ctx.database.athletes.get_mut(athlete_id) else {
+        return Err("PLAYER_NOT_FOUND");
+    };
+    apply_player_contract_values(athlete, values)?;
+    if let Ok(mut overrides) = contract_end_overrides().lock() {
+        overrides.remove(&athlete_id);
+    }
+    Ok(())
+}
+
+fn staff_contract_payload(staff_id: usize, values: &StaffContractValue) -> Vec<u8> {
+    format!(
+        "{}|{}|{}|{}|{}",
+        staff_id,
+        values.team_id,
+        values.start_date,
+        values.end_date,
+        values.annual_salary,
+    )
+    .into_bytes()
+}
+
+fn parse_server_staff_contract(
+    payload: &[u8],
+) -> Result<(usize, StaffContractValue), &'static str> {
+    let text = std::str::from_utf8(payload).map_err(|_| "INVALID_PAYLOAD")?;
+    let mut parts = text.split('|');
+    let staff_id = parse_usize(parts.next())?;
+    let values = StaffContractValue {
+        team_id: parse_usize(parts.next())?,
+        start_date: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        end_date: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        annual_salary: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+    };
+    validate_contract_dates(&values.start_date, &values.end_date)?;
+    validate_annual_salary(&values.annual_salary)?;
+    Ok((staff_id, values))
+}
+
+fn write_staff_contract(
+    scene: &mut Scene,
+    staff_id: usize,
+    values: StaffContractValue,
+) -> Result<StaffSnapshot, &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    {
+        let db = data.db();
+        if db.teams.get(&values.team_id).is_none() {
+            return Err("TEAM_NOT_FOUND");
+        }
+        if db.staffs.get(&staff_id).is_none() {
+            return Err("STAFF_NOT_FOUND");
+        }
+    }
+
+    if !data.send_mod_command(
+        MOD_ID,
+        "set_staff_contract",
+        staff_contract_payload(staff_id, &values),
+    ) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+
+    let mut db = data.db_mut();
+    let Some(staff) = db.staffs.get_mut(&staff_id) else {
+        return Err("STAFF_NOT_FOUND");
+    };
+    apply_active_contract_fields(
+        &mut staff.contract,
+        values.team_id,
+        &values.start_date,
+        &values.end_date,
+        &values.annual_salary,
+        "0",
+    )?;
+    drop(db);
+
+    let snapshot = read_staff(scene, staff_id)?;
+    if snapshot.contract_team_id != values.team_id.to_string()
+        || !snapshot.contract_start_date.starts_with(&values.start_date)
+        || !snapshot.contract_end_date.starts_with(&values.end_date)
+    {
+        return Err("CONTRACT_WRITE_NOT_APPLIED");
+    }
+    Ok(snapshot)
+}
+
+fn apply_staff_contract_server(
+    ctx: &mut ServerModContext,
+    staff_id: usize,
+    values: &StaffContractValue,
+) -> Result<(), &'static str> {
+    if ctx.database.teams.get(values.team_id).is_none() {
+        return Err("TEAM_NOT_FOUND");
+    }
+    let Some(staff) = ctx.database.staffs.get_mut(staff_id) else {
+        return Err("STAFF_NOT_FOUND");
+    };
+    apply_active_contract_fields(
+        &mut staff.contract,
+        values.team_id,
+        &values.start_date,
+        &values.end_date,
+        &values.annual_salary,
+        "0",
+    )?;
+    if let Ok(mut overrides) = staff_contract_end_overrides().lock() {
+        overrides.remove(&staff_id);
+    }
+    Ok(())
 }
 
 fn validate_annual_salary(value: &str) -> Result<f64, &'static str> {
@@ -830,6 +2721,7 @@ fn read_player(scene: &mut Scene, athlete_id: usize) -> Result<PlayerSnapshot, &
     };
 
     let stat = &athlete.stat;
+    let (incentive_pog_bonus, incentive_league_bonus, incentive_league_rank, incentive_match_bonus, incentive_win_bonus) = incentive_values_raw(athlete);
 
     Ok(PlayerSnapshot {
         id: athlete_id,
@@ -853,9 +2745,20 @@ fn read_player(scene: &mut Scene, athlete_id: usize) -> Result<PlayerSnapshot, &
         support: stat.support.to_string(),
         potential: athlete.hidden.potential.to_string(),
         annual_salary: annual_salary_raw(athlete),
+        weekly_salary: weekly_salary_raw(athlete),
+        contract_team_id: contract_team_id_raw(athlete),
+        contract_start_date: contract_start_date_raw(athlete),
         contract_end_date: contract_end_date_raw(athlete),
+        transfer_fee: transfer_fee_raw(athlete),
+        squad_status: squad_status_raw(athlete),
+        incentive_pog_bonus,
+        incentive_league_bonus,
+        incentive_league_rank,
+        incentive_match_bonus,
+        incentive_win_bonus,
         primary_region: primary_region_raw(athlete),
         communication_raw: communication_raw(athlete),
+        communication_xp_raw: communication_xp_raw(athlete),
     })
 }
 
@@ -932,6 +2835,7 @@ fn apply_stats_to_athlete(
 
 fn snapshot_from_athlete(athlete_id: usize, athlete: &Athlete) -> PlayerSnapshot {
     let stat = &athlete.stat;
+    let (incentive_pog_bonus, incentive_league_bonus, incentive_league_rank, incentive_match_bonus, incentive_win_bonus) = incentive_values_raw(athlete);
     PlayerSnapshot {
         id: athlete_id,
         name: athlete.name.to_string(),
@@ -954,9 +2858,20 @@ fn snapshot_from_athlete(athlete_id: usize, athlete: &Athlete) -> PlayerSnapshot
         support: stat.support.to_string(),
         potential: athlete.hidden.potential.to_string(),
         annual_salary: annual_salary_raw(athlete),
+        weekly_salary: weekly_salary_raw(athlete),
+        contract_team_id: contract_team_id_raw(athlete),
+        contract_start_date: contract_start_date_raw(athlete),
         contract_end_date: contract_end_date_raw(athlete),
+        transfer_fee: transfer_fee_raw(athlete),
+        squad_status: squad_status_raw(athlete),
+        incentive_pog_bonus,
+        incentive_league_bonus,
+        incentive_league_rank,
+        incentive_match_bonus,
+        incentive_win_bonus,
         primary_region: primary_region_raw(athlete),
         communication_raw: communication_raw(athlete),
+        communication_xp_raw: communication_xp_raw(athlete),
     }
 }
 
@@ -1262,7 +3177,7 @@ fn parse_server_player_contract_end(
 }
 
 fn validate_player_communication(values: PlayerCommunicationValue) -> Result<(), &'static str> {
-    if values.level < 0 {
+    if values.level > 100 {
         return Err("COMMUNICATION_OUT_OF_RANGE");
     }
     Ok(())
@@ -1278,12 +3193,9 @@ fn apply_communication_to_athlete(
 ) -> Result<(), &'static str> {
     validate_player_communication(values)?;
     if values.level == 0 {
-        athlete.training_exp.language_by_region.remove(&values.region_id);
+        athlete.stat.language.remove(&values.region_id);
     } else {
-        athlete
-            .training_exp
-            .language_by_region
-            .insert(values.region_id, values.level);
+        athlete.stat.language.insert(values.region_id, values.level);
     }
     Ok(())
 }
@@ -1322,7 +3234,7 @@ fn parse_server_player_communication(
     let athlete_id = parse_usize(parts.next())?;
     let values = PlayerCommunicationValue {
         region_id: parse_usize(parts.next())?,
-        level: parts.next().ok_or("MISSING_VALUE")?.parse::<i32>().map_err(|_| "INVALID_COMMUNICATION")?,
+        level: parts.next().ok_or("MISSING_VALUE")?.parse::<usize>().map_err(|_| "INVALID_COMMUNICATION")?,
     };
     validate_player_communication(values)?;
     Ok((athlete_id, values))
@@ -1341,7 +3253,7 @@ fn apply_communication_max_to_athlete(athlete: &mut Athlete, region_ids: &[usize
     let primary_region = athlete.get_primary_region();
     for region_id in region_ids {
         if Some(*region_id) != primary_region {
-            athlete.training_exp.language_by_region.insert(*region_id, 100);
+            athlete.stat.language.insert(*region_id, 100);
         }
     }
 }
@@ -1601,9 +3513,114 @@ fn process_game_requests(scene: &mut Scene) {
                 };
                 let _ = reply.send(response);
             }
+            GameRequest::GetStaffs { reply } => {
+                let response = match read_staffs(scene) {
+                    Ok(staffs) => response_ok_staffs(&staffs),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::GetStaff { staff_id, reply } => {
+                let response = match read_staff(scene, staff_id) {
+                    Ok(staff) => response_ok_staff(staff),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::GetStaffContractProbe { staff_id, reply } => {
+                let response = match read_staff_contract_probe(scene, staff_id) {
+                    Ok(raw) => response_ok_staff_contract_probe(&raw),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::SetStaffStats {
+                staff_id,
+                values,
+                reply,
+            } => {
+                let response = match write_staff_stats(scene, staff_id, values) {
+                    Ok(()) => "OK|STAFF_STATS".to_string(),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::SetStaffSalary {
+                staff_id,
+                values,
+                reply,
+            } => {
+                let response = match write_staff_salary(scene, staff_id, values) {
+                    Ok(()) => "OK|STAFF_SALARY".to_string(),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::SetStaffContractEnd {
+                staff_id,
+                values,
+                reply,
+            } => {
+                let response = match write_staff_contract_end(scene, staff_id, values) {
+                    Ok(staff) => response_ok_staff(staff),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::SetStaffContract {
+                staff_id,
+                values,
+                reply,
+            } => {
+                let response = match write_staff_contract(scene, staff_id, values) {
+                    Ok(staff) => response_ok_staff(staff),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::SetStaffCommunication {
+                staff_id,
+                values,
+                reply,
+            } => {
+                let response = match write_staff_communication(scene, staff_id, values) {
+                    Ok(()) => "OK|STAFF_COMMUNICATION".to_string(),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
             GameRequest::GetTeams { reply } => {
                 let response = match read_teams(scene) {
                     Ok(teams) => response_ok_teams(&teams),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::GetContractDefaults {
+                entity,
+                team_id,
+                reply,
+            } => {
+                let response = match read_contract_defaults(scene, entity, team_id) {
+                    Ok(values) => response_ok_contract_defaults(&values),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::MoveStaffToTeam {
+                staff_id,
+                team_id,
+                reply,
+            } => {
+                let response = match move_staff_to_team_client(scene, staff_id, team_id) {
+                    Ok(()) => "OK|MOVE_STAFF".to_string(),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::SetStaffFreeAgent { staff_id, reply } => {
+                let response = match set_staff_free_agent_client(scene, staff_id) {
+                    Ok(()) => "OK|STAFF_FREE_AGENT".to_string(),
                     Err(reason) => format!("ERR|{reason}"),
                 };
                 let _ = reply.send(response);
@@ -1619,9 +3636,46 @@ fn process_game_requests(scene: &mut Scene) {
                 };
                 let _ = reply.send(response);
             }
+            GameRequest::SetPlayerFreeAgent { athlete_id, reply } => {
+                let response = match set_player_free_agent_client(scene, athlete_id) {
+                    Ok(()) => "OK|PLAYER_FREE_AGENT".to_string(),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
             GameRequest::GetPlayer { athlete_id, reply } => {
                 let response = match read_player(scene, athlete_id) {
                     Ok(player) => response_ok_player(player),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::GetPlayerContractProbe { athlete_id, reply } => {
+                let response = match read_player_contract_probe(scene, athlete_id) {
+                    Ok(raw) => response_ok_player_contract_probe(&raw),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::GetChampionMasteryProbe { athlete_id, reply } => {
+                let response = match read_champion_mastery_probe(scene, athlete_id) {
+                    Ok((mastery_state, available_champions)) => {
+                        response_ok_champion_mastery_probe(
+                            &mastery_state,
+                            &available_champions,
+                        )
+                    }
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::SetChampionMastery {
+                athlete_id,
+                values,
+                reply,
+            } => {
+                let response = match write_champion_mastery(scene, athlete_id, values) {
+                    Ok(count) => format!("OK|CHAMPION_MASTERY|{count}"),
                     Err(reason) => format!("ERR|{reason}"),
                 };
                 let _ = reply.send(response);
@@ -1676,6 +3730,17 @@ fn process_game_requests(scene: &mut Scene) {
                 reply,
             } => {
                 let response = match write_player_contract_end(scene, athlete_id, values) {
+                    Ok(player) => response_ok_player(player),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::SetPlayerContract {
+                athlete_id,
+                values,
+                reply,
+            } => {
+                let response = match write_player_contract(scene, athlete_id, values) {
                     Ok(player) => response_ok_player(player),
                     Err(reason) => format!("ERR|{reason}"),
                 };
@@ -1813,7 +3878,190 @@ fn handle_client(mut stream: TcpStream, request_tx: &Sender<GameRequest>) {
             }
         }
         "GET_PLAYERS" => send_game_request(request_tx, |reply| GameRequest::GetPlayers { reply }),
+        "GET_STAFFS" => send_game_request(request_tx, |reply| GameRequest::GetStaffs { reply }),
+        "GET_STAFF" => {
+            let staff_id = match parse_usize(parts.next()) {
+                Ok(value) => value,
+                Err(reason) => {
+                    let _ = writeln!(stream, "ERR|{reason}");
+                    let _ = stream.flush();
+                    return;
+                }
+            };
+            send_game_request(request_tx, |reply| GameRequest::GetStaff { staff_id, reply })
+        }
+        "GET_STAFF_CONTRACT_PROBE" => match parse_usize(parts.next()) {
+            Ok(staff_id) => send_game_request(request_tx, |reply| {
+                GameRequest::GetStaffContractProbe { staff_id, reply }
+            }),
+            Err(reason) => format!("ERR|{reason}"),
+        },
+        "SET_STAFF_STATS" => {
+            let staff_id = match parse_usize(parts.next()) {
+                Ok(value) => value,
+                Err(reason) => {
+                    let _ = writeln!(stream, "ERR|{reason}");
+                    let _ = stream.flush();
+                    return;
+                }
+            };
+
+            let values = StaffStatValues {
+                banpick: parts.next().unwrap_or_default().to_string(),
+                strategy: parts.next().unwrap_or_default().to_string(),
+                negotiation: parts.next().unwrap_or_default().to_string(),
+                judge_ability: parts.next().unwrap_or_default().to_string(),
+                judge_potential: parts.next().unwrap_or_default().to_string(),
+                feedback: parts.next().unwrap_or_default().to_string(),
+                power_analysis: parts.next().unwrap_or_default().to_string(),
+                control_coaching: parts.next().unwrap_or_default().to_string(),
+                judgment_coaching: parts.next().unwrap_or_default().to_string(),
+                mental_coaching: parts.next().unwrap_or_default().to_string(),
+            };
+
+            match validate_staff_stats(&values) {
+                Ok(()) => send_game_request(request_tx, |reply| GameRequest::SetStaffStats {
+                    staff_id,
+                    values,
+                    reply,
+                }),
+                Err(reason) => format!("ERR|{reason}"),
+            }
+        }
+        "SET_STAFF_SALARY" => {
+            let staff_id = match parse_usize(parts.next()) {
+                Ok(value) => value,
+                Err(reason) => {
+                    let _ = writeln!(stream, "ERR|{reason}");
+                    let _ = stream.flush();
+                    return;
+                }
+            };
+            let values = StaffSalaryValue {
+                annual_salary: parts.next().unwrap_or_default().to_string(),
+            };
+            match validate_annual_salary(&values.annual_salary) {
+                Ok(_) => send_game_request(request_tx, |reply| GameRequest::SetStaffSalary {
+                    staff_id,
+                    values,
+                    reply,
+                }),
+                Err(reason) => format!("ERR|{reason}"),
+            }
+        }
+        "SET_STAFF_CONTRACT_END" => {
+            let staff_id = match parse_usize(parts.next()) {
+                Ok(value) => value,
+                Err(reason) => {
+                    let _ = writeln!(stream, "ERR|{reason}");
+                    let _ = stream.flush();
+                    return;
+                }
+            };
+            let end_date = parts.next().unwrap_or_default().to_string();
+            match validate_contract_end_date_text(&end_date) {
+                Ok(_) => send_game_request(request_tx, |reply| GameRequest::SetStaffContractEnd {
+                    staff_id,
+                    values: StaffContractEndValue { end_date },
+                    reply,
+                }),
+                Err(reason) => format!("ERR|{reason}"),
+            }
+        }
+        "SET_STAFF_CONTRACT" => {
+            let parsed: Result<(usize, StaffContractValue), &'static str> = (|| {
+                let staff_id = parse_usize(parts.next())?;
+                let values = StaffContractValue {
+                    team_id: parse_usize(parts.next())?,
+                    start_date: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+                    end_date: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+                    annual_salary: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+                };
+                validate_contract_dates(&values.start_date, &values.end_date)?;
+                validate_annual_salary(&values.annual_salary)?;
+                Ok((staff_id, values))
+            })();
+            match parsed {
+                Ok((staff_id, values)) => send_game_request(request_tx, |reply| {
+                    GameRequest::SetStaffContract { staff_id, values, reply }
+                }),
+                Err(reason) => format!("ERR|{reason}"),
+            }
+        }
+        "SET_STAFF_COMMUNICATION" => {
+            let staff_id = match parse_usize(parts.next()) {
+                Ok(value) => value,
+                Err(reason) => {
+                    let _ = writeln!(stream, "ERR|{reason}");
+                    let _ = stream.flush();
+                    return;
+                }
+            };
+            let values = match parse_staff_communication_entries(parts.next().unwrap_or_default()) {
+                Ok(values) => values,
+                Err(reason) => {
+                    let _ = writeln!(stream, "ERR|{reason}");
+                    let _ = stream.flush();
+                    return;
+                }
+            };
+            send_game_request(request_tx, |reply| GameRequest::SetStaffCommunication {
+                staff_id,
+                values,
+                reply,
+            })
+        }
         "GET_TEAMS" => send_game_request(request_tx, |reply| GameRequest::GetTeams { reply }),
+        "GET_CONTRACT_DEFAULTS" => {
+            let parsed: Result<(ContractDefaultsEntity, usize), &'static str> = (|| {
+                let entity = match parts.next().ok_or("MISSING_VALUE")? {
+                    "PLAYER" => ContractDefaultsEntity::Player,
+                    "STAFF" => ContractDefaultsEntity::Staff,
+                    _ => return Err("INVALID_CONTRACT_ENTITY"),
+                };
+                let team_id = parse_usize(parts.next())?;
+                Ok((entity, team_id))
+            })();
+            match parsed {
+                Ok((entity, team_id)) => send_game_request(request_tx, |reply| {
+                    GameRequest::GetContractDefaults {
+                        entity,
+                        team_id,
+                        reply,
+                    }
+                }),
+                Err(reason) => format!("ERR|{reason}"),
+            }
+        }
+        "MOVE_STAFF_TO_TEAM" => {
+            let staff_id = match parse_usize(parts.next()) {
+                Ok(value) => value,
+                Err(reason) => {
+                    let _ = writeln!(stream, "ERR|{reason}");
+                    let _ = stream.flush();
+                    return;
+                }
+            };
+            let team_id = match parse_usize(parts.next()) {
+                Ok(value) => value,
+                Err(reason) => {
+                    let _ = writeln!(stream, "ERR|{reason}");
+                    let _ = stream.flush();
+                    return;
+                }
+            };
+            send_game_request(request_tx, |reply| GameRequest::MoveStaffToTeam {
+                staff_id,
+                team_id,
+                reply,
+            })
+        }
+        "SET_STAFF_FREE_AGENT" => match parse_usize(parts.next()) {
+            Ok(staff_id) => send_game_request(request_tx, |reply| {
+                GameRequest::SetStaffFreeAgent { staff_id, reply }
+            }),
+            Err(reason) => format!("ERR|{reason}"),
+        },
         "MOVE_PLAYER_TO_TEAM" => {
             let athlete_id = match parse_usize(parts.next()) {
                 Ok(value) => value,
@@ -1837,6 +4085,12 @@ fn handle_client(mut stream: TcpStream, request_tx: &Sender<GameRequest>) {
                 reply,
             })
         }
+        "SET_PLAYER_FREE_AGENT" => match parse_usize(parts.next()) {
+            Ok(athlete_id) => send_game_request(request_tx, |reply| {
+                GameRequest::SetPlayerFreeAgent { athlete_id, reply }
+            }),
+            Err(reason) => format!("ERR|{reason}"),
+        },
         "GET_PLAYER" => match parse_usize(parts.next()) {
             Ok(athlete_id) => send_game_request(request_tx, |reply| GameRequest::GetPlayer {
                 athlete_id,
@@ -1844,6 +4098,64 @@ fn handle_client(mut stream: TcpStream, request_tx: &Sender<GameRequest>) {
             }),
             Err(reason) => format!("ERR|{reason}"),
         },
+        "GET_PLAYER_CONTRACT_PROBE" => match parse_usize(parts.next()) {
+            Ok(athlete_id) => send_game_request(request_tx, |reply| {
+                GameRequest::GetPlayerContractProbe { athlete_id, reply }
+            }),
+            Err(reason) => format!("ERR|{reason}"),
+        },
+        "GET_CHAMPION_MASTERY_PROBE" => match parse_usize(parts.next()) {
+            Ok(athlete_id) => send_game_request(request_tx, |reply| {
+                GameRequest::GetChampionMasteryProbe { athlete_id, reply }
+            }),
+            Err(reason) => format!("ERR|{reason}"),
+        },
+        "SET_CHAMPION_MASTERY" => {
+            let athlete_id = match parse_usize(parts.next()) {
+                Ok(value) => value,
+                Err(reason) => {
+                    let _ = writeln!(stream, "ERR|{reason}");
+                    let _ = stream.flush();
+                    return;
+                }
+            };
+
+            let entries = parts.next().unwrap_or_default();
+            let mut values = Vec::new();
+
+            for entry in entries.split(';').filter(|entry| !entry.trim().is_empty()) {
+                let Some((champion_id, mastery)) = entry.split_once(':') else {
+                    let _ = writeln!(stream, "ERR|INVALID_MASTERY_ENTRY");
+                    let _ = stream.flush();
+                    return;
+                };
+
+                let mastery = match mastery.parse::<u16>() {
+                    Ok(value) => value,
+                    Err(_) => {
+                        let _ = writeln!(stream, "ERR|INVALID_MASTERY");
+                        let _ = stream.flush();
+                        return;
+                    }
+                };
+
+                values.push(ChampionMasteryValue {
+                    champion_id: champion_id.to_string(),
+                    mastery,
+                });
+            }
+
+            match validate_champion_mastery_values(&values) {
+                Ok(()) => send_game_request(request_tx, |reply| {
+                    GameRequest::SetChampionMastery {
+                        athlete_id,
+                        values,
+                        reply,
+                    }
+                }),
+                Err(reason) => format!("ERR|{reason}"),
+            }
+        }
         "SET_PLAYER_STATS" => {
             let athlete_id = match parse_usize(parts.next()) {
                 Ok(value) => value,
@@ -1964,11 +4276,47 @@ fn handle_client(mut stream: TcpStream, request_tx: &Sender<GameRequest>) {
                 Err(reason) => format!("ERR|{reason}"),
             }
         }
+        "SET_PLAYER_CONTRACT" => {
+            let parsed: Result<(usize, PlayerContractValue), &'static str> = (|| {
+                let athlete_id = parse_usize(parts.next())?;
+                let values = PlayerContractValue {
+                    team_id: parse_usize(parts.next())?,
+                    start_date: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+                    end_date: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+                    annual_salary: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+                    transfer_fee: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+                    squad_status: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+                    pog_enabled: parse_contract_bool(parts.next().ok_or("MISSING_VALUE")?)?,
+                    pog_bonus: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+                    league_enabled: parse_contract_bool(parts.next().ok_or("MISSING_VALUE")?)?,
+                    league_bonus: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+                    league_rank: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+                    match_enabled: parse_contract_bool(parts.next().ok_or("MISSING_VALUE")?)?,
+                    match_bonus: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+                    win_enabled: parse_contract_bool(parts.next().ok_or("MISSING_VALUE")?)?,
+                    win_bonus: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+                };
+                validate_contract_dates(&values.start_date, &values.end_date)?;
+                validate_annual_salary(&values.annual_salary)?;
+                let transfer = values.transfer_fee.parse::<f64>().map_err(|_| "INVALID_TRANSFER_FEE")?;
+                if !transfer.is_finite() || transfer < 0.0 {
+                    return Err("TRANSFER_FEE_OUT_OF_RANGE");
+                }
+                validate_player_contract_extras(&values)?;
+                Ok((athlete_id, values))
+            })();
+            match parsed {
+                Ok((athlete_id, values)) => send_game_request(request_tx, |reply| {
+                    GameRequest::SetPlayerContract { athlete_id, values, reply }
+                }),
+                Err(reason) => format!("ERR|{reason}"),
+            }
+        }
         "SET_PLAYER_COMMUNICATION" => {
             let parsed: Result<(usize, PlayerCommunicationValue), &'static str> = (|| {
                 let athlete_id = parse_usize(parts.next())?;
                 let region_id = parse_usize(parts.next())?;
-                let level = parts.next().ok_or("MISSING_VALUE")?.parse::<i32>().map_err(|_| "INVALID_COMMUNICATION")?;
+                let level = parts.next().ok_or("MISSING_VALUE")?.parse::<usize>().map_err(|_| "INVALID_COMMUNICATION")?;
                 let values = PlayerCommunicationValue { region_id, level };
                 validate_player_communication(values)?;
                 Ok((athlete_id, values))
@@ -2069,6 +4417,8 @@ struct ModifierBridgeServer;
 impl ModServerExtension for ModifierBridgeServer {
     fn on_server_start(&self, _ctx: &mut ServerModContext) {
         clear_contract_end_overrides();
+        clear_staff_contract_end_overrides();
+        clear_active_contract_overrides();
 
         // Keep the two runtime toggle preferences across save/career loads. The
         // destination team is save-specific, so mark the team IDs stale; the client
@@ -2078,13 +4428,19 @@ impl ModServerExtension for ModifierBridgeServer {
     }
 
     fn before_management_tick(&self, ctx: &mut ServerModContext) {
+        enforce_active_player_contract_overrides(ctx, false);
+        enforce_active_staff_contract_overrides(ctx, false);
         enforce_contract_end_overrides(ctx, false);
+        enforce_staff_contract_end_overrides(ctx, false);
         force_transfer_request_success(ctx);
         clear_player_recruitment_cooldowns(ctx);
     }
 
     fn after_management_tick(&self, ctx: &mut ServerModContext) {
+        enforce_active_player_contract_overrides(ctx, true);
+        enforce_active_staff_contract_overrides(ctx, true);
         enforce_contract_end_overrides(ctx, true);
+        enforce_staff_contract_end_overrides(ctx, true);
         force_transfer_request_success(ctx);
         clear_player_recruitment_cooldowns(ctx);
     }
@@ -2144,11 +4500,120 @@ impl ModServerExtension for ModifierBridgeServer {
             return ModServerCommandResult::Handled;
         }
 
+        if command.command == "move_staff_to_team" {
+            let Ok((staff_id, team_id)) = parse_move_staff_payload(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+            let _ = move_staff_to_team_server(ctx, staff_id, team_id);
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "set_staff_free_agent" {
+            let Ok(staff_id) = parse_player_free_agent_payload(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+            let _ = set_staff_free_agent_server(ctx, staff_id);
+            return ModServerCommandResult::Handled;
+        }
+
         if command.command == "move_player_to_team" {
             let Ok((athlete_id, team_id)) = parse_move_player_payload(&command.payload) else {
                 return ModServerCommandResult::Handled;
             };
             let _ = move_player_to_team_server(ctx, athlete_id, team_id);
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "set_player_free_agent" {
+            let Ok(athlete_id) = parse_player_free_agent_payload(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+            let _ = set_player_free_agent_server(ctx, athlete_id);
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "set_champion_mastery" {
+            let Ok((athlete_id, values)) =
+                parse_server_champion_mastery(&command.payload)
+            else {
+                return ModServerCommandResult::Handled;
+            };
+
+            if let Some(athlete) = ctx.database.athletes.get_mut(athlete_id) {
+                let _ = apply_champion_mastery_to_athlete(athlete, &values);
+            }
+
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "set_staff_stats" {
+            let Ok((staff_id, values)) = parse_server_staff_stats(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+
+            if let Some(staff) = ctx.database.staffs.get_mut(staff_id) {
+                let stat = &mut staff.stat;
+                if let Ok(value) = parse_stat_value(&values.banpick) { stat.banpick = value; }
+                if let Ok(value) = parse_stat_value(&values.strategy) { stat.strategy = value; }
+                if let Ok(value) = parse_stat_value(&values.negotiation) { stat.negotiation = value; }
+                if let Ok(value) = parse_stat_value(&values.judge_ability) { stat.judge_ability = value; }
+                if let Ok(value) = parse_stat_value(&values.judge_potential) { stat.judge_potential = value; }
+                if let Ok(value) = parse_stat_value(&values.feedback) { stat.feedback = value; }
+                if let Ok(value) = parse_stat_value(&values.power_analysis) { stat.power_analysis = value; }
+                if let Ok(value) = parse_stat_value(&values.control_coaching) { stat.control_coaching = value; }
+                if let Ok(value) = parse_stat_value(&values.judgment_coaching) { stat.judgment_coaching = value; }
+                if let Ok(value) = parse_stat_value(&values.mental_coaching) { stat.mental_coaching = value; }
+            }
+
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "set_staff_salary" {
+            let Ok((staff_id, values)) = parse_server_staff_salary(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+            if let Some(staff) = ctx.database.staffs.get_mut(staff_id) {
+                let _ = apply_staff_salary_contract(&mut staff.contract, &values);
+            }
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "set_staff_contract_end" {
+            let Ok((staff_id, values)) = parse_server_staff_contract_end(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+            let applied = if let Some(staff) = ctx.database.staffs.get_mut(staff_id) {
+                apply_staff_contract_end(&mut staff.contract, &values).is_ok()
+            } else {
+                false
+            };
+            if applied {
+                queue_staff_contract_end_override(staff_id, values);
+            }
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "set_staff_contract" {
+            let Ok((staff_id, values)) = parse_server_staff_contract(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+            if apply_staff_contract_server(ctx, staff_id, &values).is_ok() {
+                queue_active_staff_contract_override(staff_id, values);
+            }
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "set_staff_communication" {
+            let Ok((staff_id, values)) = parse_server_staff_communication(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+            if let Some(staff) = ctx.database.staffs.get_mut(staff_id) {
+                for (region_id, value) in &values.entries {
+                    if let Ok(parsed) = value.to_string().parse() {
+                        staff.language.insert(*region_id, parsed);
+                    }
+                }
+            }
             return ModServerCommandResult::Handled;
         }
 
@@ -2227,6 +4692,16 @@ impl ModServerExtension for ModifierBridgeServer {
                 );
             }
 
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "set_player_contract" {
+            let Ok((athlete_id, values)) = parse_server_player_contract(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+            if apply_player_contract_server(ctx, athlete_id, &values).is_ok() {
+                queue_active_player_contract_override(athlete_id, values);
+            }
             return ModServerCommandResult::Handled;
         }
 

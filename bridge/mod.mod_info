@@ -3,11 +3,11 @@
   "dependencies": [
     {
       "mod_id": "base",
-      "version": ">=0.5.2"
+      "version": ">=0.5.3"
     }
   ],
   "description": "Shared local bridge for TFM2 Editor. Used by both Community and Development app builds.",
   "mod_id": "tfm2_modifier_bridge",
   "name": "TFM2 Editor Bridge",
-  "version": "0.2.17"
+  "version": "0.2.38"
 }
