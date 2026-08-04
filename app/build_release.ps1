@@ -28,4 +28,29 @@ New-Item -ItemType Directory -Force -Path $distDir | Out-Null
 $outputExe = Join-Path $distDir "tfm2_editor_$version.exe"
 Copy-Item -Force $sourceExe $outputExe
 
+# Community builds use the English locale embedded in the EXE. Only additional
+# languages are distributed beside it. Clean the destination first so an old
+# development en-US.json cannot accidentally leak into a release package.
+$localeSource = Join-Path $PSScriptRoot "locales"
+$localeDest = Join-Path $distDir "locales"
+if (Test-Path $localeDest) {
+    Remove-Item -Recurse -Force $localeDest
+}
+
+$additionalLocales = @()
+if (Test-Path $localeSource) {
+    $additionalLocales = @(
+        Get-ChildItem -Path $localeSource -Filter "*.json" -File |
+            Where-Object { $_.Name -ine "en-US.json" }
+    )
+}
+
+if ($additionalLocales.Count -gt 0) {
+    New-Item -ItemType Directory -Force -Path $localeDest | Out-Null
+    $additionalLocales | Copy-Item -Destination $localeDest -Force
+    Write-Host "Additional locales copied to: $localeDest"
+} else {
+    Write-Host "No external locales bundled. Community build uses embedded English only."
+}
+
 Write-Host "Community build successful: $outputExe"

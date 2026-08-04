@@ -12,7 +12,9 @@ use game_core::{Contract, Incentive, PaperState, SquadStatus};
 
 const MOD_ID: &str = "tfm2_modifier_bridge";
 const BRIDGE_ADDR: &str = "127.0.0.1:28452";
-const BRIDGE_VERSION: &str = "0.2.39";
+const BRIDGE_VERSION: &str = "0.2.43";
+const BRIDGE_PROTOCOL_VERSION: u32 = 4;
+const TFM2_TARGET_VERSION: &str = "0.5.3";
 
 #[derive(Debug, Clone, Copy)]
 struct EconomyValues {
@@ -69,6 +71,19 @@ struct StaffListEntry {
     age: String,
     team: String,
     role: String,
+    banpick: String,
+    strategy: String,
+    negotiation: String,
+    judge_ability: String,
+    judge_potential: String,
+    feedback: String,
+    power_analysis: String,
+    control_coaching: String,
+    judgment_coaching: String,
+    mental_coaching: String,
+    annual_salary: String,
+    contract_end_date: String,
+    communication: String,
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +155,15 @@ struct TeamListEntry {
     manager_name: String,
     league_id: usize,
     is_player_team: bool,
+    roster_size: usize,
+    staff_count: usize,
+    roster_rating: Option<f64>,
+    merchandise_facility_grade: String,
+    stadium_grade: String,
+    training_facility_grade: String,
+    total_balance: f64,
+    transfer_budget: f64,
+    salary_budget: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -703,6 +727,19 @@ fn response_ok_staffs(staffs: &[StaffListEntry]) -> String {
                 hex_encode(&staff.age),
                 hex_encode(&staff.team),
                 hex_encode(&staff.role),
+                hex_encode(&staff.banpick),
+                hex_encode(&staff.strategy),
+                hex_encode(&staff.negotiation),
+                hex_encode(&staff.judge_ability),
+                hex_encode(&staff.judge_potential),
+                hex_encode(&staff.feedback),
+                hex_encode(&staff.power_analysis),
+                hex_encode(&staff.control_coaching),
+                hex_encode(&staff.judgment_coaching),
+                hex_encode(&staff.mental_coaching),
+                hex_encode(&staff.annual_salary),
+                hex_encode(&staff.contract_end_date),
+                hex_encode(&staff.communication),
             ]
             .join(":")
         })
@@ -754,12 +791,23 @@ fn response_ok_teams(teams: &[TeamListEntry]) -> String {
     let payload = teams
         .iter()
         .map(|team| format!(
-            "{}:{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
             team.id,
             hex_encode(&team.display_name),
             hex_encode(&team.manager_name),
             team.league_id,
-            if team.is_player_team { 1 } else { 0 }
+            if team.is_player_team { 1 } else { 0 },
+            team.roster_size,
+            team.staff_count,
+            team.roster_rating
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            hex_encode(&team.merchandise_facility_grade),
+            hex_encode(&team.stadium_grade),
+            hex_encode(&team.training_facility_grade),
+            team.total_balance,
+            team.transfer_budget,
+            team.salary_budget,
         ))
         .collect::<Vec<_>>()
         .join(";");
@@ -1016,12 +1064,49 @@ fn read_staffs(scene: &mut Scene) -> Result<Vec<StaffListEntry>, &'static str> {
                 Contract::FreeAgent { .. } => "Free Agent".to_string(),
             };
 
+            let (annual_salary, contract_end_date) = match &staff.contract {
+                Contract::InContract {
+                    weekly_salary,
+                    end_date,
+                    ..
+                } => (
+                    weekly_salary
+                        .to_string()
+                        .parse::<f64>()
+                        .map(|weekly| (weekly * 52.0).to_string())
+                        .unwrap_or_default(),
+                    end_date.to_string(),
+                ),
+                Contract::FreeAgent { .. } => (String::new(), String::new()),
+            };
+
+            let communication = staff
+                .language
+                .iter()
+                .filter_map(|(_, value)| value.to_string().parse::<f64>().ok())
+                .max_by(|left, right| left.total_cmp(right))
+                .map(|value| value.to_string())
+                .unwrap_or_default();
+
             StaffListEntry {
                 id: *id,
                 name: staff.name.to_string(),
                 age: staff.age.to_string(),
                 team,
                 role: format!("{:?}", staff.role),
+                banpick: staff.stat.banpick.to_string(),
+                strategy: staff.stat.strategy.to_string(),
+                negotiation: staff.stat.negotiation.to_string(),
+                judge_ability: staff.stat.judge_ability.to_string(),
+                judge_potential: staff.stat.judge_potential.to_string(),
+                feedback: staff.stat.feedback.to_string(),
+                power_analysis: staff.stat.power_analysis.to_string(),
+                control_coaching: staff.stat.control_coaching.to_string(),
+                judgment_coaching: staff.stat.judgment_coaching.to_string(),
+                mental_coaching: staff.stat.mental_coaching.to_string(),
+                annual_salary,
+                contract_end_date,
+                communication,
             }
         })
         .collect::<Vec<_>>();
@@ -1494,12 +1579,78 @@ fn read_teams(scene: &mut Scene) -> Result<Vec<TeamListEntry>, &'static str> {
     let mut teams = db
         .teams
         .iter()
-        .map(|(id, team)| TeamListEntry {
-            id: *id,
-            display_name: db.team_display_name(team).to_string(),
-            manager_name: team.manager_name.to_string(),
-            league_id: team.league_id,
-            is_player_team: *id == player_team_id,
+        .map(|(id, team)| {
+            let roster = db
+                .athletes
+                .iter()
+                .filter_map(|(_, athlete)| {
+                    if matches!(
+                        &athlete.contract,
+                        Contract::InContract { team_id, .. } if *team_id == *id
+                    ) {
+                        Some(athlete)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            let roster_size = roster.len();
+            let staff_count = db
+                .staffs
+                .iter()
+                .filter(|(_, staff)| {
+                    matches!(
+                        &staff.contract,
+                        Contract::InContract { team_id, .. } if *team_id == *id
+                    )
+                })
+                .count();
+
+            let roster_rating = if roster.is_empty() {
+                None
+            } else {
+                let total = roster
+                    .iter()
+                    .map(|athlete| {
+                        [
+                            athlete.stat.last_hit.to_string(),
+                            athlete.stat.skill_avoid.to_string(),
+                            athlete.stat.skill_hit.to_string(),
+                            athlete.stat.control_speed.to_string(),
+                            athlete.stat.positioning.to_string(),
+                            athlete.stat.judgement.to_string(),
+                            athlete.stat.mental.to_string(),
+                            athlete.stat.concentration.to_string(),
+                            athlete.stat.order.to_string(),
+                            athlete.stat.roaming.to_string(),
+                            athlete.stat.aggressive.to_string(),
+                            athlete.stat.ego.to_string(),
+                        ]
+                        .iter()
+                        .filter_map(|value| value.parse::<f64>().ok())
+                        .sum::<f64>()
+                            / 12.0
+                    })
+                    .sum::<f64>();
+                Some(total / roster_size as f64)
+            };
+
+            TeamListEntry {
+                id: *id,
+                display_name: db.team_display_name(team).to_string(),
+                manager_name: team.manager_name.to_string(),
+                league_id: team.league_id,
+                is_player_team: *id == player_team_id,
+                roster_size,
+                staff_count,
+                roster_rating,
+                merchandise_facility_grade: format!("{:?}", team.merchandise_facility_grade),
+                stadium_grade: format!("{:?}", team.stadium.grade),
+                training_facility_grade: format!("{:?}", team.training_facility_grade),
+                total_balance: team.total_balance,
+                transfer_budget: team.transfer_budget,
+                salary_budget: team.salary_budget,
+            }
         })
         .collect::<Vec<_>>();
 
@@ -3859,7 +4010,9 @@ fn handle_client(mut stream: TcpStream, request_tx: &Sender<GameRequest>) {
     let command = parts.next().unwrap_or_default();
 
     let response = match command {
-        "PING" => format!("OK|PONG|{BRIDGE_VERSION}"),
+        "PING" => format!(
+            "OK|PONG|{BRIDGE_VERSION}|{BRIDGE_PROTOCOL_VERSION}|{TFM2_TARGET_VERSION}"
+        ),
         "GET_ECONOMY" => send_game_request(request_tx, |reply| GameRequest::GetEconomy { reply }),
         "SET_ECONOMY" => {
             let parsed: Result<EconomyValues, &'static str> = (|| {

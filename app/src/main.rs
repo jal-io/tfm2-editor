@@ -1,19 +1,100 @@
 #![cfg_attr(all(windows, not(feature = "dev")), windows_subsystem = "windows")]
 
+use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::Duration;
 
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
+use serde::{Deserialize, Serialize};
+
+mod currency;
+mod localization;
+
+use currency::{
+    format_display_amount, format_internal_amount, format_internal_for_command,
+    parse_display_amount, parse_display_to_internal,
+};
+use localization::Localization;
 
 const BRIDGE_ADDR: &str = "127.0.0.1:28452";
+const REQUIRED_BRIDGE_VERSION: &str = "0.2.43";
+const BRIDGE_PROTOCOL_VERSION: u32 = 4;
+const MINIMUM_SAFE_BRIDGE_PROTOCOL: u32 = 1;
+const MAXIMUM_SAFE_BRIDGE_PROTOCOL: u32 = BRIDGE_PROTOCOL_VERSION;
+const SUPPORTED_TFM2_VERSION: &str = "0.5.3";
+const GITHUB_RELEASES_URL: &str = "https://github.com/jal-io/tfm2-editor/releases/latest";
+const STEAM_WORKSHOP_URL: &str =
+    "https://steamcommunity.com/sharedfiles/filedetails/?id=3775240765";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompatibilitySeverity {
+    Warning,
+    NotSupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompatibilityAction {
+    BridgeUpdate,
+    EditorUpdate,
+    VerifyInstallation,
+    GameVersionMismatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompatibilityReason {
+    VersionMismatch,
+    ProtocolMismatch,
+    UnverifiedLegacyBridge,
+    GameTargetMismatch,
+    KnownUnsupportedCombination,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum UnsupportedRequirement {
+    Bridge(&'static str),
+    Editor(&'static str),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct UnsupportedBridgeRule {
+    minimum_bridge_version: Option<&'static str>,
+    maximum_bridge_version: Option<&'static str>,
+    requirement: UnsupportedRequirement,
+}
+
+const KNOWN_UNSUPPORTED_BRIDGE_RULES: &[UnsupportedBridgeRule] = &[
+    UnsupportedBridgeRule {
+        minimum_bridge_version: None,
+        maximum_bridge_version: Some("0.2.30"),
+        requirement: UnsupportedRequirement::Bridge(REQUIRED_BRIDGE_VERSION),
+    },
+    UnsupportedBridgeRule {
+        minimum_bridge_version: Some("0.2.46"),
+        maximum_bridge_version: None,
+        requirement: UnsupportedRequirement::Editor("0.4.2"),
+    },
+];
+
+#[derive(Debug, Clone)]
+struct CompatibilityIssue {
+    severity: CompatibilitySeverity,
+    action: CompatibilityAction,
+    reason: CompatibilityReason,
+    installed_bridge_version: String,
+    bridge_tfm2_target: Option<String>,
+    required_bridge_version: Option<String>,
+    required_editor_version: Option<String>,
+}
 #[cfg(feature = "dev")]
-const APP_VERSION: &str = "0.3.9b";
+const APP_VERSION: &str = "0.4.8a";
 #[cfg(not(feature = "dev"))]
-const APP_VERSION: &str = "0.3.1";
+const APP_VERSION: &str = "0.4.0";
 
 #[cfg(feature = "dev")]
 fn display_version() -> String {
@@ -35,134 +116,257 @@ fn window_title() -> String {
     format!("TFM2 Editor v{APP_VERSION}")
 }
 
-#[cfg(feature = "dev")]
-fn player_editor_intro_text() -> &'static str {
-    "Attributes, positions, potential, contract finance, Champion Mastery, and selectable Communication regions."
+fn compare_semver(left: &str, right: &str) -> Option<Ordering> {
+    fn parse(value: &str) -> Option<(u32, u32, u32)> {
+        let value = value.trim().trim_start_matches('v');
+        let mut parts = value.split('.');
+        let major = parts.next()?.parse::<u32>().ok()?;
+        let minor = parts.next()?.parse::<u32>().ok()?;
+        let patch = parts.next()?.parse::<u32>().ok()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        Some((major, minor, patch))
+    }
+
+    Some(parse(left)?.cmp(&parse(right)?))
 }
 
-#[cfg(not(feature = "dev"))]
-fn player_editor_intro_text() -> &'static str {
-    "Edit player attributes, positions, potential, active contracts, Champion Mastery, and Communication."
+fn unsupported_bridge_rule_for(bridge_version: &str) -> Option<UnsupportedBridgeRule> {
+    KNOWN_UNSUPPORTED_BRIDGE_RULES
+        .iter()
+        .copied()
+        .find(|rule| {
+            let minimum_matches = rule
+                .minimum_bridge_version
+                .map(|minimum| {
+                    matches!(
+                        compare_semver(bridge_version, minimum),
+                        Some(Ordering::Equal | Ordering::Greater)
+                    )
+                })
+                .unwrap_or(true);
+            let maximum_matches = rule
+                .maximum_bridge_version
+                .map(|maximum| {
+                    matches!(
+                        compare_semver(bridge_version, maximum),
+                        Some(Ordering::Equal | Ordering::Less)
+                    )
+                })
+                .unwrap_or(true);
+            minimum_matches && maximum_matches
+        })
 }
 
-#[cfg(feature = "dev")]
-fn salary_info_text() -> &'static str {
-    "Salary currently uses TFM2's internal money units. Currency detection/conversion from the active save is planned; salary writes already persist through Proceed."
+fn compatibility_action_for_version(bridge_version: &str) -> CompatibilityAction {
+    match compare_semver(bridge_version, REQUIRED_BRIDGE_VERSION) {
+        Some(Ordering::Less) => CompatibilityAction::BridgeUpdate,
+        Some(Ordering::Greater) => CompatibilityAction::EditorUpdate,
+        _ => CompatibilityAction::VerifyInstallation,
+    }
 }
 
-#[cfg(not(feature = "dev"))]
-fn salary_info_text() -> &'static str {
-    "Salary and transfer-fee fields use the amounts stored in the active career."
-}
+fn open_url(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+            .map_err(|error| format!("Could not open web browser: {error}"))?;
+        return Ok(());
+    }
 
-#[cfg(feature = "dev")]
-fn potential_info_text() -> &'static str {
-    "Actual Potential is the hidden 1–100 value. Grade presets set fixed values; editing the numeric value updates the grade automatically."
-}
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(url)
+            .spawn()
+            .map_err(|error| format!("Could not open web browser: {error}"))?;
+        return Ok(());
+    }
 
-#[cfg(not(feature = "dev"))]
-fn potential_info_text() -> &'static str {
-    "Actual Potential is hidden in-game and normally represented through scout evaluation. Warning: changes to Actual Potential cannot currently be reverted by the editor. Saving your career before editing is recommended."
-}
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map_err(|error| format!("Could not open web browser: {error}"))?;
+        return Ok(());
+    }
 
-#[cfg(feature = "dev")]
-fn transfer_runtime_text() -> &'static str {
-    "Runtime toggle. Enabled state is re-applied automatically after loading another save."
-}
-
-#[cfg(not(feature = "dev"))]
-fn transfer_runtime_text() -> &'static str {
-    "Runtime toggle."
-}
-
-#[cfg(feature = "dev")]
-fn recruitment_player_management_text() -> &'static str {
-    "Move contracted players directly between teams, sign free agents through Edit Contract, or end a current contract to make the player a Free Agent."
-}
-
-#[cfg(not(feature = "dev"))]
-fn recruitment_player_management_text() -> &'static str {
-    "Move contracted players, create contracts for free-agent signings, or set a contracted player to Free Agent."
-}
-
-#[cfg(feature = "dev")]
-fn search_intro_text() -> &'static str {
-    "Expandable database-style search, lists, and future historical snapshots."
-}
-
-#[cfg(not(feature = "dev"))]
-fn search_intro_text() -> &'static str {
-    "Search, filter, sort, and compare player data."
-}
-
-#[cfg(feature = "dev")]
-fn advanced_search_info_text() -> &'static str {
-    "Import/Export uses normal files. Saved filters are stored in the local filters folder beside TFM2 Editor.exe. Enabled conditions combine with Quick Filters."
-}
-
-#[cfg(not(feature = "dev"))]
-fn advanced_search_info_text() -> &'static str {
-    "Combine filters to narrow the player database. Saved filters are stored locally in the filters folder."
-}
-
-#[cfg(feature = "dev")]
-fn champion_mastery_help_text() -> &'static str {
-    "Editing a value automatically checks that champion. Apply Selected writes only checked champions. ChampionProficiency.floor is left unchanged."
-}
-
-#[cfg(not(feature = "dev"))]
-fn champion_mastery_help_text() -> &'static str {
-    "Editing a value automatically checks that champion. Apply Selected saves only checked champions."
-}
-
-#[cfg(feature = "dev")]
-fn search_rating_info_text() -> &'static str {
-    "Actual Rating uses TFM2's rating when available; ≈ values are the average of the 12 attributes. Potential Rating is derived directly from hidden Actual Potential."
-}
-
-#[cfg(not(feature = "dev"))]
-fn search_rating_info_text() -> &'static str {
-    "Actual Rating: ≈ values are the average of the 12 attributes. Potential Rating is based on hidden Actual Potential, not scout evaluation."
+    #[allow(unreachable_code)]
+    Err("Opening a web browser is not supported on this platform".to_string())
 }
 
 #[cfg(feature = "dev")]
-fn move_player_tooltip_text() -> &'static str {
-    "Direct contract-team move. Clears pending transfer/recruit requests for that player. Test new game versions with a backup save first."
+fn player_editor_intro_key() -> &'static str {
+    "player_editor.intro.dev"
 }
 
 #[cfg(not(feature = "dev"))]
-fn move_player_tooltip_text() -> &'static str {
-    "Move the selected contracted player to the destination team."
+fn player_editor_intro_key() -> &'static str {
+    "player_editor.intro"
 }
 
 #[cfg(feature = "dev")]
-fn transfer_success_tooltip_text() -> &'static str {
-    "Forces the latest transfer and player-contract negotiation papers for your current team to Accepted during management ticks."
+fn salary_info_key() -> Option<&'static str> {
+    Some("player_editor.contract.finance_info.dev")
 }
 
 #[cfg(not(feature = "dev"))]
-fn transfer_success_tooltip_text() -> &'static str {
-    "Makes transfer negotiations succeed."
+fn salary_info_key() -> Option<&'static str> {
+    None
 }
 
 #[cfg(feature = "dev")]
-fn instant_retry_tooltip_text() -> &'static str {
-    "Moves recruitment retry cooldowns back to the request's last action date, allowing an immediate new offer after rejection."
+fn potential_info_key() -> &'static str {
+    "player_editor.potential.info.dev"
 }
 
 #[cfg(not(feature = "dev"))]
-fn instant_retry_tooltip_text() -> &'static str {
-    "Allows an immediate new offer after a rejected negotiation."
+fn potential_info_key() -> &'static str {
+    "player_editor.potential.info"
 }
 
 #[cfg(feature = "dev")]
-fn champion_inactive_info_text() -> &'static str {
-    "These champions already exist in the player's proficiency data but are not currently in the active save pool. They remain editable."
+fn transfer_runtime_key() -> &'static str {
+    "recruitment.runtime_toggle.dev"
 }
 
 #[cfg(not(feature = "dev"))]
-fn champion_inactive_info_text() -> &'static str {
-    "These champions are not currently available in this save, but their mastery values can still be edited."
+fn transfer_runtime_key() -> &'static str {
+    "recruitment.runtime_toggle"
+}
+
+#[cfg(feature = "dev")]
+fn recruitment_player_management_key() -> &'static str {
+    "recruitment.player_management.info.dev"
+}
+
+#[cfg(not(feature = "dev"))]
+fn recruitment_player_management_key() -> &'static str {
+    "recruitment.player_management.info"
+}
+
+#[cfg(feature = "dev")]
+fn search_intro_key() -> &'static str {
+    "search.intro.dev"
+}
+
+#[cfg(not(feature = "dev"))]
+fn search_intro_key() -> &'static str {
+    "search.intro"
+}
+
+#[cfg(feature = "dev")]
+fn advanced_search_info_key() -> &'static str {
+    "search.advanced.info.dev"
+}
+
+#[cfg(not(feature = "dev"))]
+fn advanced_search_info_key() -> &'static str {
+    "search.advanced.info"
+}
+
+#[cfg(feature = "dev")]
+fn champion_mastery_help_key() -> &'static str {
+    "champion_mastery.help.dev"
+}
+
+#[cfg(not(feature = "dev"))]
+fn champion_mastery_help_key() -> &'static str {
+    "champion_mastery.help"
+}
+
+#[cfg(feature = "dev")]
+fn search_rating_info_key() -> &'static str {
+    "search.players.rating_info.dev"
+}
+
+#[cfg(not(feature = "dev"))]
+fn search_rating_info_key() -> &'static str {
+    "search.players.rating_info"
+}
+
+#[cfg(feature = "dev")]
+fn search_player_table_help_key() -> &'static str {
+    "search.players.table_help.dev"
+}
+
+#[cfg(not(feature = "dev"))]
+fn search_player_table_help_key() -> &'static str {
+    "search.players.table_help"
+}
+
+#[cfg(feature = "dev")]
+fn search_staff_table_help_key() -> &'static str {
+    "search.staff.table_help.dev"
+}
+
+#[cfg(not(feature = "dev"))]
+fn search_staff_table_help_key() -> &'static str {
+    "search.staff.table_help"
+}
+
+#[cfg(feature = "dev")]
+fn economy_info_key() -> &'static str {
+    "economy.info.dev"
+}
+
+#[cfg(not(feature = "dev"))]
+fn economy_info_key() -> &'static str {
+    "economy.info"
+}
+
+#[cfg(feature = "dev")]
+fn economy_apply_key() -> &'static str {
+    "economy.apply.dev"
+}
+
+#[cfg(not(feature = "dev"))]
+fn economy_apply_key() -> &'static str {
+    "economy.apply"
+}
+
+#[cfg(feature = "dev")]
+fn move_player_tooltip_key() -> &'static str {
+    "recruitment.player_management.move_tooltip.dev"
+}
+
+#[cfg(not(feature = "dev"))]
+fn move_player_tooltip_key() -> &'static str {
+    "recruitment.player_management.move_tooltip"
+}
+
+#[cfg(feature = "dev")]
+fn transfer_success_tooltip_key() -> &'static str {
+    "recruitment.transfer_success_tooltip.dev"
+}
+
+#[cfg(not(feature = "dev"))]
+fn transfer_success_tooltip_key() -> &'static str {
+    "recruitment.transfer_success_tooltip"
+}
+
+#[cfg(feature = "dev")]
+fn instant_retry_tooltip_key() -> &'static str {
+    "recruitment.instant_retry_tooltip.dev"
+}
+
+#[cfg(not(feature = "dev"))]
+fn instant_retry_tooltip_key() -> &'static str {
+    "recruitment.instant_retry_tooltip"
+}
+
+#[cfg(feature = "dev")]
+fn champion_inactive_info_key() -> &'static str {
+    "champion_mastery.inactive_info.dev"
+}
+
+#[cfg(not(feature = "dev"))]
+fn champion_inactive_info_key() -> &'static str {
+    "champion_mastery.inactive_info"
 }
 
 
@@ -177,20 +381,20 @@ enum AppTab {
 
 impl AppTab {
     const ALL: [Self; 5] = [
-        Self::Economy,
+        Self::Search,
         Self::PlayerEditor,
         Self::StaffEditor,
         Self::Recruitment,
-        Self::Search,
+        Self::Economy,
     ];
 
-    fn label(self) -> &'static str {
+    fn label_key(self) -> &'static str {
         match self {
-            Self::Economy => "Economy",
-            Self::PlayerEditor => "Player Editor",
-            Self::StaffEditor => "Staff Editor",
-            Self::Recruitment => "Recruitment",
-            Self::Search => "Search",
+            Self::Economy => "tabs.economy",
+            Self::PlayerEditor => "tabs.player_editor",
+            Self::StaffEditor => "tabs.staff_editor",
+            Self::Recruitment => "tabs.recruitment",
+            Self::Search => "tabs.search",
         }
     }
 }
@@ -204,10 +408,10 @@ enum RecruitmentManagementTab {
 impl RecruitmentManagementTab {
     const ALL: [Self; 2] = [Self::Players, Self::Staff];
 
-    fn label(self) -> &'static str {
+    fn label_key(self) -> &'static str {
         match self {
-            Self::Players => "Player Management",
-            Self::Staff => "Staff Management",
+            Self::Players => "recruitment.tabs.player_management",
+            Self::Staff => "recruitment.tabs.staff_management",
         }
     }
 }
@@ -215,12 +419,9 @@ impl RecruitmentManagementTab {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SearchTab {
     Players,
-    #[cfg(feature = "dev")]
     Staff,
-    #[cfg(feature = "dev")]
-    Teams,
-    #[cfg(feature = "dev")]
     Lists,
+    Teams,
     #[cfg(feature = "dev")]
     History,
 }
@@ -230,25 +431,22 @@ impl SearchTab {
     const ALL: [Self; 5] = [
         Self::Players,
         Self::Staff,
-        Self::Teams,
         Self::Lists,
+        Self::Teams,
         Self::History,
     ];
 
     #[cfg(not(feature = "dev"))]
-    const ALL: [Self; 1] = [Self::Players];
+    const ALL: [Self; 4] = [Self::Players, Self::Staff, Self::Lists, Self::Teams];
 
-    fn label(self) -> &'static str {
+    fn label_key(self) -> &'static str {
         match self {
-            Self::Players => "Players",
+            Self::Players => "search.tabs.players",
+            Self::Staff => "search.tabs.staff",
+            Self::Lists => "search.tabs.lists",
+            Self::Teams => "search.tabs.teams",
             #[cfg(feature = "dev")]
-            Self::Staff => "Staff",
-            #[cfg(feature = "dev")]
-            Self::Teams => "Teams",
-            #[cfg(feature = "dev")]
-            Self::Lists => "Lists",
-            #[cfg(feature = "dev")]
-            Self::History => "History",
+            Self::History => "search.tabs.history",
         }
     }
 }
@@ -280,30 +478,116 @@ enum PlayerSortColumn {
 }
 
 impl PlayerSortColumn {
-    fn label(self) -> &'static str {
+    fn label_key(self) -> &'static str {
         match self {
-            Self::Name => "Name",
-            Self::Id => "ID",
-            Self::Age => "Age",
-            Self::Team => "Team",
-            Self::Position => "Position",
-            Self::ActualRating => "Actual Rating",
-            Self::PotentialRating => "Potential Rating",
-            Self::ActualPotential => "Actual Potential",
-            Self::Salary => "Salary",
-            Self::ContractEnd => "Contract End",
-            Self::LastHitting => "Last Hitting",
-            Self::SkillshotDodging => "Skillshot Dodging",
-            Self::SkillshotAccuracy => "Skillshot Accuracy",
-            Self::InputSpeed => "Input Speed",
-            Self::Positioning => "Positioning",
-            Self::Judgment => "Judgment",
-            Self::Mental => "Mental",
-            Self::Focus => "Focus",
-            Self::Calls => "Calls",
-            Self::Roaming => "Roaming",
-            Self::Aggression => "Aggression",
-            Self::Ego => "Ego",
+            Self::Name => "common.name",
+            Self::Id => "common.id",
+            Self::Age => "common.age",
+            Self::Team => "common.team",
+            Self::Position => "search.players.position",
+            Self::ActualRating => "search.columns.actual_rating",
+            Self::PotentialRating => "search.columns.potential_rating",
+            Self::ActualPotential => "search.players.actual_potential",
+            Self::Salary => "search.columns.salary",
+            Self::ContractEnd => "contract.end",
+            Self::LastHitting => "attributes.last_hitting",
+            Self::SkillshotDodging => "attributes.skillshot_dodging",
+            Self::SkillshotAccuracy => "attributes.skillshot_accuracy",
+            Self::InputSpeed => "attributes.input_speed",
+            Self::Positioning => "attributes.positioning",
+            Self::Judgment => "attributes.judgment",
+            Self::Mental => "attributes.mental",
+            Self::Focus => "attributes.focus",
+            Self::Calls => "attributes.calls",
+            Self::Roaming => "attributes.roaming",
+            Self::Aggression => "attributes.aggression",
+            Self::Ego => "attributes.ego",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StaffSortColumn {
+    Name,
+    Id,
+    Age,
+    Team,
+    Role,
+    Salary,
+    ContractEnd,
+    BanPick,
+    Strategy,
+    Negotiation,
+    JudgeAbility,
+    JudgePotential,
+    Feedback,
+    PowerAnalysis,
+    ControlCoaching,
+    JudgmentCoaching,
+    MentalCoaching,
+    Communication,
+}
+
+impl StaffSortColumn {
+    fn label_key(self) -> &'static str {
+        match self {
+            Self::Name => "common.name",
+            Self::Id => "common.id",
+            Self::Age => "common.age",
+            Self::Team => "common.team",
+            Self::Role => "common.role",
+            Self::Salary => "search.columns.salary",
+            Self::ContractEnd => "contract.end",
+            Self::BanPick => "staff.attributes.ban_pick",
+            Self::Strategy => "staff.attributes.strategy",
+            Self::Negotiation => "staff.attributes.negotiation",
+            Self::JudgeAbility => "staff.attributes.ability_analysis",
+            Self::JudgePotential => "staff.attributes.potential_analysis",
+            Self::Feedback => "staff.attributes.feedback",
+            Self::PowerAnalysis => "staff.attributes.power_analysis",
+            Self::ControlCoaching => "staff.attributes.control_coaching",
+            Self::JudgmentCoaching => "staff.attributes.judgment_coaching",
+            Self::MentalCoaching => "staff.attributes.mental_coaching",
+            Self::Communication => "staff_editor.communication.heading",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TeamSortColumn {
+    Name,
+    Id,
+    League,
+    Manager,
+    PlayerTeam,
+    RosterSize,
+    StaffCount,
+    RosterRating,
+    MerchandiseFacilityGrade,
+    StadiumGrade,
+    TrainingFacilityGrade,
+    Money,
+    RecruitmentBudget,
+    SalaryBudget,
+}
+
+impl TeamSortColumn {
+    fn label_key(self) -> &'static str {
+        match self {
+            Self::Name => "common.name",
+            Self::Id => "common.id",
+            Self::League => "search.teams.league",
+            Self::Manager => "search.teams.manager",
+            Self::PlayerTeam => "search.teams.player_team",
+            Self::RosterSize => "search.teams.players",
+            Self::StaffCount => "search.teams.staff",
+            Self::RosterRating => "search.teams.roster_rating",
+            Self::MerchandiseFacilityGrade => "search.teams.merchandise_facility_grade",
+            Self::StadiumGrade => "search.teams.stadium_grade",
+            Self::TrainingFacilityGrade => "search.teams.training_facility_grade",
+            Self::Money => "economy.money",
+            Self::RecruitmentBudget => "economy.transfer_budget",
+            Self::SalaryBudget => "economy.salary_budget",
         }
     }
 }
@@ -358,22 +642,27 @@ impl Default for AdvancedPlayerSearch {
             region: "No Condition".to_string(),
             free_agents_only: false,
             ranges: vec![
-                AdvancedRangeFilter::new("age", "Age", ""),
-                AdvancedRangeFilter::new("salary", "Salary", ""),
-                AdvancedRangeFilter::new("transfer_fee", "Transfer Fee", ""),
-                AdvancedRangeFilter::new("actual_rating", "Actual Rating", ""),
-                AdvancedRangeFilter::new("last_hit", "Last Hitting", ""),
-                AdvancedRangeFilter::new("skill_avoid", "Skillshot Dodging", ""),
-                AdvancedRangeFilter::new("skill_hit", "Skillshot Accuracy", ""),
-                AdvancedRangeFilter::new("control_speed", "Input Speed", ""),
-                AdvancedRangeFilter::new("positioning", "Positioning", ""),
-                AdvancedRangeFilter::new("judgement", "Judgment", ""),
-                AdvancedRangeFilter::new("mental", "Mental", ""),
-                AdvancedRangeFilter::new("concentration", "Focus", ""),
-                AdvancedRangeFilter::new("order", "Calls", ""),
-                AdvancedRangeFilter::new("roaming", "Roaming", ""),
-                AdvancedRangeFilter::new("aggressive", "Aggression", ""),
-                AdvancedRangeFilter::new("ego", "Ego", ""),
+                AdvancedRangeFilter::new("age", "common.age", ""),
+                AdvancedRangeFilter::new("salary", "search.columns.salary", ""),
+                AdvancedRangeFilter::new("transfer_fee", "contract.transfer_fee", ""),
+                AdvancedRangeFilter::new("actual_rating", "search.columns.actual_rating", ""),
+                AdvancedRangeFilter::new(
+                    "actual_potential",
+                    "search.players.actual_potential",
+                    "",
+                ),
+                AdvancedRangeFilter::new("last_hit", "attributes.last_hitting", ""),
+                AdvancedRangeFilter::new("skill_avoid", "attributes.skillshot_dodging", ""),
+                AdvancedRangeFilter::new("skill_hit", "attributes.skillshot_accuracy", ""),
+                AdvancedRangeFilter::new("control_speed", "attributes.input_speed", ""),
+                AdvancedRangeFilter::new("positioning", "attributes.positioning", ""),
+                AdvancedRangeFilter::new("judgement", "attributes.judgment", ""),
+                AdvancedRangeFilter::new("mental", "attributes.mental", ""),
+                AdvancedRangeFilter::new("concentration", "attributes.focus", ""),
+                AdvancedRangeFilter::new("order", "attributes.calls", ""),
+                AdvancedRangeFilter::new("roaming", "attributes.roaming", ""),
+                AdvancedRangeFilter::new("aggressive", "attributes.aggression", ""),
+                AdvancedRangeFilter::new("ego", "attributes.ego", ""),
             ],
         }
     }
@@ -389,6 +678,7 @@ impl AdvancedPlayerSearch {
 
     fn export_text(&self) -> String {
         let mut lines = vec![
+            "money_unit_format=display_v1".to_string(),
             format!("position_enabled={}", self.position_enabled),
             format!("position={}", self.position.replace('\n', " " ).replace('\r', " ")),
             format!("region_enabled={}", self.region_enabled),
@@ -406,6 +696,10 @@ impl AdvancedPlayerSearch {
     }
 
     fn import_text(&mut self, text: &str) {
+        let uses_display_money = text
+            .lines()
+            .any(|line| line.trim() == "money_unit_format=display_v1");
+
         for line in text.lines() {
             let Some((key, value)) = line.split_once('=') else {
                 continue;
@@ -436,7 +730,175 @@ impl AdvancedPlayerSearch {
                 }
             }
         }
+
+        if !uses_display_money {
+            migrate_legacy_money_ranges(&mut self.ranges, &["salary", "transfer_fee"]);
+        }
     }
+}
+
+#[derive(Debug, Clone)]
+struct AdvancedStaffSearch {
+    role_enabled: bool,
+    role: String,
+    free_agents_only: bool,
+    ranges: Vec<AdvancedRangeFilter>,
+}
+
+impl Default for AdvancedStaffSearch {
+    fn default() -> Self {
+        Self {
+            role_enabled: false,
+            role: "No Condition".to_string(),
+            free_agents_only: false,
+            ranges: vec![
+                AdvancedRangeFilter::new("age", "common.age", ""),
+                AdvancedRangeFilter::new("salary", "search.columns.salary", ""),
+                AdvancedRangeFilter::new("banpick", "staff.attributes.ban_pick", ""),
+                AdvancedRangeFilter::new("strategy", "staff.attributes.strategy", ""),
+                AdvancedRangeFilter::new("negotiation", "staff.attributes.negotiation", ""),
+                AdvancedRangeFilter::new("judge_ability", "staff.attributes.ability_analysis", ""),
+                AdvancedRangeFilter::new("judge_potential", "staff.attributes.potential_analysis", ""),
+                AdvancedRangeFilter::new("feedback", "staff.attributes.feedback", ""),
+                AdvancedRangeFilter::new("power_analysis", "staff.attributes.power_analysis", ""),
+                AdvancedRangeFilter::new("control_coaching", "staff.attributes.control_coaching", ""),
+                AdvancedRangeFilter::new("judgment_coaching", "staff.attributes.judgment_coaching", ""),
+                AdvancedRangeFilter::new("mental_coaching", "staff.attributes.mental_coaching", ""),
+                AdvancedRangeFilter::new("communication", "staff_editor.communication.heading", ""),
+            ],
+        }
+    }
+}
+
+impl AdvancedStaffSearch {
+    fn active_condition_count(&self) -> usize {
+        usize::from(self.role_enabled && self.role != "No Condition")
+            + usize::from(self.free_agents_only)
+            + self.ranges.iter().filter(|range| range.enabled).count()
+    }
+
+    fn export_text(&self) -> String {
+        let mut lines = vec![
+            "money_unit_format=display_v1".to_string(),
+            format!("role_enabled={}", self.role_enabled),
+            format!("role={}", self.role.replace('\n', " ").replace('\r', " ")),
+            format!("free_agents_only={}", self.free_agents_only),
+        ];
+
+        for range in &self.ranges {
+            lines.push(format!("range.{}.enabled={}", range.key, range.enabled));
+            lines.push(format!("range.{}.min={}", range.key, range.min.replace('\n', " ").replace('\r', " ")));
+            lines.push(format!("range.{}.max={}", range.key, range.max.replace('\n', " ").replace('\r', " ")));
+        }
+
+        lines.join("\n") + "\n"
+    }
+
+    fn import_text(&mut self, text: &str) {
+        let uses_display_money = text
+            .lines()
+            .any(|line| line.trim() == "money_unit_format=display_v1");
+
+        for line in text.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+
+            match key {
+                "role_enabled" => self.role_enabled = parse_saved_bool(value),
+                "role" => self.role = value.to_string(),
+                "free_agents_only" => self.free_agents_only = parse_saved_bool(value),
+                _ => {
+                    let Some(rest) = key.strip_prefix("range.") else {
+                        continue;
+                    };
+                    let Some((range_key, field)) = rest.rsplit_once('.') else {
+                        continue;
+                    };
+                    let Some(range) = self.ranges.iter_mut().find(|range| range.key == range_key) else {
+                        continue;
+                    };
+                    match field {
+                        "enabled" => range.enabled = parse_saved_bool(value),
+                        "min" => range.min = value.to_string(),
+                        "max" => range.max = value.to_string(),
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        if !uses_display_money {
+            migrate_legacy_money_ranges(&mut self.ranges, &["salary"]);
+        }
+    }
+}
+
+fn migrate_legacy_money_ranges(ranges: &mut [AdvancedRangeFilter], money_keys: &[&str]) {
+    for range in ranges
+        .iter_mut()
+        .filter(|range| money_keys.contains(&range.key))
+    {
+        if !range.min.trim().is_empty() {
+            range.min = format_internal_amount(&range.min);
+        }
+        if !range.max.trim().is_empty() {
+            range.max = format_internal_amount(&range.max);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SavedPlayerList {
+    format: String,
+    version: u32,
+    name: String,
+    #[serde(default)]
+    player_ids: Vec<usize>,
+    #[serde(default)]
+    staff_ids: Vec<usize>,
+}
+
+impl SavedPlayerList {
+    fn new(name: String) -> Self {
+        Self {
+            format: "tfm2-editor-list".to_string(),
+            version: 2,
+            name,
+            player_ids: Vec::new(),
+            staff_ids: Vec::new(),
+        }
+    }
+
+    fn is_supported(&self) -> bool {
+        (self.format == "tfm2-editor-player-list" && self.version == 1)
+            || (self.format == "tfm2-editor-list" && self.version == 2)
+    }
+
+    fn normalize(&mut self) {
+        self.format = "tfm2-editor-list".to_string();
+        self.version = 2;
+        self.player_ids.sort_unstable();
+        self.player_ids.dedup();
+        self.staff_ids.sort_unstable();
+        self.staff_ids.dedup();
+    }
+
+    fn total_members(&self) -> usize {
+        self.player_ids.len() + self.staff_ids.len()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListContentTab {
+    Players,
+    Staff,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListNamePopupMode {
+    Create,
+    Rename,
 }
 
 #[derive(Debug, Clone)]
@@ -474,14 +936,27 @@ struct StaffSummary {
     age: String,
     team: String,
     role: String,
+    banpick: String,
+    strategy: String,
+    negotiation: String,
+    judge_ability: String,
+    judge_potential: String,
+    feedback: String,
+    power_analysis: String,
+    control_coaching: String,
+    judgment_coaching: String,
+    mental_coaching: String,
+    annual_salary: String,
+    contract_end: String,
+    communication: String,
 }
 
 impl StaffSummary {
-    fn label(&self) -> String {
+    fn localized_label(&self, localization: &Localization) -> String {
         format!(
             "{} · {} · {}",
             self.name,
-            display_staff_role(&self.role),
+            localized_staff_role(localization, &self.role),
             self.team
         )
     }
@@ -553,21 +1028,43 @@ struct TeamSummary {
     manager_name: String,
     league_id: usize,
     is_player_team: bool,
+    roster_size: usize,
+    staff_count: usize,
+    roster_rating: Option<f64>,
+    merchandise_facility_grade: String,
+    stadium_grade: String,
+    training_facility_grade: String,
+    total_balance: f64,
+    transfer_budget: f64,
+    salary_budget: f64,
 }
 
 impl TeamSummary {
-    fn label(&self) -> String {
+    fn localized_label(&self, localization: &Localization) -> String {
         let name = if self.display_name.trim().is_empty() {
-            format!("Team {}", self.id)
+            self.localization_fallback_name(localization)
         } else {
             self.display_name.clone()
         };
+        let league_id = self.league_id.to_string();
+        let league = localization.tr_with(
+            "common.league_number",
+            &[("id", league_id.as_str())],
+        );
 
         if self.is_player_team {
-            format!("{name} · My Team · League {}", self.league_id)
+            format!("{name} · {} · {league}", localization.tr("common.my_team"))
         } else {
-            format!("{name} · League {}", self.league_id)
+            format!("{name} · {league}")
         }
+    }
+
+    fn localization_fallback_name(&self, localization: &Localization) -> String {
+        let team_id = self.id.to_string();
+        localization.tr_with(
+            "common.team_number",
+            &[("id", team_id.as_str())],
+        )
     }
 
     fn matches_search(&self, query: &str) -> bool {
@@ -617,13 +1114,14 @@ impl SquadStatusChoice {
         }
     }
 
-    fn label(self) -> &'static str {
+
+    fn label_key(self) -> &'static str {
         match self {
-            Self::Core => "Core Player",
-            Self::Important => "Important Player",
-            Self::General => "Starter",
-            Self::Sub => "Substitute",
-            Self::Prospect => "Prospect",
+            Self::Core => "contract.squad.core",
+            Self::Important => "contract.squad.important",
+            Self::General => "contract.squad.starter",
+            Self::Sub => "contract.squad.substitute",
+            Self::Prospect => "contract.squad.prospect",
         }
     }
 
@@ -740,13 +1238,14 @@ impl PositionChoice {
         Self::Support,
     ];
 
-    fn label(self) -> &'static str {
+
+    fn label_key(self) -> &'static str {
         match self {
-            Self::Top => "Top",
-            Self::Jungle => "Jungle",
-            Self::Mid => "Mid",
-            Self::Bottom => "Bottom",
-            Self::Support => "Support",
+            Self::Top => "positions.top",
+            Self::Jungle => "positions.jungle",
+            Self::Mid => "positions.mid",
+            Self::Bottom => "positions.bottom",
+            Self::Support => "positions.support",
         }
     }
 
@@ -965,6 +1464,36 @@ const COMMUNICATION_REGIONS: [(usize, &str); 6] = [
     (5, "Japan League"),
 ];
 
+fn communication_region_label_key(region_id: usize) -> Option<&'static str> {
+    match region_id {
+        0 => Some("regions.korea_league"),
+        1 => Some("regions.china_league"),
+        2 => Some("regions.europe_league"),
+        3 => Some("regions.north_america_league"),
+        4 => Some("regions.south_america_league"),
+        5 => Some("regions.japan_league"),
+        _ => None,
+    }
+}
+
+fn localized_communication_region_label(
+    localization: &Localization,
+    region_id: usize,
+) -> String {
+    let name = communication_region_label_key(region_id)
+        .map(|key| localization.tr(key))
+        .unwrap_or_else(|| format!("Region {region_id}"));
+
+    #[cfg(feature = "dev")]
+    {
+        format!("{name} (Region {region_id})")
+    }
+    #[cfg(not(feature = "dev"))]
+    {
+        name
+    }
+}
+
 fn staff_communication_region_label(region_id: usize) -> String {
     COMMUNICATION_REGIONS
         .iter()
@@ -1030,10 +1559,54 @@ fn first_editable_player_communication_region(primary_region: Option<usize>) -> 
 
 const POSITION_FILTER_NAMES: [&str; 5] = ["Top", "Jungle", "Mid", "Bottom", "Support"];
 
-fn selected_multi_filter_label<const N: usize>(
-    empty_label: &str,
+fn position_label_key(raw: &str) -> Option<&'static str> {
+    match raw.trim() {
+        "Top" => Some("positions.top"),
+        "Jungle" => Some("positions.jungle"),
+        "Mid" => Some("positions.mid"),
+        "Bottom" => Some("positions.bottom"),
+        "Support" => Some("positions.support"),
+        _ => None,
+    }
+}
+
+fn localized_position_name(localization: &Localization, raw: &str) -> String {
+    position_label_key(raw)
+        .map(|key| localization.tr(key))
+        .unwrap_or_else(|| raw.to_string())
+}
+
+fn localized_position_summary(localization: &Localization, raw: &str) -> String {
+    raw.split('/')
+        .map(|value| localized_position_name(localization, value.trim()))
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+fn region_label_key(raw: &str) -> Option<&'static str> {
+    match raw.trim() {
+        "Korea" => Some("regions.korea"),
+        "China" => Some("regions.china"),
+        "Europe" => Some("regions.europe"),
+        "North America" => Some("regions.north_america"),
+        "South America" => Some("regions.south_america"),
+        "Japan" => Some("regions.japan"),
+        _ => None,
+    }
+}
+
+fn localized_region_name(localization: &Localization, raw: &str) -> String {
+    region_label_key(raw)
+        .map(|key| localization.tr(key))
+        .unwrap_or_else(|| raw.to_string())
+}
+
+fn selected_multi_filter_label_localized<const N: usize>(
+    localization: &Localization,
+    empty_key: &str,
     labels: &[&str; N],
     selected: &[bool; N],
+    localize: fn(&Localization, &str) -> String,
 ) -> String {
     let active = labels
         .iter()
@@ -1042,9 +1615,12 @@ fn selected_multi_filter_label<const N: usize>(
         .collect::<Vec<_>>();
 
     match active.as_slice() {
-        [] => empty_label.to_string(),
-        [only] => (*only).to_string(),
-        _ => format!("{} selected", active.len()),
+        [] => localization.tr(empty_key),
+        [only] => localize(localization, only),
+        _ => {
+            let count = active.len().to_string();
+            localization.tr_with("search.selected_count", &[("count", count.as_str())])
+        }
     }
 }
 
@@ -1087,13 +1663,13 @@ fn effective_actual_rating(player: &PlayerSummary) -> Option<(f32, bool)> {
     average_attribute_rating(player).map(|value| (value, true))
 }
 
-fn render_actual_rating(ui: &mut egui::Ui, player: &PlayerSummary) {
+fn render_actual_rating(ui: &mut egui::Ui, player: &PlayerSummary, localization: &Localization) {
     match effective_actual_rating(player) {
         Some((value, false)) => {
             #[cfg(feature = "dev")]
             {
                 ui.label(format!("{value:.1}"))
-                    .on_hover_text("TFM2 AthleteReport stat_score.");
+                    .on_hover_text(localization.tr("rating.actual.dev_tooltip"));
             }
             #[cfg(not(feature = "dev"))]
             {
@@ -1103,9 +1679,9 @@ fn render_actual_rating(ui: &mut egui::Ui, player: &PlayerSummary) {
         Some((value, true)) => {
             let response = ui.label(format!("≈{value:.1}"));
             #[cfg(feature = "dev")]
-            response.on_hover_text("Calculated fallback: the average of the 12 attributes.");
+            response.on_hover_text(localization.tr("rating.actual.fallback_dev_tooltip"));
             #[cfg(not(feature = "dev"))]
-            response.on_hover_text("Average of the 12 player attributes.");
+            response.on_hover_text(localization.tr("rating.actual.fallback_tooltip"));
         }
         None => {
             ui.label("—");
@@ -1198,6 +1774,7 @@ fn display_staff_role(raw: &str) -> String {
 
 struct ModifierApp {
     active_tab: AppTab,
+    localization: Localization,
     search_tab: SearchTab,
     search_preview_filter: String,
     search_age_min: String,
@@ -1217,6 +1794,49 @@ struct ModifierApp {
     saved_filters_width: f32,
     filter_name_popup_open: bool,
     filter_name_draft: String,
+    saved_player_lists: Vec<SavedPlayerList>,
+    selected_saved_player_list: Option<String>,
+    active_player_list_filter: Option<String>,
+    active_staff_list_filter: Option<String>,
+    selected_search_player_ids: BTreeSet<usize>,
+    selected_search_staff_ids: BTreeSet<usize>,
+    selected_search_team_ids: BTreeSet<usize>,
+    selected_list_player_ids: BTreeSet<usize>,
+    selected_list_staff_ids: BTreeSet<usize>,
+    pending_new_list_player_ids: Vec<usize>,
+    pending_new_list_staff_ids: Vec<usize>,
+    player_selection_anchor_id: Option<usize>,
+    staff_selection_anchor_id: Option<usize>,
+    team_selection_anchor_id: Option<usize>,
+    player_shift_drag_start_id: Option<usize>,
+    staff_shift_drag_start_id: Option<usize>,
+    team_shift_drag_start_id: Option<usize>,
+    player_shift_drag_target_selected: Option<bool>,
+    staff_shift_drag_target_selected: Option<bool>,
+    team_shift_drag_target_selected: Option<bool>,
+    player_shift_drag_base_ids: Option<BTreeSet<usize>>,
+    staff_shift_drag_base_ids: Option<BTreeSet<usize>>,
+    team_shift_drag_base_ids: Option<BTreeSet<usize>>,
+    list_content_tab: ListContentTab,
+    list_name_popup_open: bool,
+    list_delete_confirmation_open: bool,
+    list_name_popup_mode: ListNamePopupMode,
+    list_name_draft: String,
+    staff_database_search: String,
+    staff_search_age_min: String,
+    staff_search_age_max: String,
+    staff_search_team_filter: String,
+    staff_search_role_filter: String,
+    staff_search_free_agents_only: bool,
+    staff_sort_column: StaffSortColumn,
+    staff_sort_ascending: bool,
+    advanced_staff_search_open: bool,
+    advanced_staff_search: AdvancedStaffSearch,
+    saved_staff_filters: Vec<String>,
+    selected_saved_staff_filter: Option<String>,
+    saved_staff_filters_width: f32,
+    staff_filter_name_popup_open: bool,
+    staff_filter_name_draft: String,
     economy: EconomyForm,
     players: Vec<PlayerSummary>,
     staffs: Vec<StaffSummary>,
@@ -1269,6 +1889,15 @@ struct ModifierApp {
     transfer_always_success: bool,
     recruitment_instant_retry: bool,
     teams: Vec<TeamSummary>,
+    team_database_search: String,
+    team_search_league_filter: Option<usize>,
+    team_search_player_team_only: bool,
+    team_search_roster_min: String,
+    team_search_roster_max: String,
+    team_search_staff_min: String,
+    team_search_staff_max: String,
+    team_sort_column: TeamSortColumn,
+    team_sort_ascending: bool,
     recruitment_management_tab: RecruitmentManagementTab,
     recruitment_player_search: String,
     recruitment_player_id: Option<usize>,
@@ -1280,13 +1909,24 @@ struct ModifierApp {
     free_agent_confirmation_staff_id: Option<usize>,
     connected: bool,
     status: String,
+    player_search_status: Option<String>,
+    staff_search_status: Option<String>,
+    team_search_status: Option<String>,
     bridge_version: String,
+    bridge_protocol: Option<u32>,
+    bridge_tfm2_target: Option<String>,
+    compatibility_issue: Option<CompatibilityIssue>,
+    compatibility_popup_open: bool,
+    compatibility_ignored_for_session: bool,
 }
 
 impl Default for ModifierApp {
     fn default() -> Self {
+        let localization = Localization::load();
+        let starting_status = localization.tr("status.starting");
         let mut app = Self {
             active_tab: AppTab::Economy,
+            localization,
             search_tab: SearchTab::Players,
             search_preview_filter: String::new(),
             search_age_min: String::new(),
@@ -1306,6 +1946,49 @@ impl Default for ModifierApp {
             saved_filters_width: 175.0,
             filter_name_popup_open: false,
             filter_name_draft: String::new(),
+            saved_player_lists: Vec::new(),
+            selected_saved_player_list: None,
+            active_player_list_filter: None,
+            active_staff_list_filter: None,
+            selected_search_player_ids: BTreeSet::new(),
+            selected_search_staff_ids: BTreeSet::new(),
+            selected_search_team_ids: BTreeSet::new(),
+            selected_list_player_ids: BTreeSet::new(),
+            selected_list_staff_ids: BTreeSet::new(),
+            pending_new_list_player_ids: Vec::new(),
+            pending_new_list_staff_ids: Vec::new(),
+            player_selection_anchor_id: None,
+            staff_selection_anchor_id: None,
+            team_selection_anchor_id: None,
+            player_shift_drag_start_id: None,
+            staff_shift_drag_start_id: None,
+            team_shift_drag_start_id: None,
+            player_shift_drag_target_selected: None,
+            staff_shift_drag_target_selected: None,
+            team_shift_drag_target_selected: None,
+            player_shift_drag_base_ids: None,
+            staff_shift_drag_base_ids: None,
+            team_shift_drag_base_ids: None,
+            list_content_tab: ListContentTab::Players,
+            list_name_popup_open: false,
+            list_delete_confirmation_open: false,
+            list_name_popup_mode: ListNamePopupMode::Create,
+            list_name_draft: String::new(),
+            staff_database_search: String::new(),
+            staff_search_age_min: String::new(),
+            staff_search_age_max: String::new(),
+            staff_search_team_filter: "Any Team".to_string(),
+            staff_search_role_filter: "Any Role".to_string(),
+            staff_search_free_agents_only: false,
+            staff_sort_column: StaffSortColumn::Name,
+            staff_sort_ascending: true,
+            advanced_staff_search_open: false,
+            advanced_staff_search: AdvancedStaffSearch::default(),
+            saved_staff_filters: Vec::new(),
+            selected_saved_staff_filter: None,
+            saved_staff_filters_width: 175.0,
+            staff_filter_name_popup_open: false,
+            staff_filter_name_draft: String::new(),
             economy: EconomyForm::default(),
             players: Vec::new(),
             staffs: Vec::new(),
@@ -1358,6 +2041,15 @@ impl Default for ModifierApp {
             transfer_always_success: false,
             recruitment_instant_retry: false,
             teams: Vec::new(),
+            team_database_search: String::new(),
+            team_search_league_filter: None,
+            team_search_player_team_only: false,
+            team_search_roster_min: String::new(),
+            team_search_roster_max: String::new(),
+            team_search_staff_min: String::new(),
+            team_search_staff_max: String::new(),
+            team_sort_column: TeamSortColumn::Name,
+            team_sort_ascending: true,
             recruitment_management_tab: RecruitmentManagementTab::Players,
             recruitment_player_search: String::new(),
             recruitment_player_id: None,
@@ -1368,10 +2060,20 @@ impl Default for ModifierApp {
             free_agent_confirmation_player_id: None,
             free_agent_confirmation_staff_id: None,
             connected: false,
-            status: "Starting…".to_string(),
+            status: starting_status,
+            player_search_status: None,
+            staff_search_status: None,
+            team_search_status: None,
             bridge_version: "-".to_string(),
+            bridge_protocol: None,
+            bridge_tfm2_target: None,
+            compatibility_issue: None,
+            compatibility_popup_open: false,
+            compatibility_ignored_for_session: false,
         };
         app.reload_saved_filters();
+        app.reload_saved_staff_filters();
+        app.reload_saved_player_lists();
         app.refresh_connection();
         if app.connected {
             app.refresh_economy();
@@ -1385,7 +2087,638 @@ impl Default for ModifierApp {
 }
 
 impl ModifierApp {
-    fn request(command: &str) -> Result<String, String> {
+    fn loaded_dataset_status(dataset: &str, count: usize) -> String {
+        format!("{dataset} data loaded: {count}")
+    }
+
+    fn update_player_search_status(&mut self) {
+        let status = Self::loaded_dataset_status("Player", self.players.len());
+        self.player_search_status = Some(status.clone());
+        if self.active_tab == AppTab::Search && self.search_tab == SearchTab::Players {
+            self.status = status;
+        }
+    }
+
+    fn update_staff_search_status(&mut self) {
+        let status = Self::loaded_dataset_status("Staff", self.staffs.len());
+        self.staff_search_status = Some(status.clone());
+        if self.active_tab == AppTab::Search && self.search_tab == SearchTab::Staff {
+            self.status = status;
+        }
+    }
+
+    fn update_team_search_status(&mut self) {
+        let status = Self::loaded_dataset_status("Team", self.teams.len());
+        self.team_search_status = Some(status.clone());
+        if self.active_tab == AppTab::Search && self.search_tab == SearchTab::Teams {
+            self.status = status;
+        }
+    }
+
+    fn restore_active_search_status(&mut self) {
+        if self.active_tab != AppTab::Search {
+            return;
+        }
+
+        let search_status = match self.search_tab {
+            SearchTab::Players => self.player_search_status.clone(),
+            SearchTab::Staff => self.staff_search_status.clone(),
+            SearchTab::Teams => self.team_search_status.clone(),
+            SearchTab::Lists => Some(format!(
+                "Saved Lists loaded: {}",
+                self.saved_player_lists.len()
+            )),
+            #[cfg(feature = "dev")]
+            SearchTab::History => Some("History is under development".to_string()),
+        };
+
+        if let Some(status) = search_status {
+            self.status = status;
+        }
+    }
+
+    fn render_language_selector(&mut self, ui: &mut egui::Ui) {
+        ui.label(self.localization.tr("settings.language"));
+        let current_language_name = self.localization.current_language_name().to_string();
+        let available_languages = self.localization.available_languages();
+        let mut selected_language = None;
+
+        egui::ComboBox::from_id_salt("app_language_selector")
+            .selected_text(current_language_name)
+            .show_ui(ui, |ui| {
+                for (language_code, language_name) in available_languages {
+                    let is_selected =
+                        self.localization.current_language() == language_code.as_str();
+                    if ui.selectable_label(is_selected, &language_name).clicked() {
+                        selected_language = Some((language_code, language_name));
+                    }
+                }
+            });
+
+        if let Some((language_code, language_name)) = selected_language {
+            match self.localization.select_language(&language_code) {
+                Ok(()) => {
+                    self.status = self.localization.tr_with(
+                        "settings.language_changed",
+                        &[("language", language_name.as_str())],
+                    );
+                }
+                Err(error) => {
+                    self.status = self.localization.tr_with(
+                        "settings.language_error",
+                        &[("error", error.as_str())],
+                    );
+                }
+            }
+        }
+
+        #[cfg(feature = "dev")]
+        {
+            if ui
+                .small_button(self.localization.tr("localization.reload"))
+                .clicked()
+            {
+                self.localization.reload();
+                self.status = self.localization.tr("localization.reloaded");
+            }
+
+            let count = self.localization.debug_issue_count().to_string();
+            ui.label(self.localization.tr_with(
+                "localization.dev_issues",
+                &[("count", count.as_str())],
+            ))
+            .on_hover_text(self.localization.debug_report());
+        }
+    }
+
+    fn compatibility_issue_for(
+        bridge_version: &str,
+        bridge_protocol: Option<u32>,
+        bridge_tfm2_target: Option<&str>,
+    ) -> Option<CompatibilityIssue> {
+        let installed_bridge_version = bridge_version.to_string();
+        let bridge_tfm2_target_owned = bridge_tfm2_target.map(str::to_string);
+
+        if let Some(rule) = unsupported_bridge_rule_for(bridge_version) {
+            let (action, required_bridge_version, required_editor_version) =
+                match rule.requirement {
+                    UnsupportedRequirement::Bridge(required_bridge_version) => (
+                        CompatibilityAction::BridgeUpdate,
+                        Some(required_bridge_version.to_string()),
+                        None,
+                    ),
+                    UnsupportedRequirement::Editor(required_editor_version) => (
+                        CompatibilityAction::EditorUpdate,
+                        None,
+                        Some(required_editor_version.to_string()),
+                    ),
+                };
+            return Some(CompatibilityIssue {
+                severity: CompatibilitySeverity::NotSupported,
+                action,
+                reason: CompatibilityReason::KnownUnsupportedCombination,
+                installed_bridge_version,
+                bridge_tfm2_target: bridge_tfm2_target_owned,
+                required_bridge_version,
+                required_editor_version,
+            });
+        }
+
+        let protocol = match bridge_protocol {
+            Some(protocol) => protocol,
+            None => {
+                return Some(CompatibilityIssue {
+                    severity: CompatibilitySeverity::Warning,
+                    action: compatibility_action_for_version(bridge_version),
+                    reason: CompatibilityReason::UnverifiedLegacyBridge,
+                    installed_bridge_version,
+                    bridge_tfm2_target: bridge_tfm2_target_owned,
+                    required_bridge_version: Some(REQUIRED_BRIDGE_VERSION.to_string()),
+                    required_editor_version: None,
+                });
+            }
+        };
+
+        let target = match bridge_tfm2_target {
+            Some(target) if !target.trim().is_empty() => target,
+            _ => {
+                return Some(CompatibilityIssue {
+                    severity: CompatibilitySeverity::Warning,
+                    action: compatibility_action_for_version(bridge_version),
+                    reason: CompatibilityReason::UnverifiedLegacyBridge,
+                    installed_bridge_version,
+                    bridge_tfm2_target: bridge_tfm2_target_owned,
+                    required_bridge_version: Some(REQUIRED_BRIDGE_VERSION.to_string()),
+                    required_editor_version: None,
+                });
+            }
+        };
+
+        if protocol < MINIMUM_SAFE_BRIDGE_PROTOCOL
+            || protocol > MAXIMUM_SAFE_BRIDGE_PROTOCOL
+        {
+            return Some(CompatibilityIssue {
+                severity: CompatibilitySeverity::NotSupported,
+                action: compatibility_action_for_version(bridge_version),
+                reason: CompatibilityReason::ProtocolMismatch,
+                installed_bridge_version,
+                bridge_tfm2_target: Some(target.to_string()),
+                required_bridge_version: Some(REQUIRED_BRIDGE_VERSION.to_string()),
+                required_editor_version: None,
+            });
+        }
+
+        if target != SUPPORTED_TFM2_VERSION {
+            return Some(CompatibilityIssue {
+                severity: CompatibilitySeverity::Warning,
+                action: CompatibilityAction::GameVersionMismatch,
+                reason: CompatibilityReason::GameTargetMismatch,
+                installed_bridge_version,
+                bridge_tfm2_target: Some(target.to_string()),
+                required_bridge_version: Some(REQUIRED_BRIDGE_VERSION.to_string()),
+                required_editor_version: None,
+            });
+        }
+
+        if protocol != BRIDGE_PROTOCOL_VERSION {
+            return Some(CompatibilityIssue {
+                severity: CompatibilitySeverity::Warning,
+                action: compatibility_action_for_version(bridge_version),
+                reason: CompatibilityReason::ProtocolMismatch,
+                installed_bridge_version,
+                bridge_tfm2_target: Some(target.to_string()),
+                required_bridge_version: Some(REQUIRED_BRIDGE_VERSION.to_string()),
+                required_editor_version: None,
+            });
+        }
+
+        if bridge_version != REQUIRED_BRIDGE_VERSION {
+            return Some(CompatibilityIssue {
+                severity: CompatibilitySeverity::Warning,
+                action: compatibility_action_for_version(bridge_version),
+                reason: CompatibilityReason::VersionMismatch,
+                installed_bridge_version,
+                bridge_tfm2_target: Some(target.to_string()),
+                required_bridge_version: Some(REQUIRED_BRIDGE_VERSION.to_string()),
+                required_editor_version: None,
+            });
+        }
+
+        None
+    }
+
+    fn update_compatibility_state(&mut self) {
+        self.compatibility_issue = Self::compatibility_issue_for(
+            &self.bridge_version,
+            self.bridge_protocol,
+            self.bridge_tfm2_target.as_deref(),
+        );
+
+        if let Some(issue) = self.compatibility_issue.as_ref() {
+            if issue.severity == CompatibilitySeverity::NotSupported {
+                self.connected = false;
+                self.status = self.localization.tr("compatibility.status.connection_blocked");
+            }
+            if !self.compatibility_ignored_for_session {
+                self.compatibility_popup_open = true;
+            }
+        } else {
+            self.compatibility_popup_open = false;
+            self.compatibility_ignored_for_session = false;
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn compatibility_debug_report(&self) -> String {
+        let state = match self.compatibility_issue.as_ref() {
+            None if self.connected => "OK",
+            None => "Unknown",
+            Some(issue) if issue.severity == CompatibilitySeverity::NotSupported => {
+                "Not Supported"
+            }
+            Some(_) => "Warning",
+        };
+        let protocol = self
+            .bridge_protocol
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "missing".to_string());
+        let target = self
+            .bridge_tfm2_target
+            .clone()
+            .unwrap_or_else(|| "missing".to_string());
+        let reason = self
+            .compatibility_issue
+            .as_ref()
+            .map(|issue| format!("{:?}", issue.reason))
+            .unwrap_or_else(|| "None".to_string());
+        let action = self
+            .compatibility_issue
+            .as_ref()
+            .map(|issue| format!("{:?}", issue.action))
+            .unwrap_or_else(|| "None".to_string());
+
+        format!(
+            "Compatibility: {state}
+Reason: {reason}
+Action: {action}
+Editor: {}
+Required Bridge: v{}
+Installed Bridge: v{}
+Expected protocol: {}
+Safe protocol range: {}-{}
+Bridge protocol: {}
+Supported TFM2: v{}
+Bridge TFM2 target: v{}",
+            display_version(),
+            REQUIRED_BRIDGE_VERSION,
+            self.bridge_version,
+            BRIDGE_PROTOCOL_VERSION,
+            MINIMUM_SAFE_BRIDGE_PROTOCOL,
+            MAXIMUM_SAFE_BRIDGE_PROTOCOL,
+            protocol,
+            SUPPORTED_TFM2_VERSION,
+            target,
+        )
+    }
+
+    fn render_compatibility_popup(&mut self, ctx: &egui::Context) {
+        if !self.compatibility_popup_open {
+            return;
+        }
+
+        let Some(issue) = self.compatibility_issue.clone() else {
+            self.compatibility_popup_open = false;
+            return;
+        };
+
+        let mut continue_requested = false;
+        let mut dismiss_requested = false;
+        let mut close_editor_requested = false;
+        let mut github_requested = false;
+        let mut workshop_requested = false;
+
+        let subtitle_key = if issue.severity == CompatibilitySeverity::NotSupported {
+            "compatibility.not_supported.title"
+        } else {
+            match issue.action {
+                CompatibilityAction::BridgeUpdate => "compatibility.bridge_update.title",
+                CompatibilityAction::EditorUpdate => "compatibility.editor_update.title",
+                CompatibilityAction::VerifyInstallation
+                | CompatibilityAction::GameVersionMismatch => {
+                    "compatibility.warning.title"
+                }
+            }
+        };
+        let subtitle = self.localization.tr(subtitle_key);
+        let severity_color = if issue.severity == CompatibilitySeverity::NotSupported {
+            egui::Color32::from_rgb(220, 70, 70)
+        } else {
+            egui::Color32::from_rgb(235, 196, 0)
+        };
+        let popup_frame = egui::Frame::window(&ctx.style())
+            .stroke(egui::Stroke::new(2.0_f32, severity_color));
+
+        egui::Window::new("bridge_compatibility_warning_window")
+            .id(egui::Id::new("bridge_compatibility_warning"))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .frame(popup_frame)
+            .show(ctx, |ui| {
+                ui.set_min_width(540.0);
+
+                ui.label(
+                    egui::RichText::new(
+                        self.localization.tr("compatibility.warning.heading"),
+                    )
+                    .size(19.0)
+                    .strong()
+                    .color(severity_color),
+                );
+                ui.add_space(3.0);
+                ui.label(egui::RichText::new(subtitle.as_str()).size(16.0).strong());
+                ui.add_space(10.0);
+
+                let message_key = match (issue.severity, issue.action, issue.reason) {
+                    (
+                        CompatibilitySeverity::NotSupported,
+                        CompatibilityAction::BridgeUpdate,
+                        _,
+                    ) => "compatibility.not_supported.bridge_message",
+                    (
+                        CompatibilitySeverity::NotSupported,
+                        CompatibilityAction::EditorUpdate,
+                        _,
+                    ) => "compatibility.not_supported.editor_message",
+                    (
+                        CompatibilitySeverity::NotSupported,
+                        _,
+                        CompatibilityReason::ProtocolMismatch,
+                    ) => "compatibility.not_supported.protocol_message",
+                    (CompatibilitySeverity::NotSupported, _, _) => {
+                        "compatibility.not_supported.generic_message"
+                    }
+                    (
+                        CompatibilitySeverity::Warning,
+                        CompatibilityAction::BridgeUpdate,
+                        _,
+                    ) => "compatibility.bridge_update.message",
+                    (
+                        CompatibilitySeverity::Warning,
+                        CompatibilityAction::EditorUpdate,
+                        _,
+                    ) => "compatibility.editor_update.message",
+                    (
+                        CompatibilitySeverity::Warning,
+                        CompatibilityAction::GameVersionMismatch,
+                        _,
+                    ) => "compatibility.warning.game_target_message",
+                    (
+                        CompatibilitySeverity::Warning,
+                        CompatibilityAction::VerifyInstallation,
+                        CompatibilityReason::ProtocolMismatch,
+                    ) => "compatibility.warning.protocol_message",
+                    (CompatibilitySeverity::Warning, CompatibilityAction::VerifyInstallation, _) => {
+                        "compatibility.warning.unverified_message"
+                    }
+                };
+                ui.label(self.localization.tr(message_key));
+                ui.add_space(10.0);
+
+                let editor_version = display_version();
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(
+                            self.localization.tr("compatibility.fields.editor_version"),
+                        )
+                        .strong(),
+                    );
+                    ui.label(editor_version.as_str());
+                });
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(
+                            self.localization.tr("compatibility.fields.installed_bridge"),
+                        )
+                        .strong(),
+                    );
+                    ui.label(format!("v{}", issue.installed_bridge_version));
+                });
+
+                match issue.action {
+                    CompatibilityAction::BridgeUpdate | CompatibilityAction::VerifyInstallation => {
+                        let required_bridge = issue
+                            .required_bridge_version
+                            .as_deref()
+                            .unwrap_or(REQUIRED_BRIDGE_VERSION);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(
+                                    self.localization.tr("compatibility.fields.required_bridge"),
+                                )
+                                .strong(),
+                            );
+                            ui.label(format!("v{required_bridge}"));
+                        });
+                    }
+                    CompatibilityAction::EditorUpdate => {
+                        if issue.severity == CompatibilitySeverity::NotSupported {
+                            let required_editor = issue
+                                .required_editor_version
+                                .as_deref()
+                                .map(|version| format!("v{version}"))
+                                .unwrap_or_else(|| {
+                                    self.localization
+                                        .tr("compatibility.fields.latest_matching_editor")
+                                });
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(
+                                        self.localization
+                                            .tr("compatibility.fields.required_editor"),
+                                    )
+                                    .strong(),
+                                );
+                                ui.label(required_editor);
+                            });
+                        } else {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(
+                                        self.localization
+                                            .tr("compatibility.fields.supported_bridge"),
+                                    )
+                                    .strong(),
+                                );
+                                let supported_bridge = issue
+                                    .required_bridge_version
+                                    .as_deref()
+                                    .unwrap_or(REQUIRED_BRIDGE_VERSION);
+                                ui.label(format!("v{supported_bridge}"));
+                            });
+                        }
+                    }
+                    CompatibilityAction::GameVersionMismatch => {
+                        let bridge_target = issue
+                            .bridge_tfm2_target
+                            .as_deref()
+                            .unwrap_or("unknown");
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(
+                                    self.localization.tr("compatibility.fields.supported_tfm2"),
+                                )
+                                .strong(),
+                            );
+                            ui.label(format!("v{SUPPORTED_TFM2_VERSION}"));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(
+                                    self.localization
+                                        .tr("compatibility.fields.bridge_tfm2_target"),
+                                )
+                                .strong(),
+                            );
+                            ui.label(format!("v{bridge_target}"));
+                        });
+                    }
+                }
+
+                #[cfg(feature = "dev")]
+                {
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.monospace(self.compatibility_debug_report());
+                    ui.separator();
+                }
+
+                ui.add_space(10.0);
+                let instruction_key = match (issue.severity, issue.action) {
+                    (CompatibilitySeverity::NotSupported, CompatibilityAction::BridgeUpdate) => {
+                        "compatibility.not_supported.bridge_instruction"
+                    }
+                    (CompatibilitySeverity::NotSupported, CompatibilityAction::EditorUpdate) => {
+                        "compatibility.not_supported.editor_instruction"
+                    }
+                    (CompatibilitySeverity::NotSupported, _) => {
+                        "compatibility.not_supported.generic_instruction"
+                    }
+                    (CompatibilitySeverity::Warning, CompatibilityAction::BridgeUpdate) => {
+                        "compatibility.bridge_update.instruction"
+                    }
+                    (CompatibilitySeverity::Warning, CompatibilityAction::EditorUpdate) => {
+                        "compatibility.editor_update.instruction"
+                    }
+                    (CompatibilitySeverity::Warning, _) => {
+                        "compatibility.warning.generic_instruction"
+                    }
+                };
+                ui.label(self.localization.tr(instruction_key));
+                ui.add_space(12.0);
+
+                ui.horizontal_wrapped(|ui| {
+                    if issue.severity == CompatibilitySeverity::Warning
+                        && ui
+                            .button(self.localization.tr("compatibility.actions.continue_anyway"))
+                            .clicked()
+                    {
+                        continue_requested = true;
+                    }
+                    if ui
+                        .button(self.localization.tr("compatibility.actions.close"))
+                        .clicked()
+                    {
+                        if issue.severity == CompatibilitySeverity::Warning {
+                            close_editor_requested = true;
+                        } else {
+                            dismiss_requested = true;
+                        }
+                    }
+
+                    match issue.action {
+                        CompatibilityAction::BridgeUpdate
+                        | CompatibilityAction::VerifyInstallation
+                        | CompatibilityAction::GameVersionMismatch => {
+                            let recommended_fill = ui.visuals().selection.bg_fill;
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(
+                                            self.localization
+                                                .tr("compatibility.actions.steam_workshop"),
+                                        )
+                                        .strong(),
+                                    )
+                                    .fill(recommended_fill),
+                                )
+                                .clicked()
+                            {
+                                workshop_requested = true;
+                            }
+                            if ui
+                                .button(
+                                    self.localization
+                                        .tr("compatibility.actions.github_download"),
+                                )
+                                .clicked()
+                            {
+                                github_requested = true;
+                            }
+                        }
+                        CompatibilityAction::EditorUpdate => {
+                            let recommended_fill = ui.visuals().selection.bg_fill;
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(
+                                            self.localization
+                                                .tr("compatibility.actions.download_editor"),
+                                        )
+                                        .strong(),
+                                    )
+                                    .fill(recommended_fill),
+                                )
+                                .clicked()
+                            {
+                                github_requested = true;
+                            }
+                        }
+                    }
+                });
+            });
+
+        if continue_requested || dismiss_requested {
+            self.compatibility_ignored_for_session = true;
+            self.compatibility_popup_open = false;
+        }
+
+        if close_editor_requested {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+
+        if workshop_requested {
+            if let Err(error) = open_url(STEAM_WORKSHOP_URL) {
+                self.status = self.localization.tr_with(
+                    "compatibility.workshop_open_error",
+                    &[("error", error.as_str())],
+                );
+            }
+        }
+
+        if github_requested {
+            if let Err(error) = open_url(GITHUB_RELEASES_URL) {
+                self.status = self.localization.tr_with(
+                    "compatibility.github_open_error",
+                    &[("error", error.as_str())],
+                );
+            }
+        }
+    }
+
+    fn request_raw(command: &str) -> Result<String, String> {
+
         let address: SocketAddr = BRIDGE_ADDR
             .parse()
             .map_err(|_| "Invalid bridge address".to_string())?;
@@ -1416,22 +2749,53 @@ impl ModifierApp {
         Ok(response.trim().to_string())
     }
 
+    fn game_request(&self, command: &str) -> Result<String, String> {
+        if matches!(
+            self.compatibility_issue.as_ref(),
+            Some(issue) if issue.severity == CompatibilitySeverity::NotSupported
+        ) {
+            return Err(self.localization.tr("compatibility.status.command_blocked"));
+        }
+        if !self.connected {
+            return Err(self.localization.tr("connection.not_connected"));
+        }
+        Self::request_raw(command)
+    }
+
     fn refresh_connection(&mut self) {
-        match Self::request("PING") {
+        match Self::request_raw("PING") {
             Ok(response) => {
                 let parts: Vec<&str> = response.split('|').collect();
                 if parts.len() >= 3 && parts[0] == "OK" && parts[1] == "PONG" {
                     self.connected = true;
                     self.bridge_version = parts[2].to_string();
+                    self.bridge_protocol = parts.get(3).and_then(|value| value.parse::<u32>().ok());
+                    self.bridge_tfm2_target = parts
+                        .get(4)
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty());
                     self.status = "Connected to TFM2".to_string();
+                    self.compatibility_ignored_for_session = false;
+                    self.update_compatibility_state();
                 } else {
                     self.connected = false;
+                    self.bridge_version = "-".to_string();
+                    self.bridge_protocol = None;
+                    self.bridge_tfm2_target = None;
+                    self.compatibility_issue = None;
+                    self.compatibility_popup_open = false;
+                    self.compatibility_ignored_for_session = false;
                     self.status = format!("Unexpected bridge response: {response}");
                 }
             }
             Err(error) => {
                 self.connected = false;
                 self.bridge_version = "-".to_string();
+                self.bridge_protocol = None;
+                self.bridge_tfm2_target = None;
+                self.compatibility_issue = None;
+                self.compatibility_popup_open = false;
+                self.compatibility_ignored_for_session = false;
                 self.status = error;
             }
         }
@@ -1447,14 +2811,14 @@ impl ModifierApp {
             return Err(format!("Unexpected response: {response}"));
         }
 
-        self.economy.money = pretty_number(parts[2]);
-        self.economy.transfer_budget = pretty_number(parts[3]);
-        self.economy.salary_budget = pretty_number(parts[4]);
+        self.economy.money = format_internal_amount(parts[2]);
+        self.economy.transfer_budget = format_internal_amount(parts[3]);
+        self.economy.salary_budget = format_internal_amount(parts[4]);
         Ok(())
     }
 
     fn refresh_economy(&mut self) {
-        match Self::request("GET_ECONOMY") {
+        match self.game_request("GET_ECONOMY") {
             Ok(response) => match self.parse_economy_response(&response) {
                 Ok(()) => {
                     self.connected = true;
@@ -1471,9 +2835,9 @@ impl ModifierApp {
 
     fn apply_economy(&mut self) {
         let parsed = [
-            parse_number(&self.economy.money),
-            parse_number(&self.economy.transfer_budget),
-            parse_number(&self.economy.salary_budget),
+            parse_display_to_internal(&self.economy.money),
+            parse_display_to_internal(&self.economy.transfer_budget),
+            parse_display_to_internal(&self.economy.salary_budget),
         ];
 
         if parsed.iter().any(Result::is_err) {
@@ -1484,10 +2848,12 @@ impl ModifierApp {
         let values: Vec<f64> = parsed.into_iter().map(Result::unwrap).collect();
         let command = format!(
             "SET_ECONOMY|{}|{}|{}",
-            values[0], values[1], values[2]
+            format_internal_for_command(values[0]),
+            format_internal_for_command(values[1]),
+            format_internal_for_command(values[2]),
         );
 
-        match Self::request(&command) {
+        match self.game_request(&command) {
             Ok(response) => match self.parse_economy_response(&response) {
                 Ok(()) => {
                     self.connected = true;
@@ -1503,7 +2869,7 @@ impl ModifierApp {
     }
 
     fn refresh_players(&mut self) {
-        match Self::request("GET_PLAYERS") {
+        match self.game_request("GET_PLAYERS") {
             Ok(response) => match parse_players_response(&response) {
                 Ok(players) => {
                     self.connected = true;
@@ -1533,18 +2899,24 @@ impl ModifierApp {
                     } else {
                         self.status = "No players found in the active career".to_string();
                     }
+                    self.update_player_search_status();
                 }
-                Err(error) => self.status = human_error(&error),
+                Err(error) => {
+                    let status = human_error(&error);
+                    self.player_search_status = Some(status.clone());
+                    self.status = status;
+                }
             },
             Err(error) => {
                 self.connected = false;
+                self.player_search_status = Some(error.clone());
                 self.status = error;
             }
         }
     }
 
     fn refresh_staff(&mut self) {
-        match Self::request("GET_STAFFS") {
+        match self.game_request("GET_STAFFS") {
             Ok(response) => match parse_staffs_response(&response) {
                 Ok(staffs) => {
                     self.connected = true;
@@ -1570,14 +2942,32 @@ impl ModifierApp {
                     } else {
                         self.status = "No staff found in the active career".to_string();
                     }
+                    self.update_staff_search_status();
                 }
-                Err(error) => self.status = human_error(&error),
+                Err(error) => {
+                    let status = human_error(&error);
+                    self.staff_search_status = Some(status.clone());
+                    self.status = status;
+                }
             },
             Err(error) => {
                 self.connected = false;
+                self.staff_search_status = Some(error.clone());
                 self.status = error;
             }
         }
+    }
+
+    fn open_player_in_editor(&mut self, athlete_id: usize) {
+        self.selected_player_id = Some(athlete_id);
+        self.active_tab = AppTab::PlayerEditor;
+        self.refresh_selected_player();
+    }
+
+    fn open_staff_in_editor(&mut self, staff_id: usize) {
+        self.selected_staff_id = Some(staff_id);
+        self.active_tab = AppTab::StaffEditor;
+        self.refresh_selected_staff();
     }
 
     fn refresh_selected_staff(&mut self) {
@@ -1586,7 +2976,7 @@ impl ModifierApp {
             return;
         };
 
-        match Self::request(&format!("GET_STAFF|{id}")) {
+        match self.game_request(&format!("GET_STAFF|{id}")) {
             Ok(response) => match parse_staff_response(&response) {
                 Ok(staff) => {
                     self.connected = true;
@@ -1641,7 +3031,7 @@ impl ModifierApp {
             values.join("|")
         );
 
-        match Self::request(&command) {
+        match self.game_request(&command) {
             Ok(response) if response == "OK|STAFF_STATS" => {
                 self.connected = true;
                 self.refresh_selected_staff();
@@ -1673,7 +3063,7 @@ impl ModifierApp {
             return;
         }
 
-        let Ok(annual_salary) = parse_number(&staff.annual_salary) else {
+        let Ok(annual_salary) = parse_display_to_internal(&staff.annual_salary) else {
             self.status = "Salary must contain a valid number".to_string();
             return;
         };
@@ -1684,9 +3074,12 @@ impl ModifierApp {
 
         let staff_id = staff.id;
         let staff_name = staff.name.clone();
-        let command = format!("SET_STAFF_SALARY|{staff_id}|{annual_salary}");
+        let command = format!(
+            "SET_STAFF_SALARY|{staff_id}|{}",
+            format_internal_for_command(annual_salary),
+        );
 
-        match Self::request(&command) {
+        match self.game_request(&command) {
             Ok(response) if response == "OK|STAFF_SALARY" => {
                 self.connected = true;
                 self.refresh_selected_staff();
@@ -1707,7 +3100,7 @@ impl ModifierApp {
     }
 
     fn fill_free_agent_staff_contract_defaults(&mut self, team_id: usize) -> bool {
-        match Self::request(&format!("GET_CONTRACT_DEFAULTS|STAFF|{team_id}")) {
+        match self.game_request(&format!("GET_CONTRACT_DEFAULTS|STAFF|{team_id}")) {
             Ok(response) => match parse_contract_defaults_response(&response) {
                 Ok((start_date, end_date, annual_salary)) => {
                     self.staff_contract_form = ContractEditorForm {
@@ -1715,12 +3108,12 @@ impl ModifierApp {
                         start_date,
                         end_date,
                         annual_salary,
-                        transfer_fee: "0".to_string(),
+                        transfer_fee: "$0".to_string(),
                         league_rank: "1".to_string(),
-                        pog_bonus: "0".to_string(),
-                        league_bonus: "0".to_string(),
-                        match_bonus: "0".to_string(),
-                        win_bonus: "0".to_string(),
+                        pog_bonus: "$0".to_string(),
+                        league_bonus: "$0".to_string(),
+                        match_bonus: "$0".to_string(),
+                        win_bonus: "$0".to_string(),
                         ..ContractEditorForm::default()
                     };
                     true
@@ -1765,11 +3158,11 @@ impl ModifierApp {
             start_date: display_contract_date(&staff.contract_start_date),
             end_date: display_contract_date(&staff.contract_end_date),
             annual_salary: if staff.annual_salary.trim().is_empty() {
-                "0".to_string()
+                "$0".to_string()
             } else {
                 staff.annual_salary.clone()
             },
-            transfer_fee: "0".to_string(),
+            transfer_fee: "$0".to_string(),
             ..ContractEditorForm::default()
         };
     }
@@ -1803,7 +3196,7 @@ impl ModifierApp {
             self.status = "Contract end date cannot be before the start date".to_string();
             return;
         }
-        let Ok(annual_salary) = parse_number(&self.staff_contract_form.annual_salary) else {
+        let Ok(annual_salary) = parse_display_to_internal(&self.staff_contract_form.annual_salary) else {
             self.status = "Salary must contain a valid number".to_string();
             return;
         };
@@ -1817,9 +3210,10 @@ impl ModifierApp {
         let previous_team_id = staff.contract_team_id;
         let editor_mode = self.staff_contract_mode;
         let command = format!(
-            "SET_STAFF_CONTRACT|{staff_id}|{team_id}|{start_date}|{end_date}|{annual_salary}"
+            "SET_STAFF_CONTRACT|{staff_id}|{team_id}|{start_date}|{end_date}|{}",
+            format_internal_for_command(annual_salary),
         );
-        match Self::request(&command) {
+        match self.game_request(&command) {
             Ok(response) => match parse_staff_response(&response) {
                 Ok(updated) => {
                     self.connected = true;
@@ -1862,7 +3256,7 @@ impl ModifierApp {
         let staff_id = staff.id;
         let staff_name = staff.name.clone();
         let command = format!("GET_STAFF_CONTRACT_PROBE|{staff_id}");
-        match Self::request(&command) {
+        match self.game_request(&command) {
             Ok(response) => {
                 let parts: Vec<&str> = response.split('|').collect();
                 if parts.first() == Some(&"ERR") {
@@ -1899,7 +3293,7 @@ impl ModifierApp {
         let athlete_id = player.id;
         let player_name = player.name.clone();
         let command = format!("GET_PLAYER_CONTRACT_PROBE|{athlete_id}");
-        match Self::request(&command) {
+        match self.game_request(&command) {
             Ok(response) => {
                 let parts: Vec<&str> = response.split('|').collect();
                 if parts.first() == Some(&"ERR") {
@@ -2017,7 +3411,7 @@ impl ModifierApp {
             "SET_STAFF_COMMUNICATION|{staff_id}|{region_id}={value}"
         );
 
-        match Self::request(&command) {
+        match self.game_request(&command) {
             Ok(response) if response == "OK|STAFF_COMMUNICATION" => {
                 self.connected = true;
                 self.refresh_selected_staff();
@@ -2049,7 +3443,7 @@ impl ModifierApp {
             return;
         };
 
-        match Self::request(&format!("GET_PLAYER|{id}")) {
+        match self.game_request(&format!("GET_PLAYER|{id}")) {
             Ok(response) => match parse_player_response(&response) {
                 Ok(player) => {
                     self.connected = true;
@@ -2107,7 +3501,7 @@ impl ModifierApp {
             return;
         };
 
-        match Self::request(&format!("GET_CHAMPION_MASTERY_PROBE|{athlete_id}")) {
+        match self.game_request(&format!("GET_CHAMPION_MASTERY_PROBE|{athlete_id}")) {
             Ok(response) => {
                 let parts = response.split('|').collect::<Vec<_>>();
                 if parts.first() == Some(&"ERR") {
@@ -2241,7 +3635,7 @@ impl ModifierApp {
             selected.join(";")
         );
 
-        match Self::request(&command) {
+        match self.game_request(&command) {
             Ok(response) => {
                 let parts = response.split('|').collect::<Vec<_>>();
                 if parts.first() == Some(&"ERR") {
@@ -2379,10 +3773,10 @@ impl ModifierApp {
         let player_name = self
             .selected_player
             .as_ref()
-            .map(|player| player.name.as_str())
-            .unwrap_or("Selected Player");
+            .map(|player| player.name.clone())
+            .unwrap_or_else(|| self.localization.tr("champion_mastery.selected_player"));
 
-        egui::Window::new(format!("Champion Mastery — {player_name}"))
+        egui::Window::new(self.localization.tr_with("champion_mastery.window_title", &[("player", player_name.as_str())]))
             .id(egui::Id::new("champion_mastery_grid_v030"))
             .open(&mut open)
             .resizable(true)
@@ -2407,31 +3801,31 @@ impl ModifierApp {
                     ));
                     ui.separator();
 
-                    if ui.button("Check Active").clicked() {
+                    if ui.button(self.localization.tr("champion_mastery.check_active")).clicked() {
                         for entry in &mut self.champion_mastery_entries {
                             entry.selected = entry.active;
                         }
                     }
 
-                    if ui.button("Check Inactive").clicked() {
+                    if ui.button(self.localization.tr("champion_mastery.check_inactive")).clicked() {
                         for entry in &mut self.champion_mastery_entries {
                             entry.selected = !entry.active;
                         }
                     }
 
-                    if ui.button("Check All").clicked() {
+                    if ui.button(self.localization.tr("champion_mastery.check_all")).clicked() {
                         for entry in &mut self.champion_mastery_entries {
                             entry.selected = true;
                         }
                     }
 
-                    if ui.button("Clear Checks").clicked() {
+                    if ui.button(self.localization.tr("champion_mastery.clear_checks")).clicked() {
                         for entry in &mut self.champion_mastery_entries {
                             entry.selected = false;
                         }
                     }
 
-                    if ui.button("Refresh").clicked() {
+                    if ui.button(self.localization.tr("common.refresh")).clicked() {
                         refresh_requested = true;
                     }
                 });
@@ -2439,7 +3833,7 @@ impl ModifierApp {
                 ui.add_space(6.0);
 
                 ui.horizontal_wrapped(|ui| {
-                    ui.label("Bulk Mastery");
+                    ui.label(self.localization.tr("champion_mastery.bulk"));
                     ui.add(
                         egui::Slider::new(
                             &mut self.champion_mastery_bulk_value,
@@ -2451,7 +3845,7 @@ impl ModifierApp {
                     if ui
                         .add_enabled(
                             selected_count > 0,
-                            egui::Button::new("Set Checked"),
+                            egui::Button::new(self.localization.tr("champion_mastery.set_checked")),
                         )
                         .clicked()
                     {
@@ -2468,7 +3862,7 @@ impl ModifierApp {
                     if ui
                         .add_enabled(
                             self.connected && selected_count > 0,
-                            egui::Button::new("Apply Selected"),
+                            egui::Button::new(self.localization.tr("champion_mastery.apply_selected")),
                         )
                         .clicked()
                     {
@@ -2477,7 +3871,7 @@ impl ModifierApp {
                 });
 
                 ui.add_space(6.0);
-                ui.weak(champion_mastery_help_text());
+                ui.weak(self.localization.tr(champion_mastery_help_key()));
 
                 ui.add_space(8.0);
                 ui.separator();
@@ -2498,10 +3892,8 @@ impl ModifierApp {
                     .id_salt("champion_mastery_grid_scroll")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.heading("Active Champions");
-                        ui.label(
-                            "Currently available in this save. Highlighted for quick identification.",
-                        );
+                        ui.heading(self.localization.tr("champion_mastery.active_heading"));
+                        ui.label(self.localization.tr("champion_mastery.active_info"));
                         ui.add_space(4.0);
 
                         let active_indices = self
@@ -2532,10 +3924,8 @@ impl ModifierApp {
                         ui.separator();
                         ui.add_space(8.0);
 
-                        ui.heading(
-                            "Inactive / Not Yet Available in This Save",
-                        );
-                        ui.label(champion_inactive_info_text());
+                        ui.heading(self.localization.tr("champion_mastery.inactive_heading"));
+                        ui.label(self.localization.tr(champion_inactive_info_key()));
                         ui.add_space(4.0);
 
                         let inactive_indices = self
@@ -2587,10 +3977,10 @@ impl ModifierApp {
             .selected_player
             .as_ref()
             .map(|player| format!("{} · ID {}", player.name, player.id))
-            .unwrap_or_else(|| "No player selected".to_string());
+            .unwrap_or_else(|| self.localization.tr("contract.no_player_selected"));
         let teams = self.teams.clone();
 
-        egui::Window::new("Edit Player Contract")
+        egui::Window::new(self.localization.tr("contract.player.window_title"))
             .id(egui::Id::new("edit_player_contract_v039"))
             .open(&mut open)
             .resizable(true)
@@ -2600,13 +3990,13 @@ impl ModifierApp {
                 ui.strong(target);
                 let active_team_id = self.selected_player.as_ref().and_then(|player| player.contract_team_id);
                 if self.player_contract_mode == ContractEditorMode::MoveFreeAgent {
-                    ui.weak("Mode: Create an active contract and move this free-agent player to the selected team.");
+                    ui.weak(self.localization.tr("contract.mode.player.free_agent_move"));
                 } else {
                     match (active_team_id, self.player_contract_form.team_id) {
-                        (None, Some(_)) => ui.weak("Mode: Create an active contract for this free-agent player."),
-                        (Some(current), Some(selected)) if current != selected => ui.weak("Mode: Move the player and apply the edited active contract."),
-                        (Some(_), _) => ui.weak("Mode: Edit the current active contract."),
-                        _ => ui.weak("Select a team before applying the contract."),
+                        (None, Some(_)) => ui.weak(self.localization.tr("contract.mode.player.free_agent_create")),
+                        (Some(current), Some(selected)) if current != selected => ui.weak(self.localization.tr("contract.mode.player.move_existing")),
+                        (Some(_), _) => ui.weak(self.localization.tr("contract.mode.player.edit_active")),
+                        _ => ui.weak(self.localization.tr("contract.mode.player.select_team")),
                     };
                 }
                 ui.add_space(8.0);
@@ -2615,14 +4005,14 @@ impl ModifierApp {
                     .player_contract_form
                     .team_id
                     .and_then(|id| teams.iter().find(|team| team.id == id))
-                    .map(TeamSummary::label)
-                    .unwrap_or_else(|| "Select team...".to_string());
+                    .map(|team| team.localized_label(&self.localization))
+                    .unwrap_or_else(|| self.localization.tr("common.select_team"));
 
                 egui::Grid::new("edit_player_contract_main_grid")
                     .num_columns(2)
                     .spacing([22.0, 8.0])
                     .show(ui, |ui| {
-                        ui.label("Team");
+                        ui.label(self.localization.tr("common.team"));
                         egui::ComboBox::from_id_salt("edit_player_contract_team")
                             .selected_text(selected_team)
                             .width(350.0)
@@ -2632,13 +4022,13 @@ impl ModifierApp {
                                     ui.selectable_value(
                                         &mut self.player_contract_form.team_id,
                                         Some(team.id),
-                                        team.label(),
+                                        team.localized_label(&self.localization),
                                     );
                                 }
                             });
                         ui.end_row();
 
-                        ui.label("Contract Start");
+                        ui.label(self.localization.tr("contract.start"));
                         ui.add(
                             egui::TextEdit::singleline(&mut self.player_contract_form.start_date)
                                 .desired_width(180.0)
@@ -2646,7 +4036,7 @@ impl ModifierApp {
                         );
                         ui.end_row();
 
-                        ui.label("Contract End");
+                        ui.label(self.localization.tr("contract.end"));
                         ui.add(
                             egui::TextEdit::singleline(&mut self.player_contract_form.end_date)
                                 .desired_width(180.0)
@@ -2654,30 +4044,36 @@ impl ModifierApp {
                         );
                         ui.end_row();
 
-                        ui.label("Annual Salary");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.player_contract_form.annual_salary)
-                                .desired_width(180.0),
+                        ui.label(self.localization.tr("contract.annual_salary"));
+                        money_text_edit_with_preview(
+                            ui,
+                            &self.localization,
+                            &mut self.player_contract_form.annual_salary,
+                            180.0,
+                            true,
                         );
                         ui.end_row();
 
-                        ui.label("Transfer Fee");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.player_contract_form.transfer_fee)
-                                .desired_width(180.0),
+                        ui.label(self.localization.tr("contract.transfer_fee"));
+                        money_text_edit_with_preview(
+                            ui,
+                            &self.localization,
+                            &mut self.player_contract_form.transfer_fee,
+                            180.0,
+                            true,
                         );
                         ui.end_row();
 
-                        ui.label("Squad Status");
+                        ui.label(self.localization.tr("contract.squad_status"));
                         egui::ComboBox::from_id_salt("edit_player_contract_squad_status")
-                            .selected_text(self.player_contract_form.squad_status.label())
+                            .selected_text(self.localization.tr(self.player_contract_form.squad_status.label_key()))
                             .width(220.0)
                             .show_ui(ui, |ui| {
                                 for status in SquadStatusChoice::ALL {
                                     ui.selectable_value(
                                         &mut self.player_contract_form.squad_status,
                                         status,
-                                        status.label(),
+                                        self.localization.tr(status.label_key()),
                                     );
                                 }
                             });
@@ -2686,30 +4082,36 @@ impl ModifierApp {
 
                 ui.add_space(10.0);
                 ui.separator();
-                ui.strong("Active Contract Bonuses");
+                ui.strong(self.localization.tr("contract.active_bonuses"));
                 ui.add_space(5.0);
 
                 egui::Grid::new("edit_player_contract_bonus_grid")
                     .num_columns(3)
                     .spacing([14.0, 7.0])
                     .show(ui, |ui| {
-                        ui.checkbox(&mut self.player_contract_form.pog_enabled, "POG Award Bonus");
-                        ui.add_enabled(
-                            self.player_contract_form.pog_enabled,
-                            egui::TextEdit::singleline(&mut self.player_contract_form.pog_bonus)
-                                .desired_width(150.0),
+                        ui.checkbox(&mut self.player_contract_form.pog_enabled, self.localization.tr("contract.pog_bonus"));
+                        let pog_enabled = self.player_contract_form.pog_enabled;
+                        money_text_edit_with_preview(
+                            ui,
+                            &self.localization,
+                            &mut self.player_contract_form.pog_bonus,
+                            150.0,
+                            pog_enabled,
                         );
-                        ui.weak("Amount");
+                        ui.weak(self.localization.tr("contract.amount"));
                         ui.end_row();
 
-                        ui.checkbox(&mut self.player_contract_form.league_enabled, "League Rank Bonus");
-                        ui.add_enabled(
-                            self.player_contract_form.league_enabled,
-                            egui::TextEdit::singleline(&mut self.player_contract_form.league_bonus)
-                                .desired_width(150.0),
+                        ui.checkbox(&mut self.player_contract_form.league_enabled, self.localization.tr("contract.league_rank_bonus"));
+                        let league_enabled = self.player_contract_form.league_enabled;
+                        money_text_edit_with_preview(
+                            ui,
+                            &self.localization,
+                            &mut self.player_contract_form.league_bonus,
+                            150.0,
+                            league_enabled,
                         );
                         ui.horizontal(|ui| {
-                            ui.weak("Rank");
+                            ui.weak(self.localization.tr("contract.rank"));
                             ui.add_enabled_ui(self.player_contract_form.league_enabled, |ui| {
                                 egui::ComboBox::from_id_salt("edit_player_contract_league_rank")
                                     .selected_text(format!("Rank {}", self.player_contract_form.league_rank))
@@ -2727,31 +4129,37 @@ impl ModifierApp {
                         });
                         ui.end_row();
 
-                        ui.checkbox(&mut self.player_contract_form.match_enabled, "Match Appearance Bonus");
-                        ui.add_enabled(
-                            self.player_contract_form.match_enabled,
-                            egui::TextEdit::singleline(&mut self.player_contract_form.match_bonus)
-                                .desired_width(150.0),
+                        ui.checkbox(&mut self.player_contract_form.match_enabled, self.localization.tr("contract.match_appearance_bonus"));
+                        let match_enabled = self.player_contract_form.match_enabled;
+                        money_text_edit_with_preview(
+                            ui,
+                            &self.localization,
+                            &mut self.player_contract_form.match_bonus,
+                            150.0,
+                            match_enabled,
                         );
-                        ui.weak("Amount");
+                        ui.weak(self.localization.tr("contract.amount"));
                         ui.end_row();
 
-                        ui.checkbox(&mut self.player_contract_form.win_enabled, "Match Win Bonus");
-                        ui.add_enabled(
-                            self.player_contract_form.win_enabled,
-                            egui::TextEdit::singleline(&mut self.player_contract_form.win_bonus)
-                                .desired_width(150.0),
+                        ui.checkbox(&mut self.player_contract_form.win_enabled, self.localization.tr("contract.match_win_bonus"));
+                        let win_enabled = self.player_contract_form.win_enabled;
+                        money_text_edit_with_preview(
+                            ui,
+                            &self.localization,
+                            &mut self.player_contract_form.win_bonus,
+                            150.0,
+                            win_enabled,
                         );
-                        ui.weak("Amount");
+                        ui.weak(self.localization.tr("contract.amount"));
                         ui.end_row();
                     });
 
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     let apply_label = if self.player_contract_mode == ContractEditorMode::MoveFreeAgent {
-                        "Apply Contract & Move Player"
+                        self.localization.tr("contract.apply_move_player")
                     } else {
-                        "Apply Contract"
+                        self.localization.tr("contract.apply")
                     };
                     if ui
                         .add_enabled(self.connected, egui::Button::new(apply_label))
@@ -2760,11 +4168,11 @@ impl ModifierApp {
                         apply_requested = true;
                     }
                     let reset_help = if self.player_contract_mode == ContractEditorMode::MoveFreeAgent {
-                        "Restore the automatic free-agent contract defaults and keep the selected destination team."
+                        self.localization.tr("contract.reset_free_agent_help")
                     } else {
-                        "Reload the current live contract values."
+                        self.localization.tr("contract.reset_live_help")
                     };
-                    if ui.button("Reset").on_hover_text(reset_help).clicked() {
+                    if ui.button(self.localization.tr("common.reset")).on_hover_text(reset_help).clicked() {
                         reset_requested = true;
                     }
                     #[cfg(feature = "dev")]
@@ -2774,7 +4182,7 @@ impl ModifierApp {
                     {
                         self.load_player_contract_probe();
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(self.localization.tr("common.cancel")).clicked() {
                         cancel_requested = true;
                     }
                 });
@@ -2807,11 +4215,18 @@ impl ModifierApp {
         let target = self
             .selected_staff
             .as_ref()
-            .map(|staff| format!("{} · {} · ID {}", staff.name, display_staff_role(&staff.role), staff.id))
-            .unwrap_or_else(|| "No staff selected".to_string());
+            .map(|staff| {
+                format!(
+                    "{} · {} · ID {}",
+                    staff.name,
+                    localized_staff_role(&self.localization, &staff.role),
+                    staff.id,
+                )
+            })
+            .unwrap_or_else(|| self.localization.tr("contract.no_staff_selected"));
         let teams = self.teams.clone();
 
-        egui::Window::new("Edit Staff Contract")
+        egui::Window::new(self.localization.tr("contract.staff.window_title"))
             .id(egui::Id::new("edit_staff_contract_v039"))
             .open(&mut open)
             .resizable(false)
@@ -2821,13 +4236,13 @@ impl ModifierApp {
                 ui.strong(target);
                 let active_team_id = self.selected_staff.as_ref().and_then(|staff| staff.contract_team_id);
                 if self.staff_contract_mode == ContractEditorMode::MoveFreeAgent {
-                    ui.weak("Mode: Create an active contract and move this free-agent staff member to the selected team.");
+                    ui.weak(self.localization.tr("contract.mode.staff.free_agent_move"));
                 } else {
                     match (active_team_id, self.staff_contract_form.team_id) {
-                        (None, Some(_)) => ui.weak("Mode: Create an active contract for this free-agent staff member."),
-                        (Some(current), Some(selected)) if current != selected => ui.weak("Mode: Move staff to another team and apply the edited active contract. Old recruitment requests are cleared when the team changes."),
-                        (Some(_), _) => ui.weak("Mode: Edit the current active staff contract in place while preserving existing contract data."),
-                        _ => ui.weak("Select a team before applying the active contract."),
+                        (None, Some(_)) => ui.weak(self.localization.tr("contract.mode.staff.free_agent_create")),
+                        (Some(current), Some(selected)) if current != selected => ui.weak(self.localization.tr("contract.mode.staff.move_existing")),
+                        (Some(_), _) => ui.weak(self.localization.tr("contract.mode.staff.edit_active")),
+                        _ => ui.weak(self.localization.tr("contract.mode.staff.select_team")),
                     };
                 }
                 ui.add_space(8.0);
@@ -2836,14 +4251,14 @@ impl ModifierApp {
                     .staff_contract_form
                     .team_id
                     .and_then(|id| teams.iter().find(|team| team.id == id))
-                    .map(TeamSummary::label)
-                    .unwrap_or_else(|| "Select team...".to_string());
+                    .map(|team| team.localized_label(&self.localization))
+                    .unwrap_or_else(|| self.localization.tr("common.select_team"));
 
                 egui::Grid::new("staff_contract_builder_grid")
                     .num_columns(2)
                     .spacing([22.0, 8.0])
                     .show(ui, |ui| {
-                        ui.label("Team");
+                        ui.label(self.localization.tr("common.team"));
                         egui::ComboBox::from_id_salt("staff_contract_team")
                             .selected_text(selected_team)
                             .width(330.0)
@@ -2853,13 +4268,13 @@ impl ModifierApp {
                                     ui.selectable_value(
                                         &mut self.staff_contract_form.team_id,
                                         Some(team.id),
-                                        team.label(),
+                                        team.localized_label(&self.localization),
                                     );
                                 }
                             });
                         ui.end_row();
 
-                        ui.label("Start Date");
+                        ui.label(self.localization.tr("contract.start_date"));
                         ui.add(
                             egui::TextEdit::singleline(&mut self.staff_contract_form.start_date)
                                 .desired_width(180.0)
@@ -2867,7 +4282,7 @@ impl ModifierApp {
                         );
                         ui.end_row();
 
-                        ui.label("End Date");
+                        ui.label(self.localization.tr("contract.end_date"));
                         ui.add(
                             egui::TextEdit::singleline(&mut self.staff_contract_form.end_date)
                                 .desired_width(180.0)
@@ -2875,21 +4290,24 @@ impl ModifierApp {
                         );
                         ui.end_row();
 
-                        ui.label("Annual Salary");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.staff_contract_form.annual_salary)
-                                .desired_width(180.0),
+                        ui.label(self.localization.tr("contract.annual_salary"));
+                        money_text_edit_with_preview(
+                            ui,
+                            &self.localization,
+                            &mut self.staff_contract_form.annual_salary,
+                            180.0,
+                            true,
                         );
                         ui.end_row();
                     });
 
                 ui.add_space(8.0);
-                ui.weak("This edits the active staff contract directly.");
+                ui.weak(self.localization.tr("contract.staff.direct_info"));
                 ui.horizontal(|ui| {
                     let apply_label = if self.staff_contract_mode == ContractEditorMode::MoveFreeAgent {
-                        "Apply Contract & Move Staff"
+                        self.localization.tr("contract.apply_move_staff")
                     } else {
-                        "Apply Contract"
+                        self.localization.tr("contract.apply")
                     };
                     if ui
                         .add_enabled(self.connected, egui::Button::new(apply_label))
@@ -2898,11 +4316,11 @@ impl ModifierApp {
                         apply_requested = true;
                     }
                     let reset_help = if self.staff_contract_mode == ContractEditorMode::MoveFreeAgent {
-                        "Restore the automatic free-agent contract defaults and keep the selected destination team."
+                        self.localization.tr("contract.reset_free_agent_help")
                     } else {
-                        "Reload the current live contract values."
+                        self.localization.tr("contract.reset_live_help")
                     };
-                    if ui.button("Reset").on_hover_text(reset_help).clicked() {
+                    if ui.button(self.localization.tr("common.reset")).on_hover_text(reset_help).clicked() {
                         reset_requested = true;
                     }
                     #[cfg(feature = "dev")]
@@ -2912,7 +4330,7 @@ impl ModifierApp {
                     {
                         self.load_staff_contract_probe();
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(self.localization.tr("common.cancel")).clicked() {
                         cancel_requested = true;
                     }
                 });
@@ -3039,7 +4457,7 @@ impl ModifierApp {
                     if ui.button("Export All Captures").clicked() {
                         self.export_player_contract_probe();
                     }
-                    if ui.button("Clear All").clicked() {
+                    if ui.button(self.localization.tr("player_editor.positions.clear_all")).clicked() {
                         self.player_contract_probe_raw.clear();
                         self.player_contract_probe_before.clear();
                         self.player_contract_probe_after_offer.clear();
@@ -3186,7 +4604,7 @@ impl ModifierApp {
                     if ui.button("Export All Captures").clicked() {
                         self.export_staff_contract_probe();
                     }
-                    if ui.button("Clear All").clicked() {
+                    if ui.button(self.localization.tr("player_editor.positions.clear_all")).clicked() {
                         self.staff_contract_probe_raw.clear();
                         self.staff_contract_probe_before.clear();
                         self.staff_contract_probe_after_offer.clear();
@@ -3248,7 +4666,7 @@ impl ModifierApp {
             values.join("|")
         );
 
-        match Self::request(&command) {
+        match self.game_request(&command) {
             Ok(response) => match parse_player_response(&response) {
                 Ok(updated) => {
                     self.connected = true;
@@ -3288,7 +4706,7 @@ impl ModifierApp {
             player.id, values[0], values[1], values[2], values[3], values[4]
         );
 
-        match Self::request(&command) {
+        match self.game_request(&command) {
             Ok(response) => match parse_player_response(&response) {
                 Ok(updated) => {
                     self.connected = true;
@@ -3323,7 +4741,7 @@ impl ModifierApp {
             potential.edit_raw
         );
 
-        match Self::request(&command) {
+        match self.game_request(&command) {
             Ok(response) => match parse_player_response(&response) {
                 Ok(updated) => {
                     self.connected = true;
@@ -3353,7 +4771,7 @@ impl ModifierApp {
             return;
         }
 
-        let Ok(annual_salary) = parse_number(&player.annual_salary) else {
+        let Ok(annual_salary) = parse_display_to_internal(&player.annual_salary) else {
             self.status = "Salary must contain a valid number".to_string();
             return;
         };
@@ -3362,8 +4780,12 @@ impl ModifierApp {
             return;
         }
 
-        let command = format!("SET_PLAYER_SALARY|{}|{}", player.id, annual_salary);
-        match Self::request(&command) {
+        let command = format!(
+            "SET_PLAYER_SALARY|{}|{}",
+            player.id,
+            format_internal_for_command(annual_salary),
+        );
+        match self.game_request(&command) {
             Ok(response) => match parse_player_response(&response) {
                 Ok(updated) => {
                     self.connected = true;
@@ -3383,7 +4805,7 @@ impl ModifierApp {
     }
 
     fn fill_free_agent_player_contract_defaults(&mut self, team_id: usize) -> bool {
-        match Self::request(&format!("GET_CONTRACT_DEFAULTS|PLAYER|{team_id}")) {
+        match self.game_request(&format!("GET_CONTRACT_DEFAULTS|PLAYER|{team_id}")) {
             Ok(response) => match parse_contract_defaults_response(&response) {
                 Ok((start_date, end_date, annual_salary)) => {
                     self.player_contract_form = ContractEditorForm {
@@ -3391,17 +4813,17 @@ impl ModifierApp {
                         start_date,
                         end_date,
                         annual_salary,
-                        transfer_fee: "0".to_string(),
+                        transfer_fee: "$0".to_string(),
                         squad_status: SquadStatusChoice::General,
                         pog_enabled: false,
-                        pog_bonus: "0".to_string(),
+                        pog_bonus: "$0".to_string(),
                         league_enabled: false,
-                        league_bonus: "0".to_string(),
+                        league_bonus: "$0".to_string(),
                         league_rank: "1".to_string(),
                         match_enabled: false,
-                        match_bonus: "0".to_string(),
+                        match_bonus: "$0".to_string(),
                         win_enabled: false,
-                        win_bonus: "0".to_string(),
+                        win_bonus: "$0".to_string(),
                     };
                     true
                 }
@@ -3445,12 +4867,12 @@ impl ModifierApp {
             start_date: display_contract_date(&player.contract_start_date),
             end_date: display_contract_date(&player.contract_end_date),
             annual_salary: if player.annual_salary.trim().is_empty() {
-                "0".to_string()
+                "$0".to_string()
             } else {
                 player.annual_salary.clone()
             },
             transfer_fee: if player.transfer_fee.trim().is_empty() {
-                "0".to_string()
+                "$0".to_string()
             } else {
                 player.transfer_fee.clone()
             },
@@ -3500,11 +4922,11 @@ impl ModifierApp {
             self.status = "Contract end date cannot be before the start date".to_string();
             return;
         }
-        let Ok(annual_salary) = parse_number(&self.player_contract_form.annual_salary) else {
+        let Ok(annual_salary) = parse_display_to_internal(&self.player_contract_form.annual_salary) else {
             self.status = "Salary must contain a valid number".to_string();
             return;
         };
-        let Ok(transfer_fee) = parse_number(&self.player_contract_form.transfer_fee) else {
+        let Ok(transfer_fee) = parse_display_to_internal(&self.player_contract_form.transfer_fee) else {
             self.status = "Transfer fee must contain a valid number".to_string();
             return;
         };
@@ -3517,25 +4939,26 @@ impl ModifierApp {
             if !enabled {
                 return Ok(0.0);
             }
-            let value = parse_number(raw).map_err(|_| format!("{label} must contain a valid number"))?;
+            let value = parse_display_to_internal(raw)
+                .map_err(|_| format!("{label} must contain a valid number"))?;
             if value < 0.0 {
                 return Err(format!("{label} cannot be negative"));
             }
             Ok(value)
         };
-        let pog_bonus = match bonus_value(self.player_contract_form.pog_enabled, &self.player_contract_form.pog_bonus, "POG Award Bonus") {
+        let pog_bonus = match bonus_value(self.player_contract_form.pog_enabled, &self.player_contract_form.pog_bonus, &self.localization.tr("contract.pog_bonus")) {
             Ok(value) => value,
             Err(error) => { self.status = error; return; }
         };
-        let league_bonus = match bonus_value(self.player_contract_form.league_enabled, &self.player_contract_form.league_bonus, "League Rank Bonus") {
+        let league_bonus = match bonus_value(self.player_contract_form.league_enabled, &self.player_contract_form.league_bonus, &self.localization.tr("contract.league_rank_bonus")) {
             Ok(value) => value,
             Err(error) => { self.status = error; return; }
         };
-        let match_bonus = match bonus_value(self.player_contract_form.match_enabled, &self.player_contract_form.match_bonus, "Match Appearance Bonus") {
+        let match_bonus = match bonus_value(self.player_contract_form.match_enabled, &self.player_contract_form.match_bonus, &self.localization.tr("contract.match_appearance_bonus")) {
             Ok(value) => value,
             Err(error) => { self.status = error; return; }
         };
-        let win_bonus = match bonus_value(self.player_contract_form.win_enabled, &self.player_contract_form.win_bonus, "Match Win Bonus") {
+        let win_bonus = match bonus_value(self.player_contract_form.win_enabled, &self.player_contract_form.win_bonus, &self.localization.tr("contract.match_win_bonus")) {
             Ok(value) => value,
             Err(error) => { self.status = error; return; }
         };
@@ -3556,14 +4979,20 @@ impl ModifierApp {
         let previous_team_id = player.contract_team_id;
         let editor_mode = self.player_contract_mode;
         let command = format!(
-            "SET_PLAYER_CONTRACT|{athlete_id}|{team_id}|{start_date}|{end_date}|{annual_salary}|{transfer_fee}|{}|{}|{pog_bonus}|{}|{league_bonus}|{league_rank}|{}|{match_bonus}|{}|{win_bonus}",
+            "SET_PLAYER_CONTRACT|{athlete_id}|{team_id}|{start_date}|{end_date}|{}|{}|{}|{}|{}|{}|{}|{league_rank}|{}|{}|{}|{}",
+            format_internal_for_command(annual_salary),
+            format_internal_for_command(transfer_fee),
             self.player_contract_form.squad_status.internal(),
             bool_digit(self.player_contract_form.pog_enabled),
+            format_internal_for_command(pog_bonus),
             bool_digit(self.player_contract_form.league_enabled),
+            format_internal_for_command(league_bonus),
             bool_digit(self.player_contract_form.match_enabled),
+            format_internal_for_command(match_bonus),
             bool_digit(self.player_contract_form.win_enabled),
+            format_internal_for_command(win_bonus),
         );
-        match Self::request(&command) {
+        match self.game_request(&command) {
             Ok(response) => match parse_player_response(&response) {
                 Ok(updated) => {
                     self.connected = true;
@@ -3622,7 +5051,7 @@ impl ModifierApp {
         };
 
         let command = format!("SET_PLAYER_COMMUNICATION|{}|{}|{}", player.id, region_id, value);
-        match Self::request(&command) {
+        match self.game_request(&command) {
             Ok(response) => match parse_player_response(&response) {
                 Ok(updated) => {
                     self.connected = true;
@@ -3653,48 +5082,51 @@ impl ModifierApp {
 
 
     fn render_economy_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Economy");
-        ui.label("Edit the active team's economy. Apply now writes both the client snapshot and authoritative server state.");
+        ui.heading(self.localization.tr("economy.heading"));
+        ui.label(self.localization.tr(economy_info_key()));
         ui.add_space(8.0);
 
         egui::Grid::new("economy_grid")
             .num_columns(2)
             .spacing([16.0, 8.0])
             .show(ui, |ui| {
-                ui.label("Money");
-                ui.text_edit_singleline(&mut self.economy.money);
+                ui.label(self.localization.tr("economy.money"));
+                money_text_edit_with_preview(ui, &self.localization, &mut self.economy.money, 180.0, true);
                 ui.end_row();
 
-                ui.label("Transfer Budget");
-                ui.text_edit_singleline(&mut self.economy.transfer_budget);
+                ui.label(self.localization.tr("economy.transfer_budget"));
+                money_text_edit_with_preview(ui, &self.localization, &mut self.economy.transfer_budget, 180.0, true);
                 ui.end_row();
 
-                ui.label("Salary Budget");
-                ui.text_edit_singleline(&mut self.economy.salary_budget);
+                ui.label(self.localization.tr("economy.salary_budget"));
+                money_text_edit_with_preview(ui, &self.localization, &mut self.economy.salary_budget, 180.0, true);
                 ui.end_row();
             });
 
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(self.connected, egui::Button::new("Refresh"))
+                .add_enabled(self.connected, egui::Button::new(self.localization.tr("common.refresh")))
                 .clicked()
             {
                 self.refresh_economy();
             }
 
             if ui
-                .add_enabled(self.connected, egui::Button::new("Apply Economy"))
+                .add_enabled(
+                    self.connected,
+                    egui::Button::new(self.localization.tr(economy_apply_key())),
+                )
                 .clicked()
             {
                 self.apply_economy();
             }
 
             if ui
-                .add_enabled(self.connected, egui::Button::new("Set all to 1.2T"))
+                .add_enabled(self.connected, egui::Button::new(self.localization.tr("economy.set_all_1_2t")))
                 .clicked()
             {
-                let value = "1200000000000".to_string();
+                let value = "$1B".to_string();
                 self.economy.money = value.clone();
                 self.economy.transfer_budget = value.clone();
                 self.economy.salary_budget = value;
@@ -3704,21 +5136,39 @@ impl ModifierApp {
     }
 
     fn render_player_editor_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Player Editor");
-        ui.label(player_editor_intro_text());
-        ui.weak("Recommended: Save your career before making changes with the editor.");
+        const ATTRIBUTES_COLUMN_WIDTH: f32 = 360.0;
+        const DETAILS_COLUMN_WIDTH: f32 = 400.0;
+        const COLUMN_GAP: f32 = 18.0;
+
+        ui.heading(self.localization.tr("player_editor.heading"));
+        ui.label(self.localization.tr(player_editor_intro_key()));
+        #[cfg(feature = "dev")]
+        ui.weak(self.localization.tr("editor.recommended_save"));
+
+        #[cfg(not(feature = "dev"))]
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                egui::RichText::new(self.localization.tr("editor.recommended_save_prefix"))
+                    .strong()
+                    .color(egui::Color32::from_rgb(235, 196, 0)),
+            );
+            ui.label(self.localization.tr("editor.recommended_save_text"));
+        });
         ui.add_space(8.0);
 
         ui.horizontal(|ui| {
-            ui.label("Search");
+            ui.label(self.localization.tr("common.search"));
             ui.add(
                 egui::TextEdit::singleline(&mut self.player_search)
-                    .hint_text("Type player name...")
+                    .hint_text(self.localization.tr("editor.type_player_name"))
                     .desired_width(250.0),
             );
 
             if ui
-                .add_enabled(!self.player_search.is_empty(), egui::Button::new("Clear"))
+                .add_enabled(
+                    !self.player_search.is_empty(),
+                    egui::Button::new(self.localization.tr("common.clear")),
+                )
                 .clicked()
             {
                 self.player_search.clear();
@@ -3732,16 +5182,21 @@ impl ModifierApp {
             .filter(|player| search.is_empty() || player.name.to_lowercase().contains(&search))
             .count();
 
+        let selected_text = self
+            .selected_player_id
+            .and_then(|id| self.players.iter().find(|player| player.id == id))
+            .map(|player| player.name.clone())
+            .unwrap_or_else(|| self.localization.tr("editor.select_player"));
+        let before = self.selected_player_id;
+        let player_editor_left = ui.cursor().left();
+        let available_content_width = ui.available_width();
+        let mut details_column_x = None;
+
+        // Keep every Player-row control in one natural horizontal row. The
+        // Refresh Players response supplies the shared absolute x-start used
+        // by the Positions/Potential column below.
         ui.horizontal(|ui| {
-            ui.label("Player");
-
-            let selected_text = self
-                .selected_player_id
-                .and_then(|id| self.players.iter().find(|player| player.id == id))
-                .map(|player| player.name.clone())
-                .unwrap_or_else(|| "Select player".to_string());
-
-            let before = self.selected_player_id;
+            ui.label(self.localization.tr("common.player"));
             ui.add_enabled_ui(self.connected && !self.players.is_empty(), |ui| {
                 egui::ComboBox::from_id_salt("player_select")
                     .selected_text(selected_text)
@@ -3749,7 +5204,9 @@ impl ModifierApp {
                     .show_ui(ui, |ui| {
                         let mut shown = 0usize;
                         for player in &self.players {
-                            if !search.is_empty() && !player.name.to_lowercase().contains(&search) {
+                            if !search.is_empty()
+                                && !player.name.to_lowercase().contains(&search)
+                            {
                                 continue;
                             }
 
@@ -3762,34 +5219,42 @@ impl ModifierApp {
                         }
 
                         if shown == 0 {
-                            ui.label("No matching players");
+                            ui.label(self.localization.tr("editor.no_matching_players"));
                         }
                     });
             });
-
             ui.label(format!("{match_count} / {}", self.players.len()));
 
-            if self.selected_player_id != before {
-                self.refresh_selected_player();
-            }
-
-            if ui
-                .add_enabled(self.connected, egui::Button::new("Refresh Players"))
-                .clicked()
-            {
+            let refresh_players_response = ui.add_enabled(
+                self.connected,
+                egui::Button::new(self.localization.tr("editor.refresh_players")),
+            );
+            details_column_x = Some(refresh_players_response.rect.left());
+            if refresh_players_response.clicked() {
                 self.refresh_players();
+                self.refresh_staff();
             }
 
             if ui
                 .add_enabled(
                     self.connected && self.selected_player_id.is_some(),
-                    egui::Button::new("Refresh Selected"),
+                    egui::Button::new(self.localization.tr("editor.refresh_selected")),
                 )
                 .clicked()
             {
                 self.refresh_selected_player();
             }
         });
+
+        let details_column_x =
+            details_column_x.unwrap_or(player_editor_left + ATTRIBUTES_COLUMN_WIDTH + COLUMN_GAP);
+        let two_column_required_width =
+            (details_column_x - player_editor_left) + DETAILS_COLUMN_WIDTH;
+        let use_two_column_layout = available_content_width >= two_column_required_width;
+
+        if self.selected_player_id != before {
+            self.refresh_selected_player();
+        }
 
         ui.add_space(8.0);
         let mut apply_player_clicked = false;
@@ -3799,328 +5264,83 @@ impl ModifierApp {
         let mut apply_salary_clicked = false;
         let mut open_contract_clicked = false;
 
-        if let Some(player) = self.selected_player.as_mut() {
-            ui.label(format!("{}  ·  ID {}", player.name, player.id));
-            ui.label("Attributes: 1–100");
-            ui.add_space(4.0);
+        let selected_identity = self
+            .selected_player
+            .as_ref()
+            .map(|player| format!("{}  ·  ID {}", player.name, player.id));
 
-            egui::Grid::new("player_stats_grid")
-                .num_columns(4)
-                .spacing([18.0, 7.0])
-                .striped(true)
-                .show(ui, |ui| {
-                    stat_edit_cell(ui, "Last Hitting", &mut player.last_hit);
-                    stat_edit_cell(ui, "Skillshot Dodging", &mut player.skill_avoid);
-                    ui.end_row();
-
-                    stat_edit_cell(ui, "Skillshot Accuracy", &mut player.skill_hit);
-                    stat_edit_cell(ui, "Input Speed", &mut player.control_speed);
-                    ui.end_row();
-
-                    stat_edit_cell(ui, "Positioning", &mut player.positioning);
-                    stat_edit_cell(ui, "Judgment", &mut player.judgement);
-                    ui.end_row();
-
-                    stat_edit_cell(ui, "Mental", &mut player.mental);
-                    stat_edit_cell(ui, "Focus", &mut player.concentration);
-                    ui.end_row();
-
-                    stat_edit_cell(ui, "Calls", &mut player.order);
-                    stat_edit_cell(ui, "Roaming", &mut player.roaming);
-                    ui.end_row();
-
-                    stat_edit_cell(ui, "Aggression", &mut player.aggressive);
-                    stat_edit_cell(ui, "Ego", &mut player.ego);
-                    ui.end_row();
-                });
-
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(self.connected, egui::Button::new("Apply Attributes"))
-                    .clicked()
-                {
-                    apply_player_clicked = true;
-                }
-
-                if ui
-                    .add_enabled(self.connected, egui::Button::new("Max All"))
-                    .clicked()
-                {
-                    max_all_clicked = true;
-                }
-            });
-
-            ui.add_space(12.0);
-            ui.separator();
-            ui.heading("Positions");
-            ui.label("Up to three active positions are supported.");
-
-            let mut clear_all_positions_clicked = false;
-            if let Some(positions) = self.player_positions.as_mut() {
-                let slot_labels = ["Primary", "Secondary", "Tertiary"];
-                let selected_positions = positions.slots.map(|slot| slot.position);
-
-                egui::Grid::new("player_positions_grid_v030")
-                    .num_columns(3)
-                    .spacing([18.0, 8.0])
-                    .show(ui, |ui| {
-                        for (slot_index, slot_label) in slot_labels.into_iter().enumerate() {
-                            ui.label(slot_label);
-
-                            let slot = &mut positions.slots[slot_index];
-                            let previous_position = slot.position;
-                            egui::ComboBox::from_id_salt(format!("position_slot_{slot_index}"))
-                                .selected_text(
-                                    slot.position
-                                        .map(PositionChoice::label)
-                                        .unwrap_or("None"),
-                                )
-                                .width(130.0)
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut slot.position, None, "None");
-                                    for position in PositionChoice::ALL {
-                                        let used_elsewhere = selected_positions
-                                            .iter()
-                                            .enumerate()
-                                            .any(|(other_index, selected)| {
-                                                other_index != slot_index
-                                                    && *selected == Some(position)
-                                            });
-                                        ui.add_enabled_ui(!used_elsewhere, |ui| {
-                                            ui.selectable_value(
-                                                &mut slot.position,
-                                                Some(position),
-                                                position.label(),
-                                            );
-                                        });
-                                    }
-                                });
-
-                            if slot.position != previous_position {
-                                if slot.position.is_none() {
-                                    slot.proficiency = 0;
-                                } else if slot.proficiency == 0 {
-                                    slot.proficiency = 100;
-                                }
-                            }
-
-                            if slot.position.is_some() {
-                                position_star_level_combo(
-                                    ui,
-                                    format!("position_slot_level_{slot_index}"),
-                                    &mut slot.proficiency,
-                                );
-                            } else {
-                                ui.add_enabled(false, egui::Button::new("—").min_size(egui::vec2(150.0, 0.0)));
-                            }
-                            ui.end_row();
-                        }
-                    });
-
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(self.connected, egui::Button::new("Apply Positions"))
-                        .clicked()
-                    {
-                        apply_positions_clicked = true;
-                    }
-                    if ui
-                        .add_enabled(self.connected, egui::Button::new("Clear All"))
-                        .clicked()
-                    {
-                        clear_all_positions_clicked = true;
-                    }
-                });
-            }
-
-            if clear_all_positions_clicked {
-                if let Some(positions) = self.player_positions.as_mut() {
-                    positions.clear_all();
-                    self.status = "All positions set to None. Click Apply Positions to save.".to_string();
-                }
-            }
-            ui.add_space(12.0);
-            ui.separator();
-            ui.heading("Potential");
-            ui.label(potential_info_text());
-            if let Some(potential) = self.player_potential.as_mut() {
-                egui::Grid::new("player_potential_grid")
-                    .num_columns(2)
-                    .spacing([18.0, 8.0])
-                    .show(ui, |ui| {
-                        ui.label("Potential Grade");
-
-                        let mut selected_grade = potential.potential;
-                        egui::ComboBox::from_id_salt("potential_grade")
-                            .selected_text(selected_grade.label())
-                            .width(170.0)
-                            .show_ui(ui, |ui| {
-                                for grade in PotentialGrade::ALL {
-                                    ui.selectable_value(
-                                        &mut selected_grade,
-                                        grade,
-                                        format!("{} ({})", grade.label(), grade.raw_value()),
-                                    );
-                                }
-                            });
-
-                        if selected_grade != potential.potential {
-                            potential.set_grade(selected_grade);
-                        }
-                        ui.end_row();
-
-                        ui.label("Actual Potential");
-                        let mut raw_value = potential.edit_raw;
-                        let response = ui.add(
-                            egui::DragValue::new(&mut raw_value)
-                                .range(1..=100)
-                                .speed(1.0),
-                        );
-                        if response.changed() {
-                            potential.set_raw(raw_value);
-                        }
-                        ui.end_row();
-
-                        ui.label("Current Value");
-                        if potential.current_raw == potential.edit_raw {
-                            ui.label(potential.current_raw.to_string());
-                        } else {
-                            ui.label(format!(
-                                "{}  →  {}",
-                                potential.current_raw,
-                                potential.edit_raw
-                            ));
-                        }
-                        ui.end_row();
-                    });
-
-                ui.add_space(4.0);
-                ui.weak(
-                    "Grade presets: Very Low 1 · Low 30 · Normal 50 · High 70 · Very High 100",
-                );
-
-                ui.add_space(6.0);
-                if ui
-                    .add_enabled(self.connected, egui::Button::new("Apply Potential"))
-                    .clicked()
-                {
-                    apply_potential_clicked = true;
-                }
-            }
-
-            ui.add_space(12.0);
-            ui.separator();
-            ui.heading("Contract & Finance");
-            ui.label(salary_info_text());
-            if player.annual_salary.trim().is_empty() {
-                ui.label("Free Agent / no active contract");
-            } else {
-                egui::Grid::new("player_contract_finance_grid")
-                    .num_columns(2)
-                    .spacing([18.0, 8.0])
-                    .show(ui, |ui| {
-                        ui.label("Team");
-                        let team_label = player
-                            .contract_team_id
-                            .and_then(|id| self.teams.iter().find(|team| team.id == id))
-                            .map(|team| team.display_name.clone())
-                            .filter(|name| !name.trim().is_empty())
-                            .or_else(|| player.contract_team_id.map(|id| format!("Team {id}")))
-                            .unwrap_or_else(|| "—".to_string());
-                        ui.strong(team_label);
-                        ui.end_row();
-
-                        ui.label("Contract Start");
-                        ui.strong(display_contract_date(&player.contract_start_date));
-                        ui.end_row();
-
-                        ui.label("Contract End");
-                        ui.strong(display_contract_date(&player.contract_end_date));
-                        ui.end_row();
-
-                        ui.label("Annual Salary");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut player.annual_salary)
-                                .desired_width(180.0),
-                        );
-                        ui.end_row();
-
-                        ui.label("Weekly Salary");
-                        ui.strong(pretty_or_dash(&player.weekly_salary));
-                        ui.end_row();
-
-                        ui.label("Transfer Fee");
-                        ui.strong(pretty_or_dash(&player.transfer_fee));
-                        ui.end_row();
-
-                        ui.label("Squad Status");
-                        let status = SquadStatusChoice::from_internal(&player.squad_status);
-                        ui.strong(status.label());
-                        ui.end_row();
-
-                        ui.label("POG Award Bonus");
-                        ui.strong(contract_bonus_display(&player.incentive_pog_bonus));
-                        ui.end_row();
-
-                        ui.label("League Rank Bonus");
-                        ui.strong(if player.incentive_league_bonus.trim().is_empty() {
-                            "Disabled".to_string()
-                        } else {
-                            format!("{} · Rank {}", pretty_number(&player.incentive_league_bonus), pretty_or_dash(&player.incentive_league_rank))
-                        });
-                        ui.end_row();
-
-                        ui.label("Match Appearance Bonus");
-                        ui.strong(contract_bonus_display(&player.incentive_match_bonus));
-                        ui.end_row();
-
-                        ui.label("Match Win Bonus");
-                        ui.strong(contract_bonus_display(&player.incentive_win_bonus));
-                        ui.end_row();
-                    });
-            }
+        if let Some(selected_identity) = selected_identity {
+            ui.label(selected_identity);
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(
-                        self.connected && !player.annual_salary.trim().is_empty(),
-                        egui::Button::new("Apply Salary"),
-                    )
-                    .clicked()
-                {
-                    apply_salary_clicked = true;
-                }
-                if ui
-                    .add_enabled(self.connected, egui::Button::new("Edit Contract"))
-                    .on_hover_text("Create and apply a complete finalized contract.")
-                    .clicked()
-                {
-                    open_contract_clicked = true;
-                }
-            });
-            ui.weak("Edit Contract changes the active contract, bonuses, squad status, and transfer fee.");
-            ui.add_space(12.0);
-            ui.separator();
-            ui.heading("Champion Mastery");
 
-            ui.label(
-                "Edit individual Champion Mastery values or apply changes to multiple champions at once.",
-            );
-            if ui
-                .add_enabled(
-                    self.connected && self.selected_player_id.is_some(),
-                    egui::Button::new("Open Champion Mastery"),
-                )
-                .clicked()
-            {
-                self.load_champion_mastery();
+            if use_two_column_layout {
+                let column_item_spacing = ui.spacing().item_spacing;
+                ui.with_layout(
+                    egui::Layout::left_to_right(egui::Align::Min),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ATTRIBUTES_COLUMN_WIDTH, 0.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.spacing_mut().item_spacing = column_item_spacing;
+                                ui.set_width(ATTRIBUTES_COLUMN_WIDTH);
+                                self.render_player_attributes_layout_test(
+                                    ui,
+                                    &mut apply_player_clicked,
+                                    &mut max_all_clicked,
+                                );
+                            },
+                        );
+
+                        let current_x = ui.cursor().left();
+                        if details_column_x > current_x {
+                            ui.add_space(details_column_x - current_x);
+                        }
+
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(DETAILS_COLUMN_WIDTH, 0.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.spacing_mut().item_spacing = column_item_spacing;
+                                ui.set_width(DETAILS_COLUMN_WIDTH);
+                                self.render_player_positions_layout_test(
+                                    ui,
+                                    &mut apply_positions_clicked,
+                                );
+                                ui.add_space(8.0);
+                                self.render_player_potential_layout_test(
+                                    ui,
+                                    &mut apply_potential_clicked,
+                                );
+                            },
+                        );
+                    },
+                );
+            } else {
+                self.render_player_attributes_layout_test(
+                    ui,
+                    &mut apply_player_clicked,
+                    &mut max_all_clicked,
+                );
+                ui.add_space(10.0);
+                ui.separator();
+                self.render_player_positions_layout_test(ui, &mut apply_positions_clicked);
+                ui.add_space(10.0);
+                ui.separator();
+                self.render_player_potential_layout_test(ui, &mut apply_potential_clicked);
             }
 
+            ui.add_space(12.0);
+            ui.separator();
+            self.render_player_contract_layout_test(
+                ui,
+                &mut apply_salary_clicked,
+                &mut open_contract_clicked,
+            );
             self.render_communication_section(ui);
         } else {
-            ui.label("No player data loaded.");
+            ui.label(self.localization.tr("player_editor.no_data"));
         }
 
         if apply_positions_clicked {
@@ -4149,10 +5369,447 @@ impl ModifierApp {
         }
     }
 
+    fn render_player_attributes_layout_test(
+        &mut self,
+        ui: &mut egui::Ui,
+        apply_player_clicked: &mut bool,
+        max_all_clicked: &mut bool,
+    ) {
+        ui.heading(self.localization.tr("staff_editor.attributes.heading"));
+        ui.label(self.localization.tr("player_editor.attributes.range"));
+        ui.add_space(4.0);
+
+        if let Some(player) = self.selected_player.as_mut() {
+            egui::Grid::new("player_stats_grid")
+                .num_columns(4)
+                .spacing([18.0, 7.0])
+                .striped(true)
+                .show(ui, |ui| {
+                    stat_edit_cell(
+                        ui,
+                        &self.localization.tr("attributes.last_hitting"),
+                        &mut player.last_hit,
+                    );
+                    stat_edit_cell(
+                        ui,
+                        &self.localization.tr("attributes.skillshot_dodging"),
+                        &mut player.skill_avoid,
+                    );
+                    ui.end_row();
+
+                    stat_edit_cell(
+                        ui,
+                        &self.localization.tr("attributes.skillshot_accuracy"),
+                        &mut player.skill_hit,
+                    );
+                    stat_edit_cell(
+                        ui,
+                        &self.localization.tr("attributes.input_speed"),
+                        &mut player.control_speed,
+                    );
+                    ui.end_row();
+
+                    stat_edit_cell(
+                        ui,
+                        &self.localization.tr("attributes.positioning"),
+                        &mut player.positioning,
+                    );
+                    stat_edit_cell(
+                        ui,
+                        &self.localization.tr("attributes.judgment"),
+                        &mut player.judgement,
+                    );
+                    ui.end_row();
+
+                    stat_edit_cell(
+                        ui,
+                        &self.localization.tr("attributes.mental"),
+                        &mut player.mental,
+                    );
+                    stat_edit_cell(
+                        ui,
+                        &self.localization.tr("attributes.focus"),
+                        &mut player.concentration,
+                    );
+                    ui.end_row();
+
+                    stat_edit_cell(
+                        ui,
+                        &self.localization.tr("attributes.calls"),
+                        &mut player.order,
+                    );
+                    stat_edit_cell(
+                        ui,
+                        &self.localization.tr("attributes.roaming"),
+                        &mut player.roaming,
+                    );
+                    ui.end_row();
+
+                    stat_edit_cell(
+                        ui,
+                        &self.localization.tr("attributes.aggression"),
+                        &mut player.aggressive,
+                    );
+                    stat_edit_cell(
+                        ui,
+                        &self.localization.tr("attributes.ego"),
+                        &mut player.ego,
+                    );
+                    ui.end_row();
+                });
+        }
+
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    self.connected,
+                    egui::Button::new(self.localization.tr("editor.apply_attributes")),
+                )
+                .clicked()
+            {
+                *apply_player_clicked = true;
+            }
+
+            if ui
+                .add_enabled(
+                    self.connected,
+                    egui::Button::new(self.localization.tr("editor.max_all")),
+                )
+                .clicked()
+            {
+                *max_all_clicked = true;
+            }
+
+            if ui
+                .add_enabled(
+                    self.connected && self.selected_player_id.is_some(),
+                    egui::Button::new(
+                        self.localization
+                            .tr("player_editor.champion_mastery.open"),
+                    ),
+                )
+                .clicked()
+            {
+                self.load_champion_mastery();
+            }
+        });
+    }
+
+    fn render_player_positions_layout_test(
+        &mut self,
+        ui: &mut egui::Ui,
+        apply_positions_clicked: &mut bool,
+    ) {
+        ui.heading(self.localization.tr("player_editor.positions.heading"));
+        ui.label(self.localization.tr("player_editor.positions.info"));
+
+        let mut clear_all_positions_clicked = false;
+        if let Some(positions) = self.player_positions.as_mut() {
+            let slot_labels = [
+                self.localization.tr("positions.primary"),
+                self.localization.tr("positions.secondary"),
+                self.localization.tr("positions.tertiary"),
+            ];
+            let selected_positions = positions.slots.map(|slot| slot.position);
+
+            egui::Grid::new("player_positions_grid_v030")
+                .num_columns(3)
+                .spacing([18.0, 8.0])
+                .show(ui, |ui| {
+                    for (slot_index, slot_label) in slot_labels.into_iter().enumerate() {
+                        ui.label(slot_label);
+
+                        let slot = &mut positions.slots[slot_index];
+                        let previous_position = slot.position;
+                        egui::ComboBox::from_id_salt(format!("position_slot_{slot_index}"))
+                            .selected_text(
+                                slot.position
+                                    .map(|position| {
+                                        self.localization.tr(position.label_key())
+                                    })
+                                    .unwrap_or_else(|| self.localization.tr("common.none")),
+                            )
+                            .width(130.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut slot.position,
+                                    None,
+                                    self.localization.tr("common.none"),
+                                );
+                                for position in PositionChoice::ALL {
+                                    let used_elsewhere = selected_positions
+                                        .iter()
+                                        .enumerate()
+                                        .any(|(other_index, selected)| {
+                                            other_index != slot_index
+                                                && *selected == Some(position)
+                                        });
+                                    ui.add_enabled_ui(!used_elsewhere, |ui| {
+                                        ui.selectable_value(
+                                            &mut slot.position,
+                                            Some(position),
+                                            self.localization.tr(position.label_key()),
+                                        );
+                                    });
+                                }
+                            });
+
+                        if slot.position != previous_position {
+                            if slot.position.is_none() {
+                                slot.proficiency = 0;
+                            } else if slot.proficiency == 0 {
+                                slot.proficiency = 100;
+                            }
+                        }
+
+                        if slot.position.is_some() {
+                            position_star_level_combo(
+                                ui,
+                                format!("position_slot_level_{slot_index}"),
+                                &mut slot.proficiency,
+                            );
+                        } else {
+                            ui.add_enabled(
+                                false,
+                                egui::Button::new("—").min_size(egui::vec2(150.0, 0.0)),
+                            );
+                        }
+                        ui.end_row();
+                    }
+                });
+
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        self.connected,
+                        egui::Button::new(
+                            self.localization.tr("player_editor.positions.apply"),
+                        ),
+                    )
+                    .clicked()
+                {
+                    *apply_positions_clicked = true;
+                }
+                if ui
+                    .add_enabled(
+                        self.connected,
+                        egui::Button::new(
+                            self.localization.tr("player_editor.positions.clear_all"),
+                        ),
+                    )
+                    .clicked()
+                {
+                    clear_all_positions_clicked = true;
+                }
+            });
+        }
+
+        if clear_all_positions_clicked {
+            if let Some(positions) = self.player_positions.as_mut() {
+                positions.clear_all();
+                self.status =
+                    "All positions set to None. Click Apply Positions to save.".to_string();
+            }
+        }
+    }
+
+    fn render_player_potential_layout_test(
+        &mut self,
+        ui: &mut egui::Ui,
+        apply_potential_clicked: &mut bool,
+    ) {
+        ui.heading(self.localization.tr("player_editor.potential.heading"));
+        ui.label(self.localization.tr(potential_info_key()));
+        if let Some(potential) = self.player_potential.as_mut() {
+            egui::Grid::new("player_potential_grid")
+                .num_columns(2)
+                .spacing([18.0, 8.0])
+                .show(ui, |ui| {
+                    ui.label(self.localization.tr("player_editor.potential.grade"));
+
+                    let mut selected_grade = potential.potential;
+                    egui::ComboBox::from_id_salt("potential_grade")
+                        .selected_text(selected_grade.label())
+                        .width(170.0)
+                        .show_ui(ui, |ui| {
+                            for grade in PotentialGrade::ALL {
+                                ui.selectable_value(
+                                    &mut selected_grade,
+                                    grade,
+                                    format!("{} ({})", grade.label(), grade.raw_value()),
+                                );
+                            }
+                        });
+
+                    if selected_grade != potential.potential {
+                        potential.set_grade(selected_grade);
+                    }
+                    ui.end_row();
+
+                    ui.label(self.localization.tr("player_editor.potential.actual"));
+                    let mut raw_value = potential.edit_raw;
+                    let response = ui.add(
+                        egui::DragValue::new(&mut raw_value)
+                            .range(1..=100)
+                            .speed(1.0),
+                    );
+                    if response.changed() {
+                        potential.set_raw(raw_value);
+                    }
+                    ui.end_row();
+
+                    ui.label(
+                        self.localization
+                            .tr("player_editor.potential.current_value"),
+                    );
+                    if potential.current_raw == potential.edit_raw {
+                        ui.label(potential.current_raw.to_string());
+                    } else {
+                        ui.label(format!(
+                            "{}  →  {}",
+                            potential.current_raw, potential.edit_raw
+                        ));
+                    }
+                    ui.end_row();
+                });
+
+            ui.add_space(4.0);
+            ui.weak("Grade presets: Very Low 1 · Low 30 · Normal 50 · High 70 · Very High 100");
+
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        self.connected,
+                        egui::Button::new(self.localization.tr("player_editor.potential.apply")),
+                    )
+                    .clicked()
+                {
+                    *apply_potential_clicked = true;
+                }
+            });
+        }
+    }
+
+    fn render_player_contract_layout_test(
+        &mut self,
+        ui: &mut egui::Ui,
+        apply_salary_clicked: &mut bool,
+        open_contract_clicked: &mut bool,
+    ) {
+        ui.heading(self.localization.tr("player_editor.contract.heading"));
+        if let Some(key) = salary_info_key() {
+            ui.label(self.localization.tr(key));
+        }
+
+        if let Some(player) = self.selected_player.as_mut() {
+            if player.contract_team_id.is_none() {
+                ui.label(self.localization.tr("contract.free_agent_no_active"));
+            } else {
+                egui::Grid::new("player_contract_finance_grid")
+                    .num_columns(2)
+                    .spacing([18.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label(self.localization.tr("common.team"));
+                        let team_label = player
+                            .contract_team_id
+                            .and_then(|id| self.teams.iter().find(|team| team.id == id))
+                            .map(|team| team.display_name.clone())
+                            .filter(|name| !name.trim().is_empty())
+                            .or_else(|| player.contract_team_id.map(|id| format!("Team {id}")))
+                            .unwrap_or_else(|| "—".to_string());
+                        ui.strong(team_label);
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("contract.start"));
+                        ui.strong(display_contract_date(&player.contract_start_date));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("contract.end"));
+                        ui.strong(display_contract_date(&player.contract_end_date));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("contract.annual_salary"));
+                        money_text_edit_with_preview(
+                            ui,
+                            &self.localization,
+                            &mut player.annual_salary,
+                            180.0,
+                            true,
+                        );
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("contract.weekly_salary"));
+                        ui.strong(pretty_or_dash(&player.weekly_salary));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("contract.transfer_fee"));
+                        ui.strong(pretty_or_dash(&player.transfer_fee));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("contract.squad_status"));
+                        let status = SquadStatusChoice::from_internal(&player.squad_status);
+                        ui.strong(self.localization.tr(status.label_key()));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("contract.pog_bonus"));
+                        ui.strong(contract_bonus_display(&player.incentive_pog_bonus));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("contract.league_rank_bonus"));
+                        ui.strong(if player.incentive_league_bonus.trim().is_empty() {
+                            "Disabled".to_string()
+                        } else {
+                            format!(
+                                "{} · Rank {}",
+                                pretty_number(&player.incentive_league_bonus),
+                                pretty_or_dash(&player.incentive_league_rank)
+                            )
+                        });
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("contract.match_appearance_bonus"));
+                        ui.strong(contract_bonus_display(&player.incentive_match_bonus));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("contract.match_win_bonus"));
+                        ui.strong(contract_bonus_display(&player.incentive_win_bonus));
+                        ui.end_row();
+                    });
+            }
+
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add_enabled(
+                        self.connected && !player.annual_salary.trim().is_empty(),
+                        egui::Button::new(self.localization.tr("contract.apply_salary")),
+                    )
+                    .clicked()
+                {
+                    *apply_salary_clicked = true;
+                }
+                if ui
+                    .add_enabled(
+                        self.connected,
+                        egui::Button::new(self.localization.tr("contract.edit")),
+                    )
+                    .on_hover_text(self.localization.tr("player_editor.contract.edit_help"))
+                    .clicked()
+                {
+                    *open_contract_clicked = true;
+                }
+            });
+            ui.weak(self.localization.tr("player_editor.contract.edit_scope"));
+        }
+    }
+
 
     fn render_staff_editor_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Staff Editor");
-        ui.label("Edit staff attributes, active contracts, salary, and Communication.");
+        ui.heading(self.localization.tr("staff_editor.heading"));
+        ui.label(self.localization.tr("staff_editor.intro"));
         ui.add_space(8.0);
 
         let mut refresh_staff_clicked = false;
@@ -4165,15 +5822,15 @@ impl ModifierApp {
         let mut max_communication_clicked = false;
 
         ui.horizontal(|ui| {
-            ui.label("Search");
+            ui.label(self.localization.tr("common.search"));
             ui.add(
                 egui::TextEdit::singleline(&mut self.staff_search)
-                    .hint_text("Type staff name...")
+                    .hint_text(self.localization.tr("editor.type_staff_name"))
                     .desired_width(250.0),
             );
 
             if ui
-                .add_enabled(!self.staff_search.is_empty(), egui::Button::new("Clear"))
+                .add_enabled(!self.staff_search.is_empty(), egui::Button::new(self.localization.tr("common.clear")))
                 .clicked()
             {
                 self.staff_search.clear();
@@ -4185,17 +5842,17 @@ impl ModifierApp {
             .staffs
             .iter()
             .filter(|staff| staff.matches_search(&query))
-            .map(|staff| (staff.id, staff.label()))
+            .map(|staff| (staff.id, staff.localized_label(&self.localization)))
             .collect::<Vec<_>>();
         let match_count = filtered_staff.len();
 
         ui.horizontal(|ui| {
-            ui.label("Staff");
+            ui.label(self.localization.tr("common.staff"));
             let selected_label = self
                 .selected_staff_id
                 .and_then(|id| self.staffs.iter().find(|staff| staff.id == id))
-                .map(StaffSummary::label)
-                .unwrap_or_else(|| "Select staff...".to_string());
+                .map(|staff| staff.localized_label(&self.localization))
+                .unwrap_or_else(|| self.localization.tr("editor.select_staff"));
 
             ui.add_enabled_ui(self.connected && !self.staffs.is_empty(), |ui| {
                 egui::ComboBox::from_id_salt("staff_editor_select")
@@ -4206,7 +5863,7 @@ impl ModifierApp {
                         ui.set_min_width(420.0);
 
                         if filtered_staff.is_empty() {
-                            ui.label("No matching staff");
+                            ui.label(self.localization.tr("editor.no_matching_staff"));
                         } else {
                             for (id, label) in &filtered_staff {
                                 if ui
@@ -4223,7 +5880,7 @@ impl ModifierApp {
             ui.label(format!("{match_count} / {}", self.staffs.len()));
 
             if ui
-                .add_enabled(self.connected, egui::Button::new("Refresh Staff"))
+                .add_enabled(self.connected, egui::Button::new(self.localization.tr("editor.refresh_staff")))
                 .clicked()
             {
                 refresh_staff_clicked = true;
@@ -4238,63 +5895,63 @@ impl ModifierApp {
                 .num_columns(4)
                 .spacing([20.0, 5.0])
                 .show(ui, |ui| {
-                    ui.label("Name");
+                    ui.label(self.localization.tr("common.name"));
                     ui.strong(&staff.name);
-                    ui.label("ID");
+                    ui.label(self.localization.tr("common.id"));
                     ui.strong(staff.id.to_string());
                     ui.end_row();
 
-                    ui.label("Role");
-                    ui.strong(display_staff_role(&staff.role));
-                    ui.label("Age");
+                    ui.label(self.localization.tr("common.role"));
+                    ui.strong(localized_staff_role(&self.localization, &staff.role));
+                    ui.label(self.localization.tr("common.age"));
                     ui.strong(&staff.age);
                     ui.end_row();
 
-                    ui.label("Team");
+                    ui.label(self.localization.tr("common.team"));
                     ui.strong(&staff.team);
                     ui.end_row();
                 });
 
             ui.add_space(12.0);
-            ui.heading("Attributes");
-            ui.label("Staff attributes use the same 1–100 edit range as player attributes.");
+            ui.heading(self.localization.tr("staff_editor.attributes.heading"));
+            ui.label(self.localization.tr("staff_editor.attributes.info"));
 
             egui::Grid::new("staff_attributes_grid")
                 .num_columns(4)
                 .spacing([20.0, 5.0])
                 .show(ui, |ui| {
-                    stat_edit_cell(ui, "Ban/Pick", &mut staff.banpick);
-                    stat_edit_cell(ui, "Strategy", &mut staff.strategy);
+                    stat_edit_cell(ui, &self.localization.tr("staff.attributes.ban_pick"), &mut staff.banpick);
+                    stat_edit_cell(ui, &self.localization.tr("staff.attributes.strategy"), &mut staff.strategy);
                     ui.end_row();
 
-                    stat_edit_cell(ui, "Negotiation", &mut staff.negotiation);
-                    stat_edit_cell(ui, "Ability Analysis", &mut staff.judge_ability);
+                    stat_edit_cell(ui, &self.localization.tr("staff.attributes.negotiation"), &mut staff.negotiation);
+                    stat_edit_cell(ui, &self.localization.tr("staff.attributes.ability_analysis"), &mut staff.judge_ability);
                     ui.end_row();
 
-                    stat_edit_cell(ui, "Potential Analysis", &mut staff.judge_potential);
-                    stat_edit_cell(ui, "Feedback", &mut staff.feedback);
+                    stat_edit_cell(ui, &self.localization.tr("staff.attributes.potential_analysis"), &mut staff.judge_potential);
+                    stat_edit_cell(ui, &self.localization.tr("staff.attributes.feedback"), &mut staff.feedback);
                     ui.end_row();
 
-                    stat_edit_cell(ui, "Power Analysis", &mut staff.power_analysis);
-                    stat_edit_cell(ui, "Control Coaching", &mut staff.control_coaching);
+                    stat_edit_cell(ui, &self.localization.tr("staff.attributes.power_analysis"), &mut staff.power_analysis);
+                    stat_edit_cell(ui, &self.localization.tr("staff.attributes.control_coaching"), &mut staff.control_coaching);
                     ui.end_row();
 
-                    stat_edit_cell(ui, "Judgment Coaching", &mut staff.judgment_coaching);
-                    stat_edit_cell(ui, "Mental Coaching", &mut staff.mental_coaching);
+                    stat_edit_cell(ui, &self.localization.tr("staff.attributes.judgment_coaching"), &mut staff.judgment_coaching);
+                    stat_edit_cell(ui, &self.localization.tr("staff.attributes.mental_coaching"), &mut staff.mental_coaching);
                     ui.end_row();
                 });
 
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui
-                    .add_enabled(self.connected, egui::Button::new("Apply Attributes"))
+                    .add_enabled(self.connected, egui::Button::new(self.localization.tr("editor.apply_attributes")))
                     .clicked()
                 {
                     apply_staff_clicked = true;
                 }
 
                 if ui
-                    .add_enabled(self.connected, egui::Button::new("Max All"))
+                    .add_enabled(self.connected, egui::Button::new(self.localization.tr("editor.max_all")))
                     .clicked()
                 {
                     max_all_clicked = true;
@@ -4303,28 +5960,31 @@ impl ModifierApp {
 
             ui.add_space(12.0);
             ui.separator();
-            ui.heading("Contract & Finance");
-            ui.label("Salary fields use the amounts stored in the active career.");
+            ui.heading(self.localization.tr("player_editor.contract.heading"));
+            ui.label(self.localization.tr("staff_editor.contract.finance_info"));
 
-            if staff.annual_salary.trim().is_empty() {
-                ui.label("Free Agent / no active contract");
+            if staff.contract_team_id.is_none() {
+                ui.label(self.localization.tr("contract.free_agent_no_active"));
             } else {
                 egui::Grid::new("staff_contract_grid")
                     .num_columns(2)
                     .spacing([24.0, 7.0])
                     .show(ui, |ui| {
-                        ui.label("Annual Salary");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut staff.annual_salary)
-                                .desired_width(180.0),
+                        ui.label(self.localization.tr("contract.annual_salary"));
+                        money_text_edit_with_preview(
+                            ui,
+                            &self.localization,
+                            &mut staff.annual_salary,
+                            180.0,
+                            true,
                         );
                         ui.end_row();
 
-                        ui.label("Contract Start");
+                        ui.label(self.localization.tr("contract.start"));
                         ui.strong(display_contract_date(&staff.contract_start_date));
                         ui.end_row();
 
-                        ui.label("Contract End");
+                        ui.label(self.localization.tr("contract.end"));
                         ui.strong(display_contract_date(&staff.contract_end_date));
                         ui.end_row();
                     });
@@ -4335,35 +5995,39 @@ impl ModifierApp {
                 if ui
                     .add_enabled(
                         self.connected && !staff.annual_salary.trim().is_empty(),
-                        egui::Button::new("Apply Salary"),
+                        egui::Button::new(self.localization.tr("contract.apply_salary")),
                     )
                     .clicked()
                 {
                     apply_salary_clicked = true;
                 }
                 if ui
-                    .add_enabled(self.connected, egui::Button::new("Edit Contract"))
-                    .on_hover_text("Create and apply a complete finalized staff contract.")
+                    .add_enabled(self.connected, egui::Button::new(self.localization.tr("contract.edit")))
+                    .on_hover_text(self.localization.tr("staff_editor.contract.edit_help"))
                     .clicked()
                 {
                     open_contract_clicked = true;
                 }
             });
-            ui.weak("Edit Contract changes the active staff contract.");
+            ui.weak(self.localization.tr("staff_editor.contract.edit_scope"));
 
             ui.add_space(12.0);
             ui.separator();
-            ui.heading("Communication");
-            ui.label("Select a league region and set its direct 0–100 Communication value. Applying a region that is not stored yet creates it for the staff member.");
+            ui.heading(
+                self.localization
+                    .tr("staff_editor.communication.section_heading"),
+            );
+            ui.label(self.localization.tr("staff_editor.communication.info"));
 
             let previous_region = self.staff_communication_region_id;
             egui::Grid::new("staff_communication_editor_grid")
                 .num_columns(2)
                 .spacing([24.0, 7.0])
                 .show(ui, |ui| {
-                    ui.label("Region");
+                    ui.label(self.localization.tr("common.region"));
                     egui::ComboBox::from_id_salt("staff_communication_region_select")
-                        .selected_text(staff_communication_region_label(
+                        .selected_text(localized_communication_region_label(
+                            &self.localization,
                             self.staff_communication_region_id,
                         ))
                         .width(240.0)
@@ -4372,13 +6036,16 @@ impl ModifierApp {
                                 ui.selectable_value(
                                     &mut self.staff_communication_region_id,
                                     region_id,
-                                    staff_communication_region_label(region_id),
+                                    localized_communication_region_label(
+                                        &self.localization,
+                                        region_id,
+                                    ),
                                 );
                             }
                         });
                     ui.end_row();
 
-                    ui.label("Communication");
+                    ui.label(self.localization.tr("staff_editor.communication.actual"));
                     ui.add(
                         egui::TextEdit::singleline(&mut self.staff_communication_value)
                             .desired_width(64.0),
@@ -4397,51 +6064,97 @@ impl ModifierApp {
                 .communication
                 .iter()
                 .any(|entry| entry.region_id == self.staff_communication_region_id);
-            if selected_region_is_stored {
-                ui.weak("This region is already stored for the selected staff member.");
-            } else {
-                ui.weak("This region is not stored yet. Apply Communication will add it.");
+            if !selected_region_is_stored {
+                ui.weak(self.localization.tr("staff_editor.communication.not_stored"));
             }
 
+            ui.add_space(6.0);
+            ui.strong(
+                self.localization
+                    .tr("staff_editor.communication.learned_regions"),
+            );
             if !staff.communication.is_empty() {
-                let stored_regions = staff
-                    .communication
-                    .iter()
-                    .map(|entry| {
-                        format!(
-                            "{}: {}",
-                            staff_communication_region_label(entry.region_id),
-                            entry.value
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" · ");
-                ui.weak(format!("Stored regions: {stored_regions}"));
+                egui::Grid::new("staff_communication_learned_regions_grid")
+                    .num_columns(2)
+                    .spacing([24.0, 4.0])
+                    .show(ui, |ui| {
+                        for entry in &staff.communication {
+                            ui.label(localized_communication_region_label(
+                                &self.localization,
+                                entry.region_id,
+                            ));
+                            ui.label(format!("{} / 100", entry.value));
+                            ui.end_row();
+                        }
+                    });
             }
 
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 if ui
-                    .add_enabled(self.connected, egui::Button::new("Apply Communication"))
+                    .add_enabled(
+                        self.connected,
+                        egui::Button::new(
+                            self.localization.tr("staff_editor.communication.apply"),
+                        ),
+                    )
                     .clicked()
                 {
                     apply_communication_clicked = true;
                 }
                 if ui
-                    .add_enabled(self.connected, egui::Button::new("Max Selected"))
+                    .add_enabled(
+                        self.connected,
+                        egui::Button::new(
+                            self.localization
+                                .tr("staff_editor.communication.set_actual_to_100"),
+                        ),
+                    )
                     .clicked()
                 {
                     max_communication_clicked = true;
                 }
             });
 
-            ui.add_space(12.0);
-            ui.separator();
-            ui.weak("Potential Analysis measures how well this staff member evaluates player potential; it is not the staff member's own potential.");
+            #[cfg(feature = "dev")]
+            {
+                ui.add_space(8.0);
+                ui.strong(
+                    self.localization
+                        .tr("staff_editor.communication.development_details"),
+                );
+                let selected_region_id_text = self.staff_communication_region_id.to_string();
+                ui.weak(self.localization.tr_with(
+                    "staff_editor.communication.dev.selected_region_id",
+                    &[("region_id", &selected_region_id_text)],
+                ));
+
+                let selected_region_stored_text = selected_region_is_stored.to_string();
+                ui.weak(self.localization.tr_with(
+                    "staff_editor.communication.dev.selected_region_stored",
+                    &[("stored", &selected_region_stored_text)],
+                ));
+
+                let raw_stored_regions = if staff.communication.is_empty() {
+                    self.localization.tr("common.none")
+                } else {
+                    staff
+                        .communication
+                        .iter()
+                        .map(|entry| format!("{}={}", entry.region_id, entry.value))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                ui.weak(self.localization.tr_with(
+                    "staff_editor.communication.dev.raw_stored_regions",
+                    &[("values", &raw_stored_regions)],
+                ));
+            }
+
         } else if self.staffs.is_empty() {
-            ui.label("No staff data loaded. Load a career and click Refresh Staff.");
+            ui.label(self.localization.tr("staff_editor.no_data"));
         } else {
-            ui.label("Select a staff member.");
+            ui.label(self.localization.tr("staff_editor.select_prompt"));
         }
 
         if refresh_staff_clicked {
@@ -4462,7 +6175,7 @@ impl ModifierApp {
         if max_communication_clicked {
             self.staff_communication_value = "100".to_string();
             self.status = format!(
-                "{} set to 100. Click Apply Communication to save.",
+                "{} set to 100. Click Apply Actual Communication to save.",
                 staff_communication_region_label(self.staff_communication_region_id)
             );
         }
@@ -4482,54 +6195,135 @@ impl ModifierApp {
     fn render_communication_section(&mut self, ui: &mut egui::Ui) {
         ui.add_space(12.0);
         ui.separator();
-        ui.heading("Communication Level");
-        ui.label("Player Communication has two separate values in TFM2: the actual 0–100 proficiency used by the player profile, and pending training XP stored for weekly progression.");
+        ui.heading(self.localization.tr("player_communication.heading"));
+
+        #[cfg(feature = "dev")]
+        ui.label(self.localization.tr("player_communication.info.dev"));
+        #[cfg(not(feature = "dev"))]
+        ui.label(self.localization.tr("player_communication.info"));
 
         let mut apply_clicked = false;
         let mut max_clicked = false;
 
         if let Some(communication) = self.player_communication.as_ref() {
-            if let Some(primary_region) = communication.primary_region {
-                ui.horizontal(|ui| {
-                    ui.label("Native region");
-                    ui.strong(player_communication_region_label(primary_region));
-                });
-            } else {
-                ui.weak("Native region could not be resolved for this player.");
+            let previous_region = self.player_communication_region_id;
+
+            #[cfg(feature = "dev")]
+            {
+                if let Some(primary_region) = communication.primary_region {
+                    ui.horizontal(|ui| {
+                        ui.label(self.localization.tr("player_communication.native_region"));
+                        ui.strong(localized_communication_region_label(
+                            &self.localization,
+                            primary_region,
+                        ));
+                    });
+                } else {
+                    ui.weak(self.localization.tr("player_communication.native_unresolved"));
+                }
+
+                egui::Grid::new("player_communication_editor_grid")
+                    .num_columns(2)
+                    .spacing([16.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.label(self.localization.tr("common.region"));
+                        egui::ComboBox::from_id_salt("player_communication_region_select")
+                            .selected_text(localized_communication_region_label(
+                                &self.localization,
+                                self.player_communication_region_id,
+                            ))
+                            .width(220.0)
+                            .show_ui(ui, |ui| {
+                                for (region_id, _) in COMMUNICATION_REGIONS {
+                                    if communication.primary_region == Some(region_id) {
+                                        continue;
+                                    }
+                                    ui.selectable_value(
+                                        &mut self.player_communication_region_id,
+                                        region_id,
+                                        localized_communication_region_label(
+                                            &self.localization,
+                                            region_id,
+                                        ),
+                                    );
+                                }
+                            });
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("player_communication.actual"));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.player_communication_value)
+                                .desired_width(90.0),
+                        );
+                        ui.end_row();
+                    });
             }
 
-            let previous_region = self.player_communication_region_id;
-            egui::Grid::new("player_communication_editor_grid")
-                .num_columns(2)
-                .spacing([16.0, 6.0])
-                .show(ui, |ui| {
-                    ui.label("Region");
-                    egui::ComboBox::from_id_salt("player_communication_region_select")
-                        .selected_text(player_communication_region_label(
-                            self.player_communication_region_id,
-                        ))
-                        .width(220.0)
-                        .show_ui(ui, |ui| {
-                            for (region_id, _) in COMMUNICATION_REGIONS {
-                                if communication.primary_region == Some(region_id) {
-                                    continue;
-                                }
-                                ui.selectable_value(
-                                    &mut self.player_communication_region_id,
-                                    region_id,
-                                    player_communication_region_label(region_id),
-                                );
-                            }
-                        });
-                    ui.end_row();
+            #[cfg(not(feature = "dev"))]
+            {
+                egui::Grid::new("player_communication_editor_grid")
+                    .num_columns(2)
+                    .spacing([16.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.label(self.localization.tr("player_communication.native_region"));
+                        if let Some(primary_region) = communication.primary_region {
+                            ui.strong(localized_communication_region_label(
+                                &self.localization,
+                                primary_region,
+                            ));
+                        } else {
+                            ui.weak(self.localization.tr("player_communication.native_unresolved"));
+                        }
+                        ui.end_row();
 
-                    ui.label("Actual Communication");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.player_communication_value)
-                            .desired_width(90.0),
-                    );
-                    ui.end_row();
-                });
+                        ui.label(self.localization.tr("common.region"));
+                        egui::ComboBox::from_id_salt("player_communication_region_select")
+                            .selected_text(localized_communication_region_label(
+                                &self.localization,
+                                self.player_communication_region_id,
+                            ))
+                            .width(220.0)
+                            .show_ui(ui, |ui| {
+                                for (region_id, _) in COMMUNICATION_REGIONS {
+                                    if communication.primary_region == Some(region_id) {
+                                        continue;
+                                    }
+                                    ui.selectable_value(
+                                        &mut self.player_communication_region_id,
+                                        region_id,
+                                        localized_communication_region_label(
+                                            &self.localization,
+                                            region_id,
+                                        ),
+                                    );
+                                }
+                            });
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("player_communication.actual"));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.player_communication_value)
+                                .desired_width(90.0),
+                        );
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("player_communication.pending_xp"))
+                            .on_hover_text(
+                                self.localization
+                                    .tr("player_communication.pending_xp_tooltip"),
+                            );
+                        let pending_xp = communication
+                            .xp_entries
+                            .iter()
+                            .find(|(region_id, _)| {
+                                *region_id == self.player_communication_region_id
+                            })
+                            .map(|(_, value)| *value)
+                            .unwrap_or(0);
+                        ui.weak(format!("{pending_xp} XP"));
+                        ui.end_row();
+                    });
+            }
 
             if self.player_communication_region_id != previous_region {
                 self.player_communication_value = player_communication_value_for_region(
@@ -4538,43 +6332,72 @@ impl ModifierApp {
                 );
             }
 
-            let pending_xp = communication
-                .xp_entries
-                .iter()
-                .find(|(region_id, _)| *region_id == self.player_communication_region_id)
-                .map(|(_, value)| *value)
-                .unwrap_or(0);
-            ui.label(format!("Pending training XP for selected region: {pending_xp}"));
+            #[cfg(feature = "dev")]
+            {
+                let pending_xp = communication
+                    .xp_entries
+                    .iter()
+                    .find(|(region_id, _)| *region_id == self.player_communication_region_id)
+                    .map(|(_, value)| *value)
+                    .unwrap_or(0);
+                ui.label(format!(
+                    "Pending training XP for selected region: {pending_xp}"
+                ));
+            }
 
             let selected_region_exists = communication
                 .entries
                 .iter()
                 .any(|(region_id, _)| *region_id == self.player_communication_region_id);
             if !selected_region_exists {
-                ui.weak("This learned region has no actual Communication value yet. Applying 0 removes it.");
+                ui.weak(self.localization.tr("player_communication.no_actual_value"));
             }
 
             if !communication.entries.is_empty() {
                 ui.add_space(6.0);
-                ui.strong("Actual learned regions");
+                ui.strong(self.localization.tr("player_communication.actual_regions"));
+
+                #[cfg(feature = "dev")]
                 for (region_id, value) in &communication.entries {
                     ui.label(format!(
                         "{}: {} / 100",
-                        player_communication_region_label(*region_id),
+                        localized_communication_region_label(
+                            &self.localization,
+                            *region_id,
+                        ),
                         value
                     ));
                 }
+
+                #[cfg(not(feature = "dev"))]
+                egui::Grid::new("player_communication_learned_regions_grid")
+                    .num_columns(2)
+                    .spacing([20.0, 4.0])
+                    .show(ui, |ui| {
+                        for (region_id, value) in &communication.entries {
+                            ui.label(localized_communication_region_label(
+                                &self.localization,
+                                *region_id,
+                            ));
+                            ui.label(format!("{value} / 100"));
+                            ui.end_row();
+                        }
+                    });
             } else {
-                ui.label("No non-native actual Communication values are stored for this player yet.");
+                ui.label(self.localization.tr("player_communication.no_actual_regions"));
             }
 
+            #[cfg(feature = "dev")]
             if !communication.xp_entries.is_empty() {
                 ui.add_space(6.0);
-                ui.strong("Pending training XP");
+                ui.strong(self.localization.tr("player_communication.pending_xp"));
                 for (region_id, value) in &communication.xp_entries {
                     ui.label(format!(
                         "{}: {} XP",
-                        player_communication_region_label(*region_id),
+                        localized_communication_region_label(
+                            &self.localization,
+                            *region_id,
+                        ),
                         value
                     ));
                 }
@@ -4583,19 +6406,34 @@ impl ModifierApp {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 if ui
-                    .add_enabled(self.connected, egui::Button::new("Apply Actual Communication"))
+                    .add_enabled(
+                        self.connected,
+                        egui::Button::new(
+                            self.localization.tr("player_communication.apply"),
+                        ),
+                    )
                     .clicked()
                 {
                     apply_clicked = true;
                 }
+
+                #[cfg(feature = "dev")]
+                let max_button_text = self.localization.tr("communication.max_selected");
+                #[cfg(not(feature = "dev"))]
+                let max_button_text = self
+                    .localization
+                    .tr("player_communication.set_actual_to_100");
+
                 if ui
-                    .add_enabled(self.connected, egui::Button::new("Max Selected"))
+                    .add_enabled(self.connected, egui::Button::new(max_button_text))
                     .clicked()
                 {
                     max_clicked = true;
                 }
             });
-            ui.weak("Actual Communication is the value shown in the player profile. Pending XP is updated separately by TFM2's training progression.");
+
+            #[cfg(feature = "dev")]
+            ui.weak(self.localization.tr("player_communication.footer"));
         }
 
         if max_clicked {
@@ -4606,10 +6444,18 @@ impl ModifierApp {
         }
     }
 
-
+    fn recruitment_player_matches_search(
+        player_name: &str,
+        player_id: usize,
+        query: &str,
+    ) -> bool {
+        query.is_empty()
+            || player_name.to_lowercase().contains(query)
+            || player_id.to_string().contains(query)
+    }
 
     fn refresh_recruitment_settings(&mut self) {
-        match Self::request("GET_RECRUITMENT_SETTINGS") {
+        match self.game_request("GET_RECRUITMENT_SETTINGS") {
             Ok(response) => {
                 let parts: Vec<&str> = response.split('|').collect();
                 if parts.len() >= 4 && parts[0] == "OK" && parts[1] == "RECRUITMENT" {
@@ -4622,7 +6468,7 @@ impl ModifierApp {
     }
 
     fn refresh_teams(&mut self) {
-        match Self::request("GET_TEAMS") {
+        match self.game_request("GET_TEAMS") {
             Ok(response) => match parse_teams_response(&response) {
                 Ok(teams) => {
                     self.connected = true;
@@ -4639,11 +6485,17 @@ impl ModifierApp {
                             .map(|team| team.id);
                     }
                     self.status = format!("Loaded {} teams", self.teams.len());
+                    self.update_team_search_status();
                 }
-                Err(error) => self.status = human_error(&error),
+                Err(error) => {
+                    let status = human_error(&error);
+                    self.team_search_status = Some(status.clone());
+                    self.status = status;
+                }
             },
             Err(error) => {
                 self.connected = false;
+                self.team_search_status = Some(error.clone());
                 self.status = error;
             }
         }
@@ -4687,7 +6539,7 @@ impl ModifierApp {
             .map(|player| player.name.clone())
             .unwrap_or_else(|| format!("Player {athlete_id}"));
 
-        match Self::request(&format!("MOVE_PLAYER_TO_TEAM|{athlete_id}|{team_id}")) {
+        match self.game_request(&format!("MOVE_PLAYER_TO_TEAM|{athlete_id}|{team_id}")) {
             Ok(response) => {
                 if let Some(error) = response.strip_prefix("ERR|") {
                     self.status = human_error(error);
@@ -4726,7 +6578,7 @@ impl ModifierApp {
             .map(|player| player.name.clone())
             .unwrap_or_else(|| format!("Player {athlete_id}"));
 
-        match Self::request(&format!("SET_PLAYER_FREE_AGENT|{athlete_id}")) {
+        match self.game_request(&format!("SET_PLAYER_FREE_AGENT|{athlete_id}")) {
             Ok(response) if response == "OK|PLAYER_FREE_AGENT" => {
                 self.connected = true;
                 self.status = format!(
@@ -4790,7 +6642,7 @@ impl ModifierApp {
             .map(|staff| staff.name.clone())
             .unwrap_or_else(|| format!("Staff {staff_id}"));
 
-        match Self::request(&format!("MOVE_STAFF_TO_TEAM|{staff_id}|{team_id}")) {
+        match self.game_request(&format!("MOVE_STAFF_TO_TEAM|{staff_id}|{team_id}")) {
             Ok(response) => {
                 if let Some(error) = response.strip_prefix("ERR|") {
                     self.status = human_error(error);
@@ -4829,7 +6681,7 @@ impl ModifierApp {
             .map(|staff| staff.name.clone())
             .unwrap_or_else(|| format!("Staff {staff_id}"));
 
-        match Self::request(&format!("SET_STAFF_FREE_AGENT|{staff_id}")) {
+        match self.game_request(&format!("SET_STAFF_FREE_AGENT|{staff_id}")) {
             Ok(response) if response == "OK|STAFF_FREE_AGENT" => {
                 self.connected = true;
                 self.status = format!(
@@ -4859,7 +6711,7 @@ impl ModifierApp {
             "SET_TRANSFER_ALWAYS_SUCCESS|{}",
             if enabled { 1 } else { 0 }
         );
-        match Self::request(&command) {
+        match self.game_request(&command) {
             Ok(response) => {
                 let parts: Vec<&str> = response.split('|').collect();
                 if parts.first() == Some(&"ERR") {
@@ -4890,7 +6742,7 @@ impl ModifierApp {
             "SET_RECRUITMENT_INSTANT_RETRY|{}",
             if enabled { 1 } else { 0 }
         );
-        match Self::request(&command) {
+        match self.game_request(&command) {
             Ok(response) => {
                 let parts: Vec<&str> = response.split('|').collect();
                 if parts.first() == Some(&"ERR") {
@@ -4917,12 +6769,12 @@ impl ModifierApp {
     }
 
     fn render_recruitment_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Recruitment");
-        ui.label("Recruitment, negotiation, and direct roster tools for the active career.");
+        ui.heading(self.localization.tr("recruitment.heading"));
+        ui.label(self.localization.tr("recruitment.info"));
         ui.add_space(12.0);
 
         ui.group(|ui| {
-            ui.strong("Transfer Negotiation");
+            ui.strong(self.localization.tr("recruitment.transfer_negotiation"));
             ui.add_space(6.0);
 
             let previous = self.transfer_always_success;
@@ -4930,18 +6782,18 @@ impl ModifierApp {
                 &mut self.transfer_always_success,
                 "Transfer Always Success",
             );
-            response.on_hover_text(transfer_success_tooltip_text());
+            response.on_hover_text(self.localization.tr(transfer_success_tooltip_key()));
 
             if self.transfer_always_success != previous {
                 self.set_transfer_always_success(self.transfer_always_success);
             }
 
-            ui.label(transfer_runtime_text());
+            ui.label(self.localization.tr(transfer_runtime_key()));
         });
 
         ui.add_space(10.0);
         ui.group(|ui| {
-            ui.strong("Recruitment Retry");
+            ui.strong(self.localization.tr("recruitment.retry"));
             ui.add_space(6.0);
 
             let previous = self.recruitment_instant_retry;
@@ -4949,7 +6801,7 @@ impl ModifierApp {
                 &mut self.recruitment_instant_retry,
                 "Instant Retry (No Negotiation Cooldown)",
             );
-            response.on_hover_text(instant_retry_tooltip_text());
+            response.on_hover_text(self.localization.tr(instant_retry_tooltip_key()));
 
             if self.recruitment_instant_retry != previous {
                 self.set_recruitment_instant_retry(self.recruitment_instant_retry);
@@ -4965,10 +6817,11 @@ impl ModifierApp {
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             for tab in RecruitmentManagementTab::ALL {
+                let label = self.localization.tr(tab.label_key());
                 ui.selectable_value(
                     &mut self.recruitment_management_tab,
                     tab,
-                    tab.label(),
+                    label,
                 );
             }
         });
@@ -4977,21 +6830,21 @@ impl ModifierApp {
         match self.recruitment_management_tab {
             RecruitmentManagementTab::Players => {
                 ui.group(|ui| {
-                    ui.strong("Player Management");
-                    ui.label(recruitment_player_management_text());
+                    ui.strong(self.localization.tr("recruitment.player_management.heading"));
+                    ui.label(self.localization.tr(recruitment_player_management_key()));
                     ui.add_space(8.0);
 
                     ui.horizontal(|ui| {
-                        ui.label("Search");
+                        ui.label(self.localization.tr("common.search"));
                         ui.add(
                             egui::TextEdit::singleline(&mut self.recruitment_player_search)
                                 .desired_width(220.0)
-                                .hint_text("Player name or ID"),
+                                .hint_text(self.localization.tr("recruitment.search_player_hint")),
                         );
-                        if ui.button("Clear").clicked() {
+                        if ui.button(self.localization.tr("common.clear")).clicked() {
                             self.recruitment_player_search.clear();
                         }
-                        if ui.button("Refresh Players").clicked() {
+                        if ui.button(self.localization.tr("editor.refresh_players")).clicked() {
                             self.refresh_players();
                         }
                     });
@@ -5001,10 +6854,11 @@ impl ModifierApp {
                         .players
                         .iter()
                         .filter(|player| {
-                            query.is_empty()
-                                || player.name.to_lowercase().contains(&query)
-                                || player.team.to_lowercase().contains(&query)
-                                || player.id.to_string().contains(&query)
+                            Self::recruitment_player_matches_search(
+                                &player.name,
+                                player.id,
+                                &query,
+                            )
                         })
                         .collect::<Vec<_>>();
 
@@ -5012,10 +6866,10 @@ impl ModifierApp {
                         .recruitment_player_id
                         .and_then(|id| self.players.iter().find(|player| player.id == id))
                         .map(|player| format!("{} · {} · ID {}", player.name, player.team, player.id))
-                        .unwrap_or_else(|| "Select player".to_string());
+                        .unwrap_or_else(|| self.localization.tr("editor.select_player"));
 
                     ui.horizontal(|ui| {
-                        ui.label("Player");
+                        ui.label(self.localization.tr("common.player"));
                         egui::ComboBox::from_id_salt("recruitment_player_v039")
                             .selected_text(selected_player_text)
                             .width(390.0)
@@ -5028,21 +6882,24 @@ impl ModifierApp {
                                     );
                                 }
                             });
-                        ui.label(format!("{} matches", filtered_players.len()));
+                        {
+                            let count = filtered_players.len().to_string();
+                            ui.label(self.localization.tr_with("common.matches", &[("count", count.as_str())]));
+                        }
                     });
 
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        ui.label("Team Search");
+                        ui.label(self.localization.tr("recruitment.search_team"));
                         ui.add(
                             egui::TextEdit::singleline(&mut self.recruitment_team_search)
                                 .desired_width(220.0)
-                                .hint_text("Team or manager name"),
+                                .hint_text(self.localization.tr("recruitment.search_team_hint")),
                         );
-                        if ui.button("Clear").clicked() {
+                        if ui.button(self.localization.tr("common.clear")).clicked() {
                             self.recruitment_team_search.clear();
                         }
-                        if ui.button("Refresh Teams").clicked() {
+                        if ui.button(self.localization.tr("recruitment.refresh_teams")).clicked() {
                             self.refresh_teams();
                         }
                     });
@@ -5057,11 +6914,11 @@ impl ModifierApp {
                     let selected_team_text = self
                         .recruitment_team_id
                         .and_then(|id| self.teams.iter().find(|team| team.id == id))
-                        .map(TeamSummary::label)
-                        .unwrap_or_else(|| "Select destination team".to_string());
+                        .map(|team| team.localized_label(&self.localization))
+                        .unwrap_or_else(|| self.localization.tr("common.select_team"));
 
                     ui.horizontal(|ui| {
-                        ui.label("Destination Team");
+                        ui.label(self.localization.tr("recruitment.destination_team"));
                         egui::ComboBox::from_id_salt("recruitment_player_team_v039")
                             .selected_text(selected_team_text)
                             .width(420.0)
@@ -5070,25 +6927,34 @@ impl ModifierApp {
                                     ui.selectable_value(
                                         &mut self.recruitment_team_id,
                                         Some(team.id),
-                                        team.label(),
+                                        team.localized_label(&self.localization),
                                     );
                                 }
                             });
-                        ui.label(format!("{} matches", filtered_teams.len()));
+                        {
+                            let count = filtered_teams.len().to_string();
+                            ui.label(self.localization.tr_with("common.matches", &[("count", count.as_str())]));
+                        }
                     });
 
                     if let Some(my_team) = self.teams.iter().find(|team| team.is_player_team) {
-                        ui.label(format!("My Team: {}", my_team.display_name));
+                        ui.label(format!("{}: {}", self.localization.tr("common.my_team"), my_team.display_name));
                     }
 
                     let selected_is_free_agent = self
                         .recruitment_player_id
                         .and_then(|id| self.players.iter().find(|player| player.id == id))
                         .is_some_and(|player| player.team == "Free Agent");
-                    let action_label = if selected_is_free_agent {
-                        "Create Contract & Move Player"
+                    let (action_label, action_tooltip) = if selected_is_free_agent {
+                        (
+                            self.localization.tr("recruitment.player_management.create_contract_move"),
+                            self.localization.tr("recruitment.player_management.create_contract_move_tooltip"),
+                        )
                     } else {
-                        "Move Contracted Player"
+                        (
+                            self.localization.tr("recruitment.player_management.move_contracted"),
+                            self.localization.tr(move_player_tooltip_key()),
+                        )
                     };
                     let can_move = self.connected
                         && self.recruitment_player_id.is_some()
@@ -5097,11 +6963,7 @@ impl ModifierApp {
                     ui.add_space(8.0);
                     if ui
                         .add_enabled(can_move, egui::Button::new(action_label))
-                        .on_hover_text(if selected_is_free_agent {
-                            "Opens Edit Contract with automatic defaults. The player moves to the selected team only after the contract is applied."
-                        } else {
-                            move_player_tooltip_text()
-                        })
+                        .on_hover_text(action_tooltip)
                         .clicked()
                     {
                         self.move_recruitment_player_to_team();
@@ -5112,9 +6974,9 @@ impl ModifierApp {
                             self.connected
                                 && self.recruitment_player_id.is_some()
                                 && !selected_is_free_agent,
-                            egui::Button::new("Set Player to Free Agent"),
+                            egui::Button::new(self.localization.tr("recruitment.player_management.set_free_agent")),
                         )
-                        .on_hover_text("Ends the selected player's current contract and removes the player from the team roster.")
+                        .on_hover_text(self.localization.tr("recruitment.player_management.set_free_agent_info"))
                         .clicked()
                     {
                         self.free_agent_confirmation_player_id = self.recruitment_player_id;
@@ -5131,13 +6993,13 @@ impl ModifierApp {
                         ui.add_space(6.0);
                         ui.group(|ui| {
                             ui.strong(format!("Confirm: Set {confirm_name} to Free Agent?"));
-                            ui.label("This removes the active contract. Salary, transfer fee, contract dates, bonuses, and current contract requests will be cleared.");
+                            ui.label(self.localization.tr("recruitment.player_management.set_free_agent_warning"));
                             ui.horizontal(|ui| {
-                                if ui.button("Confirm Free Agent").clicked() {
+                                if ui.button(self.localization.tr("recruitment.confirm_free_agent")).clicked() {
                                     self.set_recruitment_player_free_agent(confirm_id);
                                     self.free_agent_confirmation_player_id = None;
                                 }
-                                if ui.button("Cancel").clicked() {
+                                if ui.button(self.localization.tr("common.cancel")).clicked() {
                                     self.free_agent_confirmation_player_id = None;
                                 }
                             });
@@ -5147,21 +7009,21 @@ impl ModifierApp {
             }
             RecruitmentManagementTab::Staff => {
                 ui.group(|ui| {
-                    ui.strong("Staff Management");
-                    ui.label("Move contracted staff directly, or create an active contract before signing a free agent.");
+                    ui.strong(self.localization.tr("recruitment.tabs.staff_management"));
+                    ui.label(self.localization.tr("recruitment.staff_management.info"));
                     ui.add_space(8.0);
 
                     ui.horizontal(|ui| {
-                        ui.label("Search");
+                        ui.label(self.localization.tr("common.search"));
                         ui.add(
                             egui::TextEdit::singleline(&mut self.recruitment_staff_search)
                                 .desired_width(220.0)
-                                .hint_text("Staff name, role, team, or ID"),
+                                .hint_text(self.localization.tr("recruitment.search_staff_hint")),
                         );
-                        if ui.button("Clear").clicked() {
+                        if ui.button(self.localization.tr("common.clear")).clicked() {
                             self.recruitment_staff_search.clear();
                         }
-                        if ui.button("Refresh Staff").clicked() {
+                        if ui.button(self.localization.tr("editor.refresh_staff")).clicked() {
                             self.refresh_staff();
                         }
                     });
@@ -5176,11 +7038,11 @@ impl ModifierApp {
                     let selected_staff_text = self
                         .recruitment_staff_id
                         .and_then(|id| self.staffs.iter().find(|staff| staff.id == id))
-                        .map(StaffSummary::label)
-                        .unwrap_or_else(|| "Select staff".to_string());
+                        .map(|staff| staff.localized_label(&self.localization))
+                        .unwrap_or_else(|| self.localization.tr("editor.select_staff"));
 
                     ui.horizontal(|ui| {
-                        ui.label("Staff");
+                        ui.label(self.localization.tr("common.staff"));
                         egui::ComboBox::from_id_salt("recruitment_staff_v039")
                             .selected_text(selected_staff_text)
                             .width(420.0)
@@ -5189,25 +7051,28 @@ impl ModifierApp {
                                     ui.selectable_value(
                                         &mut self.recruitment_staff_id,
                                         Some(staff.id),
-                                        staff.label(),
+                                        staff.localized_label(&self.localization),
                                     );
                                 }
                             });
-                        ui.label(format!("{} matches", filtered_staff.len()));
+                        {
+                            let count = filtered_staff.len().to_string();
+                            ui.label(self.localization.tr_with("common.matches", &[("count", count.as_str())]));
+                        }
                     });
 
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        ui.label("Team Search");
+                        ui.label(self.localization.tr("recruitment.search_team"));
                         ui.add(
                             egui::TextEdit::singleline(&mut self.recruitment_team_search)
                                 .desired_width(220.0)
-                                .hint_text("Team or manager name"),
+                                .hint_text(self.localization.tr("recruitment.search_team_hint")),
                         );
-                        if ui.button("Clear").clicked() {
+                        if ui.button(self.localization.tr("common.clear")).clicked() {
                             self.recruitment_team_search.clear();
                         }
-                        if ui.button("Refresh Teams").clicked() {
+                        if ui.button(self.localization.tr("recruitment.refresh_teams")).clicked() {
                             self.refresh_teams();
                         }
                     });
@@ -5222,11 +7087,11 @@ impl ModifierApp {
                     let selected_team_text = self
                         .recruitment_team_id
                         .and_then(|id| self.teams.iter().find(|team| team.id == id))
-                        .map(TeamSummary::label)
-                        .unwrap_or_else(|| "Select destination team".to_string());
+                        .map(|team| team.localized_label(&self.localization))
+                        .unwrap_or_else(|| self.localization.tr("common.select_team"));
 
                     ui.horizontal(|ui| {
-                        ui.label("Destination Team");
+                        ui.label(self.localization.tr("recruitment.destination_team"));
                         egui::ComboBox::from_id_salt("recruitment_staff_team_v039")
                             .selected_text(selected_team_text)
                             .width(420.0)
@@ -5235,21 +7100,30 @@ impl ModifierApp {
                                     ui.selectable_value(
                                         &mut self.recruitment_team_id,
                                         Some(team.id),
-                                        team.label(),
+                                        team.localized_label(&self.localization),
                                     );
                                 }
                             });
-                        ui.label(format!("{} matches", filtered_teams.len()));
+                        {
+                            let count = filtered_teams.len().to_string();
+                            ui.label(self.localization.tr_with("common.matches", &[("count", count.as_str())]));
+                        }
                     });
 
                     let selected_is_free_agent = self
                         .recruitment_staff_id
                         .and_then(|id| self.staffs.iter().find(|staff| staff.id == id))
                         .is_some_and(|staff| staff.team == "Free Agent");
-                    let action_label = if selected_is_free_agent {
-                        "Create Contract & Move Staff"
+                    let (action_label, action_tooltip) = if selected_is_free_agent {
+                        (
+                            self.localization.tr("recruitment.staff_management.create_contract_move"),
+                            self.localization.tr("recruitment.staff_management.create_contract_move_tooltip"),
+                        )
                     } else {
-                        "Move Contracted Staff"
+                        (
+                            self.localization.tr("recruitment.staff_management.move_contracted"),
+                            self.localization.tr("recruitment.staff_management.move_tooltip"),
+                        )
                     };
                     let can_move = self.connected
                         && self.recruitment_staff_id.is_some()
@@ -5258,11 +7132,7 @@ impl ModifierApp {
                     ui.add_space(8.0);
                     if ui
                         .add_enabled(can_move, egui::Button::new(action_label))
-                        .on_hover_text(if selected_is_free_agent {
-                            "Opens Edit Contract with automatic defaults. The staff member moves to the selected team only after the contract is applied."
-                        } else {
-                            "Moves the active staff contract to the selected team. Contract terms can be edited separately."
-                        })
+                        .on_hover_text(action_tooltip)
                         .clicked()
                     {
                         self.move_recruitment_staff_to_team();
@@ -5273,9 +7143,9 @@ impl ModifierApp {
                             self.connected
                                 && self.recruitment_staff_id.is_some()
                                 && !selected_is_free_agent,
-                            egui::Button::new("Set Staff to Free Agent"),
+                            egui::Button::new(self.localization.tr("recruitment.staff_management.set_free_agent")),
                         )
-                        .on_hover_text("Ends the selected staff member's current contract and removes the staff assignment.")
+                        .on_hover_text(self.localization.tr("recruitment.staff_management.set_free_agent_info"))
                         .clicked()
                     {
                         self.free_agent_confirmation_staff_id = self.recruitment_staff_id;
@@ -5292,13 +7162,13 @@ impl ModifierApp {
                         ui.add_space(6.0);
                         ui.group(|ui| {
                             ui.strong(format!("Confirm: Set {confirm_name} to Free Agent?"));
-                            ui.label("This removes the active staff contract, salary, dates, and contract requests.");
+                            ui.label(self.localization.tr("recruitment.staff_management.set_free_agent_warning"));
                             ui.horizontal(|ui| {
-                                if ui.button("Confirm Free Agent").clicked() {
+                                if ui.button(self.localization.tr("recruitment.confirm_free_agent")).clicked() {
                                     self.set_recruitment_staff_free_agent(confirm_id);
                                     self.free_agent_confirmation_staff_id = None;
                                 }
-                                if ui.button("Cancel").clicked() {
+                                if ui.button(self.localization.tr("common.cancel")).clicked() {
                                     self.free_agent_confirmation_staff_id = None;
                                 }
                             });
@@ -5528,198 +7398,704 @@ impl ModifierApp {
     }
 
 
-    fn render_search_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Search");
-        ui.label(search_intro_text());
-        ui.add_space(8.0);
+    fn list_library_dir() -> Result<PathBuf, String> {
+        let exe = std::env::current_exe()
+            .map_err(|error| format!("Could not resolve executable path: {error}"))?;
+        let parent = exe
+            .parent()
+            .ok_or_else(|| "Could not resolve executable folder".to_string())?;
+        Ok(parent.join("lists"))
+    }
 
-        #[cfg(feature = "dev")]
-        {
-            ui.horizontal_wrapped(|ui| {
-            let import_list = ui.add_enabled(false, egui::Button::new("Import List"));
-            import_list.on_hover_text("Saved-list import is reserved for the Lists backend.");
-            let export_list = ui.add_enabled(false, egui::Button::new("Export List"));
-            export_list.on_hover_text("Saved-list export is reserved for the Lists backend.");
+    fn sanitize_list_name(name: &str) -> String {
+        let cleaned = name
+            .trim()
+            .chars()
+            .map(|ch| {
+                if ch.is_control() || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
+                    '_'
+                } else {
+                    ch
+                }
+            })
+            .collect::<String>()
+            .trim_matches([' ', '.'])
+            .to_string();
 
-            ui.separator();
-            ui.label("List");
-            ui.add_enabled_ui(false, |ui| {
-                egui::ComboBox::from_id_salt("search_active_list")
-                    .selected_text("All Results")
-                    .width(150.0)
-                    .show_ui(ui, |ui| {
-                        let _ = ui.selectable_label(true, "All Results");
-                    });
-            });
+        let reserved = [
+            "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5",
+            "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
+            "LPT6", "LPT7", "LPT8", "LPT9",
+        ];
+        if cleaned.is_empty() {
+            "Saved List".to_string()
+        } else if reserved.iter().any(|value| cleaned.eq_ignore_ascii_case(value)) {
+            format!("_{cleaned}")
+        } else {
+            cleaned
+        }
+    }
 
-            ui.add_enabled(false, egui::Button::new("New List"));
-            ui.add_enabled(false, egui::Button::new("Save List"));
-        });
+    fn saved_player_list_path(name: &str) -> Result<PathBuf, String> {
+        Ok(Self::list_library_dir()?
+            .join(format!("{}.tfm2list", Self::sanitize_list_name(name))))
+    }
+
+    fn reload_saved_player_lists(&mut self) {
+        let Ok(dir) = Self::list_library_dir() else {
+            return;
+        };
+
+        if let Err(error) = fs::create_dir_all(&dir) {
+            self.status = format!("Could not create list library: {error}");
+            return;
         }
 
+        let Ok(entries) = fs::read_dir(&dir) else {
+            return;
+        };
+
+        let mut lists = Vec::new();
+        let mut invalid_count = 0usize;
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            let is_list = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("tfm2list"));
+            if !is_list {
+                continue;
+            }
+
+            let Ok(text) = fs::read_to_string(&path) else {
+                invalid_count += 1;
+                continue;
+            };
+            let Ok(mut list) = serde_json::from_str::<SavedPlayerList>(&text) else {
+                invalid_count += 1;
+                continue;
+            };
+            if !list.is_supported() {
+                invalid_count += 1;
+                continue;
+            }
+            if list.name.trim().is_empty() {
+                list.name = path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("Imported List")
+                    .to_string();
+            }
+            list.name = Self::sanitize_list_name(&list.name);
+            list.normalize();
+            lists.push(list);
+        }
+
+        lists.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+        lists.dedup_by(|left, right| left.name.eq_ignore_ascii_case(&right.name));
+        self.saved_player_lists = lists;
+
+        if let Some(selected) = self.selected_saved_player_list.as_ref() {
+            if !self
+                .saved_player_lists
+                .iter()
+                .any(|list| list.name.eq_ignore_ascii_case(selected))
+            {
+                self.selected_saved_player_list = None;
+            }
+        }
+
+        if let Some(active) = self.active_player_list_filter.as_ref() {
+            if !self
+                .saved_player_lists
+                .iter()
+                .any(|list| list.name.eq_ignore_ascii_case(active))
+            {
+                self.active_player_list_filter = None;
+            }
+        }
+
+        if let Some(active) = self.active_staff_list_filter.as_ref() {
+            if !self
+                .saved_player_lists
+                .iter()
+                .any(|list| list.name.eq_ignore_ascii_case(active))
+            {
+                self.active_staff_list_filter = None;
+            }
+        }
+
+        if invalid_count > 0 {
+            let count = invalid_count.to_string();
+            self.status = self.localization.tr_with(
+                "lists.status.invalid_files",
+                &[("count", count.as_str())],
+            );
+        }
+    }
+
+    fn write_player_list(&mut self, list: &SavedPlayerList, overwrite: bool) -> Result<(), String> {
+        let path = Self::saved_player_list_path(&list.name)?;
+        if path.exists() && !overwrite {
+            return Err(self.localization.tr_with(
+                "lists.status.already_exists",
+                &[("name", list.name.as_str())],
+            ));
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("Could not create list library: {error}"))?;
+        }
+        let mut normalized = list.clone();
+        normalized.normalize();
+        let text = serde_json::to_string_pretty(&normalized)
+            .map_err(|error| format!("Could not serialize list: {error}"))?;
+        fs::write(&path, text)
+            .map_err(|error| format!("Could not save list: {error}"))?;
+        Ok(())
+    }
+
+    fn create_named_player_list(&mut self, name: &str) {
+        let name = Self::sanitize_list_name(name);
+        let mut list = SavedPlayerList::new(name.clone());
+        list.player_ids = self.pending_new_list_player_ids.clone();
+        list.staff_ids = self.pending_new_list_staff_ids.clone();
+        list.normalize();
+        match self.write_player_list(&list, false) {
+            Ok(()) => {
+                self.pending_new_list_player_ids.clear();
+                self.pending_new_list_staff_ids.clear();
+                self.selected_saved_player_list = Some(name.clone());
+                self.reload_saved_player_lists();
+                self.status = self.localization.tr_with(
+                    "lists.status.created",
+                    &[("name", name.as_str())],
+                );
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn rename_selected_player_list(&mut self, new_name: &str) {
+        let Some(old_name) = self.selected_saved_player_list.clone() else {
+            self.status = self.localization.tr("lists.status.select_to_rename");
+            return;
+        };
+        let new_name = Self::sanitize_list_name(new_name);
+        if old_name.eq_ignore_ascii_case(&new_name) {
+            return;
+        }
+        let Some(mut list) = self
+            .saved_player_lists
+            .iter()
+            .find(|list| list.name.eq_ignore_ascii_case(&old_name))
+            .cloned()
+        else {
+            self.status = self.localization.tr("lists.status.not_found");
+            return;
+        };
+
+        list.name = new_name.clone();
+        match self.write_player_list(&list, false) {
+            Ok(()) => {
+                if let Ok(old_path) = Self::saved_player_list_path(&old_name) {
+                    let _ = fs::remove_file(old_path);
+                }
+                if self
+                    .active_player_list_filter
+                    .as_ref()
+                    .is_some_and(|active| active.eq_ignore_ascii_case(&old_name))
+                {
+                    self.active_player_list_filter = Some(new_name.clone());
+                }
+                if self
+                    .active_staff_list_filter
+                    .as_ref()
+                    .is_some_and(|active| active.eq_ignore_ascii_case(&old_name))
+                {
+                    self.active_staff_list_filter = Some(new_name.clone());
+                }
+                self.selected_saved_player_list = Some(new_name.clone());
+                self.reload_saved_player_lists();
+                self.status = self.localization.tr_with(
+                    "lists.status.renamed",
+                    &[("name", new_name.as_str())],
+                );
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn delete_selected_player_list(&mut self) {
+        let Some(name) = self.selected_saved_player_list.clone() else {
+            self.status = self.localization.tr("lists.status.select_to_delete");
+            return;
+        };
+        match Self::saved_player_list_path(&name) {
+            Ok(path) => match fs::remove_file(path) {
+                Ok(()) => {
+                    if self
+                        .active_player_list_filter
+                        .as_ref()
+                        .is_some_and(|active| active.eq_ignore_ascii_case(&name))
+                    {
+                        self.active_player_list_filter = None;
+                    }
+                    if self
+                        .active_staff_list_filter
+                        .as_ref()
+                        .is_some_and(|active| active.eq_ignore_ascii_case(&name))
+                    {
+                        self.active_staff_list_filter = None;
+                    }
+                    self.selected_saved_player_list = None;
+                    self.reload_saved_player_lists();
+                    self.status = self.localization.tr_with(
+                        "lists.status.deleted",
+                        &[("name", name.as_str())],
+                    );
+                }
+                Err(error) => self.status = format!("Could not delete list: {error}"),
+            },
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn add_player_ids_to_list(&mut self, list_name: &str, player_ids: &[usize]) {
+        let Some(mut list) = self
+            .saved_player_lists
+            .iter()
+            .find(|list| list.name.eq_ignore_ascii_case(list_name))
+            .cloned()
+        else {
+            self.status = self.localization.tr("lists.status.not_found");
+            return;
+        };
+
+        let before = list.player_ids.len();
+        list.player_ids.extend(player_ids.iter().copied());
+        list.normalize();
+        let added = list.player_ids.len().saturating_sub(before);
+
+        match self.write_player_list(&list, true) {
+            Ok(()) => {
+                self.reload_saved_player_lists();
+                let count = added.to_string();
+                self.status = self.localization.tr_with(
+                    "lists.status.added",
+                    &[("count", count.as_str()), ("name", list.name.as_str())],
+                );
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn add_staff_ids_to_list(&mut self, list_name: &str, staff_ids: &[usize]) {
+        let Some(mut list) = self
+            .saved_player_lists
+            .iter()
+            .find(|list| list.name.eq_ignore_ascii_case(list_name))
+            .cloned()
+        else {
+            self.status = self.localization.tr("lists.status.not_found");
+            return;
+        };
+
+        let before = list.staff_ids.len();
+        list.staff_ids.extend(staff_ids.iter().copied());
+        list.normalize();
+        let added = list.staff_ids.len().saturating_sub(before);
+
+        match self.write_player_list(&list, true) {
+            Ok(()) => {
+                self.reload_saved_player_lists();
+                let count = added.to_string();
+                self.status = self.localization.tr_with(
+                    "lists.status.added_staff",
+                    &[("count", count.as_str()), ("name", list.name.as_str())],
+                );
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn remove_staff_ids_from_list(&mut self, list_name: &str, staff_ids: &[usize]) {
+        let Some(mut list) = self
+            .saved_player_lists
+            .iter()
+            .find(|list| list.name.eq_ignore_ascii_case(list_name))
+            .cloned()
+        else {
+            self.status = self.localization.tr("lists.status.not_found");
+            return;
+        };
+
+        let ids = staff_ids.iter().copied().collect::<BTreeSet<_>>();
+        let before = list.staff_ids.len();
+        list.staff_ids.retain(|id| !ids.contains(id));
+        let removed = before.saturating_sub(list.staff_ids.len());
+
+        match self.write_player_list(&list, true) {
+            Ok(()) => {
+                self.reload_saved_player_lists();
+                let count = removed.to_string();
+                self.status = self.localization.tr_with(
+                    "lists.status.removed_staff",
+                    &[("count", count.as_str()), ("name", list.name.as_str())],
+                );
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn remove_player_ids_from_list(&mut self, list_name: &str, player_ids: &[usize]) {
+        let Some(mut list) = self
+            .saved_player_lists
+            .iter()
+            .find(|list| list.name.eq_ignore_ascii_case(list_name))
+            .cloned()
+        else {
+            self.status = self.localization.tr("lists.status.not_found");
+            return;
+        };
+
+        let ids = player_ids.iter().copied().collect::<BTreeSet<_>>();
+        let before = list.player_ids.len();
+        list.player_ids.retain(|id| !ids.contains(id));
+        let removed = before.saturating_sub(list.player_ids.len());
+
+        match self.write_player_list(&list, true) {
+            Ok(()) => {
+                self.reload_saved_player_lists();
+                let count = removed.to_string();
+                self.status = self.localization.tr_with(
+                    "lists.status.removed",
+                    &[("count", count.as_str()), ("name", list.name.as_str())],
+                );
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn import_player_list(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title(self.localization.tr("lists.import_title"))
+            .add_filter("TFM2 List", &["tfm2list"])
+            .pick_file()
+        else {
+            return;
+        };
+
+        let result = fs::read_to_string(&path)
+            .map_err(|error| format!("Could not read list: {error}"))
+            .and_then(|text| {
+                serde_json::from_str::<SavedPlayerList>(&text)
+                    .map_err(|error| format!("Invalid TFM2 list: {error}"))
+            });
+
+        match result {
+            Ok(mut list) => {
+                if !list.is_supported() {
+                    self.status = self.localization.tr("lists.status.unsupported_format");
+                    return;
+                }
+                list.name = Self::sanitize_list_name(&list.name);
+                list.normalize();
+                let name = list.name.clone();
+                match self.write_player_list(&list, false) {
+                    Ok(()) => {
+                        self.selected_saved_player_list = Some(name.clone());
+                        self.reload_saved_player_lists();
+                        self.status = self.localization.tr_with(
+                            "lists.status.imported",
+                            &[("name", name.as_str())],
+                        );
+                    }
+                    Err(error) => self.status = error,
+                }
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn export_selected_player_list(&mut self) {
+        let Some(list) = self
+            .selected_saved_player_list
+            .as_ref()
+            .and_then(|name| {
+                self.saved_player_lists
+                    .iter()
+                    .find(|list| list.name.eq_ignore_ascii_case(name))
+            })
+            .cloned()
+        else {
+            self.status = self.localization.tr("lists.status.select_to_export");
+            return;
+        };
+
+        let Some(path) = rfd::FileDialog::new()
+            .set_title(self.localization.tr("lists.export_title"))
+            .set_file_name(&format!("{}.tfm2list", Self::sanitize_list_name(&list.name)))
+            .add_filter("TFM2 List", &["tfm2list"])
+            .save_file()
+        else {
+            return;
+        };
+
+        match serde_json::to_string_pretty(&list)
+            .map_err(|error| format!("Could not serialize list: {error}"))
+            .and_then(|text| {
+                fs::write(&path, text)
+                    .map_err(|error| format!("Could not export list: {error}"))
+            }) {
+            Ok(()) => {
+                let path_text = path.display().to_string();
+                self.status = self.localization.tr_with(
+                    "lists.status.exported",
+                    &[("path", path_text.as_str())],
+                );
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn open_selected_list_in_player_search(&mut self) {
+        let Some(name) = self.selected_saved_player_list.clone() else {
+            self.status = self.localization.tr("lists.status.select_to_open");
+            return;
+        };
+        self.active_player_list_filter = Some(name);
+        self.search_tab = SearchTab::Players;
+        self.restore_active_search_status();
+    }
+
+    fn open_selected_list_in_staff_search(&mut self) {
+        let Some(name) = self.selected_saved_player_list.clone() else {
+            self.status = self.localization.tr("lists.status.select_to_open");
+            return;
+        };
+        self.active_staff_list_filter = Some(name);
+        self.search_tab = SearchTab::Staff;
+        self.restore_active_search_status();
+    }
+
+
+    fn staff_filter_library_dir() -> Result<PathBuf, String> {
+        Ok(Self::filter_library_dir()?.join("staff"))
+    }
+
+    fn saved_staff_filter_path(name: &str) -> Result<PathBuf, String> {
+        Ok(Self::staff_filter_library_dir()?
+            .join(format!("{}.tfm2filter", Self::sanitize_filter_name(name))))
+    }
+
+    fn reload_saved_staff_filters(&mut self) {
+        let Ok(dir) = Self::staff_filter_library_dir() else {
+            return;
+        };
+
+        if let Err(error) = fs::create_dir_all(&dir) {
+            self.status = format!("Could not create staff filter library: {error}");
+            return;
+        }
+
+        let Ok(entries) = fs::read_dir(&dir) else {
+            return;
+        };
+
+        let mut names = entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let path = entry.path();
+                let is_filter = path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| value.eq_ignore_ascii_case("tfm2filter"));
+                if !is_filter {
+                    return None;
+                }
+
+                path.file_stem()
+                    .and_then(|value| value.to_str())
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>();
+
+        names.sort_by_key(|name| name.to_lowercase());
+        names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        self.saved_staff_filters = names;
+
+        if let Some(selected) = self.selected_saved_staff_filter.as_ref() {
+            if !self
+                .saved_staff_filters
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(selected))
+            {
+                self.selected_saved_staff_filter = None;
+            }
+        }
+    }
+
+    fn load_saved_staff_filter(&mut self, name: &str) {
+        match Self::saved_staff_filter_path(name) {
+            Ok(path) => match fs::read_to_string(&path) {
+                Ok(text) => {
+                    let mut filter = AdvancedStaffSearch::default();
+                    filter.import_text(&text);
+                    self.advanced_staff_search = filter;
+                    self.selected_saved_staff_filter = Some(name.to_string());
+                    self.status = format!("Loaded staff filter: {name}");
+                }
+                Err(error) => self.status = format!("Could not load staff filter: {error}"),
+            },
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn save_named_staff_filter(&mut self, name: &str, overwrite: bool) {
+        let name = Self::sanitize_filter_name(name);
+
+        match Self::saved_staff_filter_path(&name) {
+            Ok(path) => {
+                if path.exists() && !overwrite {
+                    self.status = format!(
+                        "Staff filter '{name}' already exists. Select it and use Update Filter."
+                    );
+                    return;
+                }
+
+                if let Some(parent) = path.parent() {
+                    if let Err(error) = fs::create_dir_all(parent) {
+                        self.status = format!("Could not create staff filter library: {error}");
+                        return;
+                    }
+                }
+
+                match fs::write(&path, self.advanced_staff_search.export_text()) {
+                    Ok(()) => {
+                        self.selected_saved_staff_filter = Some(name.clone());
+                        self.reload_saved_staff_filters();
+                        self.status = format!("Saved staff filter: {name}");
+                    }
+                    Err(error) => self.status = format!("Could not save staff filter: {error}"),
+                }
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn update_selected_staff_filter(&mut self) {
+        let Some(name) = self.selected_saved_staff_filter.clone() else {
+            self.status = "Select a saved staff filter to update".to_string();
+            return;
+        };
+        self.save_named_staff_filter(&name, true);
+    }
+
+    fn delete_selected_staff_filter(&mut self) {
+        let Some(name) = self.selected_saved_staff_filter.clone() else {
+            self.status = "Select a saved staff filter to delete".to_string();
+            return;
+        };
+
+        match Self::saved_staff_filter_path(&name) {
+            Ok(path) => match fs::remove_file(&path) {
+                Ok(()) => {
+                    self.selected_saved_staff_filter = None;
+                    self.reload_saved_staff_filters();
+                    self.status = format!("Deleted staff filter: {name}");
+                }
+                Err(error) => self.status = format!("Could not delete staff filter: {error}"),
+            },
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn export_advanced_staff_filter(&mut self) {
+        let default_name = self
+            .selected_saved_staff_filter
+            .as_deref()
+            .unwrap_or("TFM2 Staff Filter");
+
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Export TFM2 Staff Filter")
+            .set_file_name(&format!(
+                "{}.tfm2filter",
+                Self::sanitize_filter_name(default_name)
+            ))
+            .add_filter("TFM2 Staff Filter", &["tfm2filter"])
+            .add_filter("Text File", &["txt"])
+            .save_file()
+        else {
+            return;
+        };
+
+        match fs::write(&path, self.advanced_staff_search.export_text()) {
+            Ok(()) => self.status = format!("Exported staff filter to {}", path.display()),
+            Err(error) => self.status = format!("Could not export staff filter: {error}"),
+        }
+    }
+
+    fn import_advanced_staff_filter(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Import TFM2 Staff Filter")
+            .add_filter("TFM2 Staff Filter", &["tfm2filter", "txt"])
+            .pick_file()
+        else {
+            return;
+        };
+
+        match fs::read_to_string(&path) {
+            Ok(text) => {
+                let mut filter = AdvancedStaffSearch::default();
+                filter.import_text(&text);
+                self.advanced_staff_search = filter;
+
+                let imported_name = path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .map(Self::sanitize_filter_name)
+                    .unwrap_or_else(|| "Imported Staff Filter".to_string());
+
+                self.selected_saved_staff_filter = Some(imported_name.clone());
+                self.save_named_staff_filter(&imported_name, true);
+                self.status = format!(
+                    "Imported staff filter: {}",
+                    path.file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("filter")
+                );
+            }
+            Err(error) => self.status = format!("Could not import staff filter: {error}"),
+        }
+    }
+
+
+    fn render_search_tab(&mut self, ui: &mut egui::Ui) {
+        ui.heading(self.localization.tr("common.search"));
+        ui.label(self.localization.tr(search_intro_key()));
         ui.add_space(8.0);
+
+        ui.add_space(8.0);
+        let search_tab_before_click = self.search_tab;
         ui.horizontal_wrapped(|ui| {
             for tab in SearchTab::ALL {
-                ui.selectable_value(&mut self.search_tab, tab, tab.label());
+                let label = self.localization.tr(tab.label_key());
+                ui.selectable_value(&mut self.search_tab, tab, label);
             }
         });
+        if search_tab_before_click != self.search_tab {
+            self.restore_active_search_status();
+        }
 
         ui.separator();
         ui.add_space(6.0);
 
         match self.search_tab {
             SearchTab::Players => self.render_player_search_page(ui),
-            #[cfg(feature = "dev")]
-            SearchTab::Staff => {
-                #[cfg(feature = "dev")]
-                {
-
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.columns(2, |columns| {
-                            columns[0].group(|ui| {
-                                ui.strong("Staff Filters");
-                                ui.add_space(6.0);
-                                ui.add_enabled(false, egui::Button::new("Name"));
-                                ui.add_enabled(false, egui::Button::new("Role"));
-                                ui.add_enabled(false, egui::Button::new("Team"));
-                                ui.add_enabled(false, egui::Button::new("Region"));
-                            });
-                            columns[1].group(|ui| {
-                                ui.strong("Attribute Filters");
-                                ui.add_space(6.0);
-                                ui.add_enabled(false, egui::Button::new("Negotiation  Min  —  Max"));
-                                ui.add_enabled(false, egui::Button::new("Analysis     Min  —  Max"));
-                                ui.add_enabled(false, egui::Button::new("Coaching     Min  —  Max"));
-                                ui.add_enabled(false, egui::Button::new("Salary       Min  —  Max"));
-                            });
-                        });
-
-                        ui.add_space(10.0);
-                        ui.group(|ui| {
-                            ui.set_min_width(ui.available_width());
-                            ui.strong("Staff List");
-                            ui.label("Staff database support is planned after the Player Search model is established.");
-                            ui.add_enabled(false, egui::Button::new("Staff results table"));
-                        });
-                    });
-
-                }
-
-                #[cfg(not(feature = "dev"))]
-                {
-                    ui.heading("Staff");
-                    ui.label("Under development.");
-                }
-            }
-            #[cfg(feature = "dev")]
-            SearchTab::Teams => {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.columns(2, |columns| {
-                            columns[0].group(|ui| {
-                                ui.strong("Team Filters");
-                                ui.add_space(6.0);
-                                ui.add_enabled(false, egui::Button::new("Name"));
-                                ui.add_enabled(false, egui::Button::new("League"));
-                                ui.add_enabled(false, egui::Button::new("Region"));
-                            });
-                            columns[1].group(|ui| {
-                                ui.strong("Finance / Roster Filters");
-                                ui.add_space(6.0);
-                                ui.add_enabled(false, egui::Button::new("Balance      Min  —  Max"));
-                                ui.add_enabled(false, egui::Button::new("Roster Size  Min  —  Max"));
-                                ui.add_enabled(false, egui::Button::new("Team Rating  Min  —  Max"));
-                            });
-                        });
-
-                        ui.add_space(10.0);
-                        ui.group(|ui| {
-                            ui.set_min_width(ui.available_width());
-                            ui.horizontal(|ui| {
-                                ui.strong("Team List");
-                                ui.label(format!("{} teams loaded", self.teams.len()));
-                            });
-
-                            egui::ScrollArea::horizontal()
-                                .id_salt("search_teams_horizontal")
-                                .auto_shrink([false, true])
-                                .show(ui, |ui| {
-                                    egui::Grid::new("search_teams_table")
-                                        .striped(true)
-                                        .min_col_width(90.0)
-                                        .spacing([14.0, 5.0])
-                                        .show(ui, |ui| {
-                                            ui.strong("Team");
-                                            ui.strong("ID");
-                                            ui.strong("League");
-                                            ui.strong("Manager");
-                                            ui.strong("Balance");
-                                            ui.strong("Roster");
-                                            ui.strong("Rating");
-                                            ui.end_row();
-
-                                            for team in self.teams.iter().take(250) {
-                                                ui.label(if team.display_name.trim().is_empty() {
-                                                    format!("Team {}", team.id)
-                                                } else {
-                                                    team.display_name.clone()
-                                                });
-                                                ui.label(team.id.to_string());
-                                                ui.label(team.league_id.to_string());
-                                                ui.label(&team.manager_name);
-                                                ui.weak("—");
-                                                ui.weak("—");
-                                                ui.weak("—");
-                                                ui.end_row();
-                                            }
-                                        });
-                                });
-                        });
-                    });
-            }
-            #[cfg(feature = "dev")]
-            SearchTab::Lists => {
-                #[cfg(feature = "dev")]
-                {
-
-                ui.columns(2, |columns| {
-                    columns[0].group(|ui| {
-                        ui.strong("Saved Lists");
-                        ui.add_space(6.0);
-                        ui.add_enabled(false, egui::Button::new("All Players"));
-                        ui.add_enabled(false, egui::Button::new("Create List"));
-                        ui.add_enabled(false, egui::Button::new("Rename"));
-                        ui.add_enabled(false, egui::Button::new("Delete"));
-                    });
-                    columns[1].group(|ui| {
-                        ui.strong("List Options");
-                        ui.add_space(6.0);
-                        ui.add_enabled(false, egui::Button::new("Add selected result"));
-                        ui.add_enabled(false, egui::Button::new("Remove selected result"));
-                        ui.add_enabled(false, egui::Button::new("Import into list"));
-                        ui.add_enabled(false, egui::Button::new("Export list"));
-                    });
-                });
-
-                ui.add_space(10.0);
-                ui.group(|ui| {
-                    ui.set_min_width(ui.available_width());
-                    ui.strong("List Contents");
-                    ui.label("Saved shortlists will use the same expandable table layout as Player Search.");
-                    ui.add_enabled(false, egui::Button::new("No saved list selected"));
-                });
-
-                }
-
-                #[cfg(not(feature = "dev"))]
-                {
-                    ui.heading("Lists");
-                    ui.label("Under development.");
-                }
-            }
+            SearchTab::Staff => self.render_staff_search_page(ui),
+            SearchTab::Teams => self.render_team_search_page(ui),
+            SearchTab::Lists => self.render_saved_lists_page(ui),
             #[cfg(feature = "dev")]
             SearchTab::History => {
                 #[cfg(feature = "dev")]
@@ -5767,15 +8143,1576 @@ impl ModifierApp {
         }
     }
 
+
+    fn render_saved_lists_page(&mut self, ui: &mut egui::Ui) {
+        let has_selected_list = self.selected_saved_player_list.is_some();
+        let mut create_requested = false;
+        let mut rename_requested = false;
+        let mut delete_requested = false;
+        let mut import_requested = false;
+        let mut export_requested = false;
+        let mut open_in_player_search_requested = false;
+        let mut open_in_staff_search_requested = false;
+        let mut reload_requested = false;
+        let mut selected_list_change: Option<String> = None;
+        let mut remove_player_ids: Vec<usize> = Vec::new();
+        let mut remove_staff_ids: Vec<usize> = Vec::new();
+        let mut open_player_id: Option<usize> = None;
+        let mut open_staff_id: Option<usize> = None;
+
+        ui.group(|ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.strong(self.localization.tr("lists.heading"));
+                ui.separator();
+                if ui.button(self.localization.tr("lists.create")).clicked() {
+                    create_requested = true;
+                }
+                if ui
+                    .add_enabled(
+                        has_selected_list,
+                        egui::Button::new(self.localization.tr("lists.rename")),
+                    )
+                    .clicked()
+                {
+                    rename_requested = true;
+                }
+                if ui
+                    .add_enabled(
+                        has_selected_list,
+                        egui::Button::new(self.localization.tr("lists.delete")),
+                    )
+                    .clicked()
+                {
+                    delete_requested = true;
+                }
+                ui.separator();
+                if ui.button(self.localization.tr("lists.import")).clicked() {
+                    import_requested = true;
+                }
+                if ui
+                    .add_enabled(
+                        has_selected_list,
+                        egui::Button::new(self.localization.tr("lists.export")),
+                    )
+                    .clicked()
+                {
+                    export_requested = true;
+                }
+                ui.separator();
+                if ui
+                    .add_enabled(
+                        has_selected_list,
+                        egui::Button::new(self.localization.tr("lists.open_in_player_search")),
+                    )
+                    .clicked()
+                {
+                    open_in_player_search_requested = true;
+                }
+                if ui
+                    .add_enabled(
+                        has_selected_list,
+                        egui::Button::new(self.localization.tr("lists.open_in_staff_search")),
+                    )
+                    .clicked()
+                {
+                    open_in_staff_search_requested = true;
+                }
+                if ui.button(self.localization.tr("common.refresh")).clicked() {
+                    reload_requested = true;
+                }
+            });
+            ui.weak(self.localization.tr("lists.info"));
+        });
+
+        ui.add_space(8.0);
+        let full_height = ui.available_height().max(240.0);
+        let left_width = 235.0_f32.min((ui.available_width() * 0.34).max(180.0));
+        ui.horizontal(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(left_width, full_height),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.group(|ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.set_min_height(ui.available_height());
+                        ui.strong(self.localization.tr("lists.saved_lists"));
+                        ui.separator();
+                        egui::ScrollArea::vertical()
+                            .id_salt("saved_lists_library")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                if self.saved_player_lists.is_empty() {
+                                    ui.weak(self.localization.tr("lists.no_lists"));
+                                }
+                                for list in self.saved_player_lists.clone() {
+                                    let count = list.total_members().to_string();
+                                    let label = self.localization.tr_with(
+                                        "lists.list_label",
+                                        &[("name", list.name.as_str()), ("count", count.as_str())],
+                                    );
+                                    let selected = self
+                                        .selected_saved_player_list
+                                        .as_ref()
+                                        .is_some_and(|name| name.eq_ignore_ascii_case(&list.name));
+                                    if ui.selectable_label(selected, label).clicked() {
+                                        selected_list_change = Some(list.name.clone());
+                                    }
+                                }
+                            });
+                    });
+                },
+            );
+
+            ui.add_space(8.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), full_height),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.group(|ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.set_min_height(ui.available_height());
+
+                        let selected_list = self
+                            .selected_saved_player_list
+                            .as_ref()
+                            .and_then(|name| {
+                                self.saved_player_lists
+                                    .iter()
+                                    .find(|list| list.name.eq_ignore_ascii_case(name))
+                            })
+                            .cloned();
+
+                        let Some(list) = selected_list else {
+                            ui.strong(self.localization.tr("lists.contents"));
+                            ui.separator();
+                            ui.weak(self.localization.tr("lists.select_list"));
+                            return;
+                        };
+
+                        let player_count = list.player_ids.len().to_string();
+                        let staff_count = list.staff_ids.len().to_string();
+                        ui.horizontal_wrapped(|ui| {
+                            ui.strong(&list.name);
+                            ui.separator();
+                            ui.selectable_value(
+                                &mut self.list_content_tab,
+                                ListContentTab::Players,
+                                self.localization.tr_with(
+                                    "lists.players_tab",
+                                    &[("count", player_count.as_str())],
+                                ),
+                            );
+                            ui.selectable_value(
+                                &mut self.list_content_tab,
+                                ListContentTab::Staff,
+                                self.localization.tr_with(
+                                    "lists.staff_tab",
+                                    &[("count", staff_count.as_str())],
+                                ),
+                            );
+                        });
+                        ui.separator();
+
+                        match self.list_content_tab {
+                            ListContentTab::Players => {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(self.localization.tr_with(
+                                        "lists.player_count",
+                                        &[("count", player_count.as_str())],
+                                    ));
+                                    if ui
+                                        .add_enabled(
+                                            !self.selected_list_player_ids.is_empty(),
+                                            egui::Button::new(
+                                                self.localization.tr("lists.remove_selected"),
+                                            ),
+                                        )
+                                        .clicked()
+                                    {
+                                        remove_player_ids
+                                            .extend(self.selected_list_player_ids.iter().copied());
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            !self.selected_list_player_ids.is_empty(),
+                                            egui::Button::new(
+                                                self.localization.tr("lists.clear_selection"),
+                                            ),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.selected_list_player_ids.clear();
+                                    }
+                                });
+
+                                let table_height = (ui.available_height() - 30.0).max(120.0);
+                                let mut selected_member_ids = self.selected_list_player_ids.clone();
+                                TableBuilder::new(ui)
+                                    .id_salt("saved_player_list_contents")
+                                    .striped(true)
+                                    .resizable(true)
+                                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                    .sense(egui::Sense::click())
+                                    .column(Column::initial(42.0).at_least(36.0).clip(true))
+                                    .column(
+                                        Column::initial(180.0)
+                                            .at_least(90.0)
+                                            .clip(true)
+                                            .resizable(true),
+                                    )
+                                    .column(
+                                        Column::initial(68.0)
+                                            .at_least(48.0)
+                                            .clip(true)
+                                            .resizable(true),
+                                    )
+                                    .column(
+                                        Column::initial(220.0)
+                                            .at_least(120.0)
+                                            .clip(true)
+                                            .resizable(true),
+                                    )
+                                    .min_scrolled_height(table_height)
+                                    .max_scroll_height(table_height)
+                                    .auto_shrink([false, false])
+                                    .header(22.0, |mut header| {
+                                        header.col(|ui| {
+                                            ui.strong(self.localization.tr("lists.select_column"));
+                                        });
+                                        header.col(|ui| {
+                                            ui.strong(self.localization.tr("common.name"));
+                                        });
+                                        header.col(|ui| {
+                                            ui.strong(self.localization.tr("common.id"));
+                                        });
+                                        header.col(|ui| {
+                                            ui.strong(self.localization.tr("common.team"));
+                                        });
+                                    })
+                                    .body(|body| {
+                                        body.rows(22.0, list.player_ids.len(), |mut row| {
+                                            let player_id = list.player_ids[row.index()];
+                                            let player = self
+                                                .players
+                                                .iter()
+                                                .find(|player| player.id == player_id);
+                                            row.set_selected(selected_member_ids.contains(&player_id));
+                                            row.col(|ui| {
+                                                let mut selected =
+                                                    selected_member_ids.contains(&player_id);
+                                                if ui.checkbox(&mut selected, "").changed() {
+                                                    if selected {
+                                                        selected_member_ids.insert(player_id);
+                                                    } else {
+                                                        selected_member_ids.remove(&player_id);
+                                                    }
+                                                }
+                                            });
+                                            row.col(|ui| {
+                                                if let Some(player) = player {
+                                                    ui.label(&player.name);
+                                                } else {
+                                                    ui.weak(
+                                                        self.localization.tr("lists.missing_player"),
+                                                    );
+                                                }
+                                            });
+                                            row.col(|ui| {
+                                                ui.label(player_id.to_string());
+                                            });
+                                            row.col(|ui| {
+                                                if let Some(player) = player {
+                                                    ui.label(value_or_dash(&player.team));
+                                                } else {
+                                                    ui.weak("—");
+                                                }
+                                            });
+
+                                            let row_response = row.response();
+                                            if row_response.double_clicked() && player.is_some() {
+                                                selected_member_ids.insert(player_id);
+                                                open_player_id = Some(player_id);
+                                            }
+                                            row_response.context_menu(|ui| {
+                                                if player.is_some()
+                                                    && ui
+                                                        .button(self.localization.tr(
+                                                            "search.open_in_player_editor",
+                                                        ))
+                                                        .clicked()
+                                                {
+                                                    open_player_id = Some(player_id);
+                                                    ui.close_menu();
+                                                }
+                                                if ui
+                                                    .button(self.localization.tr(
+                                                        "lists.remove_from_list",
+                                                    ))
+                                                    .clicked()
+                                                {
+                                                    remove_player_ids.push(player_id);
+                                                    ui.close_menu();
+                                                }
+                                            });
+                                        });
+                                    });
+                                self.selected_list_player_ids = selected_member_ids;
+                            }
+                            ListContentTab::Staff => {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(self.localization.tr_with(
+                                        "lists.staff_count",
+                                        &[("count", staff_count.as_str())],
+                                    ));
+                                    if ui
+                                        .add_enabled(
+                                            !self.selected_list_staff_ids.is_empty(),
+                                            egui::Button::new(
+                                                self.localization.tr("lists.remove_selected"),
+                                            ),
+                                        )
+                                        .clicked()
+                                    {
+                                        remove_staff_ids
+                                            .extend(self.selected_list_staff_ids.iter().copied());
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            !self.selected_list_staff_ids.is_empty(),
+                                            egui::Button::new(
+                                                self.localization.tr("lists.clear_selection"),
+                                            ),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.selected_list_staff_ids.clear();
+                                    }
+                                });
+
+                                let table_height = (ui.available_height() - 30.0).max(120.0);
+                                let mut selected_member_ids = self.selected_list_staff_ids.clone();
+                                TableBuilder::new(ui)
+                                    .id_salt("saved_staff_list_contents")
+                                    .striped(true)
+                                    .resizable(true)
+                                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                    .sense(egui::Sense::click())
+                                    .column(Column::initial(42.0).at_least(36.0).clip(true))
+                                    .column(
+                                        Column::initial(180.0)
+                                            .at_least(90.0)
+                                            .clip(true)
+                                            .resizable(true),
+                                    )
+                                    .column(
+                                        Column::initial(68.0)
+                                            .at_least(48.0)
+                                            .clip(true)
+                                            .resizable(true),
+                                    )
+                                    .column(
+                                        Column::initial(220.0)
+                                            .at_least(120.0)
+                                            .clip(true)
+                                            .resizable(true),
+                                    )
+                                    .column(
+                                        Column::initial(150.0)
+                                            .at_least(100.0)
+                                            .clip(true)
+                                            .resizable(true),
+                                    )
+                                    .min_scrolled_height(table_height)
+                                    .max_scroll_height(table_height)
+                                    .auto_shrink([false, false])
+                                    .header(22.0, |mut header| {
+                                        header.col(|ui| {
+                                            ui.strong(self.localization.tr("lists.select_column"));
+                                        });
+                                        header.col(|ui| {
+                                            ui.strong(self.localization.tr("common.name"));
+                                        });
+                                        header.col(|ui| {
+                                            ui.strong(self.localization.tr("common.id"));
+                                        });
+                                        header.col(|ui| {
+                                            ui.strong(self.localization.tr("common.team"));
+                                        });
+                                        header.col(|ui| {
+                                            ui.strong(self.localization.tr("common.role"));
+                                        });
+                                    })
+                                    .body(|body| {
+                                        body.rows(22.0, list.staff_ids.len(), |mut row| {
+                                            let staff_id = list.staff_ids[row.index()];
+                                            let staff = self
+                                                .staffs
+                                                .iter()
+                                                .find(|staff| staff.id == staff_id);
+                                            row.set_selected(selected_member_ids.contains(&staff_id));
+                                            row.col(|ui| {
+                                                let mut selected =
+                                                    selected_member_ids.contains(&staff_id);
+                                                if ui.checkbox(&mut selected, "").changed() {
+                                                    if selected {
+                                                        selected_member_ids.insert(staff_id);
+                                                    } else {
+                                                        selected_member_ids.remove(&staff_id);
+                                                    }
+                                                }
+                                            });
+                                            row.col(|ui| {
+                                                if let Some(staff) = staff {
+                                                    ui.label(&staff.name);
+                                                } else {
+                                                    ui.weak(
+                                                        self.localization.tr("lists.missing_staff"),
+                                                    );
+                                                }
+                                            });
+                                            row.col(|ui| {
+                                                ui.label(staff_id.to_string());
+                                            });
+                                            row.col(|ui| {
+                                                if let Some(staff) = staff {
+                                                    ui.label(value_or_dash(&staff.team));
+                                                } else {
+                                                    ui.weak("—");
+                                                }
+                                            });
+                                            row.col(|ui| {
+                                                if let Some(staff) = staff {
+                                                    ui.label(localized_staff_role(
+                                                        &self.localization,
+                                                        &staff.role,
+                                                    ));
+                                                } else {
+                                                    ui.weak("—");
+                                                }
+                                            });
+
+                                            let row_response = row.response();
+                                            if row_response.double_clicked() && staff.is_some() {
+                                                selected_member_ids.insert(staff_id);
+                                                open_staff_id = Some(staff_id);
+                                            }
+                                            row_response.context_menu(|ui| {
+                                                if staff.is_some()
+                                                    && ui
+                                                        .button(self.localization.tr(
+                                                            "search.open_in_staff_editor",
+                                                        ))
+                                                        .clicked()
+                                                {
+                                                    open_staff_id = Some(staff_id);
+                                                    ui.close_menu();
+                                                }
+                                                if ui
+                                                    .button(self.localization.tr(
+                                                        "lists.remove_from_list",
+                                                    ))
+                                                    .clicked()
+                                                {
+                                                    remove_staff_ids.push(staff_id);
+                                                    ui.close_menu();
+                                                }
+                                            });
+                                        });
+                                    });
+                                self.selected_list_staff_ids = selected_member_ids;
+                            }
+                        }
+                    });
+                },
+            );
+        });
+
+        if let Some(name) = selected_list_change {
+            self.selected_saved_player_list = Some(name);
+            self.selected_list_player_ids.clear();
+            self.selected_list_staff_ids.clear();
+        }
+        if create_requested {
+            self.pending_new_list_player_ids.clear();
+            self.pending_new_list_staff_ids.clear();
+            self.list_name_popup_mode = ListNamePopupMode::Create;
+            self.list_name_draft.clear();
+            self.list_name_popup_open = true;
+        }
+        if rename_requested {
+            self.list_name_popup_mode = ListNamePopupMode::Rename;
+            self.list_name_draft = self.selected_saved_player_list.clone().unwrap_or_default();
+            self.list_name_popup_open = true;
+        }
+        if delete_requested {
+            self.list_delete_confirmation_open = true;
+        }
+        if import_requested {
+            self.import_player_list();
+        }
+        if export_requested {
+            self.export_selected_player_list();
+        }
+        if open_in_player_search_requested {
+            self.open_selected_list_in_player_search();
+        }
+        if open_in_staff_search_requested {
+            self.open_selected_list_in_staff_search();
+        }
+        if reload_requested {
+            self.reload_saved_player_lists();
+        }
+        if !remove_player_ids.is_empty() {
+            remove_player_ids.sort_unstable();
+            remove_player_ids.dedup();
+            if let Some(name) = self.selected_saved_player_list.clone() {
+                self.remove_player_ids_from_list(&name, &remove_player_ids);
+                for id in remove_player_ids {
+                    self.selected_list_player_ids.remove(&id);
+                }
+            }
+        }
+        if !remove_staff_ids.is_empty() {
+            remove_staff_ids.sort_unstable();
+            remove_staff_ids.dedup();
+            if let Some(name) = self.selected_saved_player_list.clone() {
+                self.remove_staff_ids_from_list(&name, &remove_staff_ids);
+                for id in remove_staff_ids {
+                    self.selected_list_staff_ids.remove(&id);
+                }
+            }
+        }
+        if let Some(player_id) = open_player_id {
+            self.open_player_in_editor(player_id);
+        }
+        if let Some(staff_id) = open_staff_id {
+            self.open_staff_in_editor(staff_id);
+        }
+    }
+
+    fn render_team_search_page(&mut self, ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.strong(self.localization.tr("search.teams.quick_filters"));
+                ui.separator();
+
+                ui.label(self.localization.tr("search.teams.name_or_manager"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.team_database_search)
+                        .desired_width(190.0)
+                        .hint_text(self.localization.tr("search.teams.search_hint")),
+                );
+
+                ui.separator();
+                ui.label(self.localization.tr("search.teams.league"));
+                let selected_league = self
+                    .team_search_league_filter
+                    .map(|id| {
+                        let id = id.to_string();
+                        self.localization
+                            .tr_with("common.league_number", &[("id", id.as_str())])
+                    })
+                    .unwrap_or_else(|| self.localization.tr("search.teams.any_league"));
+                egui::ComboBox::from_id_salt("search_team_league_filter")
+                    .selected_text(selected_league)
+                    .width(135.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.team_search_league_filter,
+                            None,
+                            self.localization.tr("search.teams.any_league"),
+                        );
+                        let mut league_ids = self
+                            .teams
+                            .iter()
+                            .map(|team| team.league_id)
+                            .collect::<Vec<_>>();
+                        league_ids.sort_unstable();
+                        league_ids.dedup();
+                        for league_id in league_ids {
+                            let id = league_id.to_string();
+                            let label = self.localization.tr_with(
+                                "common.league_number",
+                                &[("id", id.as_str())],
+                            );
+                            ui.selectable_value(
+                                &mut self.team_search_league_filter,
+                                Some(league_id),
+                                label,
+                            );
+                        }
+                    });
+
+                ui.separator();
+                ui.checkbox(
+                    &mut self.team_search_player_team_only,
+                    self.localization.tr("search.teams.my_team_only"),
+                );
+            });
+
+            ui.add_space(5.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(self.localization.tr("search.teams.players"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.team_search_roster_min)
+                        .desired_width(58.0)
+                        .hint_text(self.localization.tr("common.min")),
+                );
+                ui.label(self.localization.tr("common.to"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.team_search_roster_max)
+                        .desired_width(58.0)
+                        .hint_text(self.localization.tr("common.max")),
+                );
+
+                ui.separator();
+                ui.label(self.localization.tr("search.teams.staff"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.team_search_staff_min)
+                        .desired_width(58.0)
+                        .hint_text(self.localization.tr("common.min")),
+                );
+                ui.label(self.localization.tr("common.to"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.team_search_staff_max)
+                        .desired_width(58.0)
+                        .hint_text(self.localization.tr("common.max")),
+                );
+            });
+        });
+
+        ui.add_space(8.0);
+
+        let query = self.team_database_search.trim().to_lowercase();
+        let selected_league = self.team_search_league_filter;
+        let player_team_only = self.team_search_player_team_only;
+        let roster_min = self.team_search_roster_min.trim().parse::<usize>().ok();
+        let roster_max = self.team_search_roster_max.trim().parse::<usize>().ok();
+        let staff_min = self.team_search_staff_min.trim().parse::<usize>().ok();
+        let staff_max = self.team_search_staff_max.trim().parse::<usize>().ok();
+
+        let mut filtered_teams = self
+            .teams
+            .iter()
+            .filter(|team| {
+                if !query.is_empty() && !team.matches_search(&query) {
+                    return false;
+                }
+                if selected_league.is_some_and(|league| team.league_id != league) {
+                    return false;
+                }
+                if player_team_only && !team.is_player_team {
+                    return false;
+                }
+                if roster_min.is_some_and(|minimum| team.roster_size < minimum) {
+                    return false;
+                }
+                if roster_max.is_some_and(|maximum| team.roster_size > maximum) {
+                    return false;
+                }
+                if staff_min.is_some_and(|minimum| team.staff_count < minimum) {
+                    return false;
+                }
+                if staff_max.is_some_and(|maximum| team.staff_count > maximum) {
+                    return false;
+                }
+                true
+            })
+            .collect::<Vec<_>>();
+
+        let mut sort_column = self.team_sort_column;
+        let mut sort_ascending = self.team_sort_ascending;
+        filtered_teams.sort_by(|a, b| {
+            compare_team_summaries(a, b, sort_column, sort_ascending)
+        });
+        let filtered_team_ids = filtered_teams
+            .iter()
+            .map(|team| team.id)
+            .collect::<Vec<_>>();
+
+        let mut refresh_requested = false;
+        let mut reset_columns_requested = false;
+        let mut select_all_visible_requested = false;
+        let available_height = ui.available_height().max(180.0);
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), available_height),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.group(|ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.set_min_height((ui.available_height() - 2.0).max(160.0));
+
+                    ui.horizontal_wrapped(|ui| {
+                        ui.strong(self.localization.tr("search.teams.team_list"));
+                        let matches = filtered_teams.len().to_string();
+                        ui.label(self.localization.tr_with(
+                            "common.matches",
+                            &[("count", matches.as_str())],
+                        ));
+                        ui.separator();
+                        if ui.button(self.localization.tr("recruitment.refresh_teams")).clicked() {
+                            refresh_requested = true;
+                        }
+                        if ui.button(self.localization.tr("search.teams.reset_columns")).clicked() {
+                            reset_columns_requested = true;
+                        }
+                        ui.separator();
+                        let selected_count = self.selected_search_team_ids.len().to_string();
+                        ui.label(self.localization.tr_with(
+                            "search.selected_count",
+                            &[("count", selected_count.as_str())],
+                        ));
+                        if ui.button(self.localization.tr("lists.select_all_visible")).clicked() {
+                            select_all_visible_requested = true;
+                        }
+                        if ui
+                            .add_enabled(
+                                !self.selected_search_team_ids.is_empty(),
+                                egui::Button::new(self.localization.tr("lists.clear_selection")),
+                            )
+                            .clicked()
+                        {
+                            self.selected_search_team_ids.clear();
+                            self.team_selection_anchor_id = None;
+                            self.team_shift_drag_start_id = None;
+                            self.team_shift_drag_target_selected = None;
+                            self.team_shift_drag_base_ids = None;
+                        }
+                    });
+                    ui.add_space(4.0);
+
+                    let table_height = (ui.available_height() - 26.0).max(120.0);
+                    let widths = [
+                        42.0, 190.0, 64.0, 88.0, 150.0, 84.0, 72.0, 72.0,
+                        105.0, 145.0, 120.0, 145.0, 105.0, 132.0, 112.0,
+                    ];
+                    let table_min_width = widths.iter().copied().sum::<f32>() + 120.0;
+
+                    egui::ScrollArea::horizontal()
+                        .id_salt("search_teams_table_horizontal")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.set_min_width(table_min_width);
+
+                            let shift_down = ui.input(|input| input.modifiers.shift);
+                            let primary_down = ui.input(|input| input.pointer.primary_down());
+                            let primary_released = ui.input(|input| input.pointer.primary_released());
+
+                            let mut table = TableBuilder::new(ui)
+                                .id_salt("search_teams_resizable_table")
+                                .striped(true)
+                                .resizable(true)
+                                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                .sense(egui::Sense::click_and_drag())
+                                .min_scrolled_height(table_height)
+                                .max_scroll_height(table_height)
+                                .auto_shrink([false, false]);
+
+                            for width in widths {
+                                table = table.column(
+                                    Column::initial(width)
+                                        .at_least(48.0)
+                                        .clip(true)
+                                        .resizable(true),
+                                );
+                            }
+
+                            if reset_columns_requested {
+                                table.reset();
+                            }
+
+                            let mut selected_team_ids = self.selected_search_team_ids.clone();
+                            let mut team_selection_anchor_id = self.team_selection_anchor_id;
+                            let mut team_shift_drag_start_id = self.team_shift_drag_start_id;
+                            let mut team_shift_drag_target_selected =
+                                self.team_shift_drag_target_selected;
+                            let mut team_shift_drag_base_ids =
+                                self.team_shift_drag_base_ids.clone();
+                            if select_all_visible_requested {
+                                selected_team_ids.extend(filtered_team_ids.iter().copied());
+                                team_selection_anchor_id = None;
+                                team_shift_drag_start_id = None;
+                                team_shift_drag_target_selected = None;
+                                team_shift_drag_base_ids = None;
+                            }
+
+                            table
+                                .header(22.0, |mut header| {
+                                    header.col(|ui| {
+                                        ui.strong(self.localization.tr("lists.select_column"));
+                                    });
+                                    for column in [
+                                        TeamSortColumn::Name,
+                                        TeamSortColumn::Id,
+                                        TeamSortColumn::League,
+                                        TeamSortColumn::Manager,
+                                        TeamSortColumn::PlayerTeam,
+                                        TeamSortColumn::RosterSize,
+                                        TeamSortColumn::StaffCount,
+                                        TeamSortColumn::RosterRating,
+                                        TeamSortColumn::MerchandiseFacilityGrade,
+                                        TeamSortColumn::StadiumGrade,
+                                        TeamSortColumn::TrainingFacilityGrade,
+                                        TeamSortColumn::Money,
+                                        TeamSortColumn::RecruitmentBudget,
+                                        TeamSortColumn::SalaryBudget,
+                                    ] {
+                                        header.col(|ui| {
+                                            team_sort_header(
+                                                ui,
+                                                column,
+                                                &mut sort_column,
+                                                &mut sort_ascending,
+                                                &self.localization,
+                                            );
+                                        });
+                                    }
+                                })
+                                .body(|body| {
+                                    body.rows(21.0, filtered_teams.len(), |mut row| {
+                                        let team = filtered_teams[row.index()];
+                                        row.set_selected(selected_team_ids.contains(&team.id));
+                                        let mut selection_checkbox_clicked = false;
+                                        row.col(|ui| {
+                                            let mut selected = selected_team_ids.contains(&team.id);
+                                            let checkbox_response = ui.checkbox(&mut selected, "");
+                                            selection_checkbox_clicked = checkbox_response.clicked();
+                                            if checkbox_response.changed() {
+                                                if selected {
+                                                    selected_team_ids.insert(team.id);
+                                                    team_selection_anchor_id = Some(team.id);
+                                                } else {
+                                                    selected_team_ids.remove(&team.id);
+                                                    team_selection_anchor_id = None;
+                                                }
+                                                team_shift_drag_start_id = None;
+                                                team_shift_drag_target_selected = None;
+                                                team_shift_drag_base_ids = None;
+                                            }
+                                        });
+                                        row.col(|ui| {
+                                            let name = if team.display_name.trim().is_empty() {
+                                                team.localization_fallback_name(&self.localization)
+                                            } else {
+                                                team.display_name.clone()
+                                            };
+                                            ui.label(name);
+                                        });
+                                        row.col(|ui| { ui.label(team.id.to_string()); });
+                                        row.col(|ui| {
+                                            let id = team.league_id.to_string();
+                                            ui.label(self.localization.tr_with(
+                                                "common.league_number",
+                                                &[("id", id.as_str())],
+                                            ));
+                                        });
+                                        row.col(|ui| { ui.label(value_or_dash(&team.manager_name)); });
+                                        row.col(|ui| {
+                                            ui.label(if team.is_player_team {
+                                                self.localization.tr("common.my_team")
+                                            } else {
+                                                "—".to_string()
+                                            });
+                                        });
+                                        row.col(|ui| { ui.label(team.roster_size.to_string()); });
+                                        row.col(|ui| { ui.label(team.staff_count.to_string()); });
+                                        row.col(|ui| {
+                                            ui.label(
+                                                team.roster_rating
+                                                    .map(|value| format!("{value:.1}"))
+                                                    .unwrap_or_else(|| "—".to_string()),
+                                            );
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(display_facility_grade(
+                                                &team.merchandise_facility_grade,
+                                            ));
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(display_facility_grade(&team.stadium_grade));
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(display_facility_grade(
+                                                &team.training_facility_grade,
+                                            ));
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(format_internal_amount(
+                                                &team.total_balance.to_string(),
+                                            ));
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(format_internal_amount(
+                                                &team.transfer_budget.to_string(),
+                                            ));
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(format_internal_amount(
+                                                &team.salary_budget.to_string(),
+                                            ));
+                                        });
+
+                                        let row_response = row.response();
+                                        if shift_down
+                                            && row_response.drag_started_by(egui::PointerButton::Primary)
+                                            && !selection_checkbox_clicked
+                                        {
+                                            team_shift_drag_start_id = Some(team.id);
+                                            team_shift_drag_target_selected =
+                                                Some(!selected_team_ids.contains(&team.id));
+                                            team_shift_drag_base_ids = Some(selected_team_ids.clone());
+                                            team_selection_anchor_id = None;
+                                        }
+                                        if (primary_down || primary_released) && row_response.contains_pointer() {
+                                            if let (
+                                                Some(start_id),
+                                                Some(target_selected),
+                                                Some(base_ids),
+                                            ) = (
+                                                team_shift_drag_start_id,
+                                                team_shift_drag_target_selected,
+                                                team_shift_drag_base_ids.as_ref(),
+                                            ) {
+                                                selected_team_ids = base_ids.clone();
+                                                apply_id_range_selection(
+                                                    &filtered_team_ids,
+                                                    start_id,
+                                                    team.id,
+                                                    target_selected,
+                                                    &mut selected_team_ids,
+                                                );
+                                            }
+                                        }
+
+                                        let shift_drag_active = team_shift_drag_start_id.is_some();
+                                        if row_response.double_clicked() && !selection_checkbox_clicked {
+                                            // Teams Search remains selection-only until the dedicated
+                                            // Team workspace is implemented in a later release.
+                                            selected_team_ids.insert(team.id);
+                                            team_selection_anchor_id = None;
+                                            team_shift_drag_start_id = None;
+                                            team_shift_drag_target_selected = None;
+                                            team_shift_drag_base_ids = None;
+                                        } else if row_response.clicked()
+                                            && !selection_checkbox_clicked
+                                            && !shift_drag_active
+                                        {
+                                            if shift_down {
+                                                let target_selected = !selected_team_ids.contains(&team.id);
+                                                let anchor_id =
+                                                    team_selection_anchor_id.unwrap_or(team.id);
+                                                apply_id_range_selection(
+                                                    &filtered_team_ids,
+                                                    anchor_id,
+                                                    team.id,
+                                                    target_selected,
+                                                    &mut selected_team_ids,
+                                                );
+                                                // A completed Shift-click is a one-shot range action.
+                                                // Resetting the anchor prevents the next Shift-click from
+                                                // accidentally reusing an old selection start.
+                                                team_selection_anchor_id = None;
+                                            } else if selected_team_ids.contains(&team.id) {
+                                                selected_team_ids.remove(&team.id);
+                                                team_selection_anchor_id = None;
+                                            } else {
+                                                selected_team_ids.insert(team.id);
+                                                team_selection_anchor_id = Some(team.id);
+                                            }
+                                        }
+                                    });
+                                });
+                            if primary_released || !primary_down {
+                                if team_shift_drag_start_id.is_some() {
+                                    team_selection_anchor_id = None;
+                                }
+                                team_shift_drag_start_id = None;
+                                team_shift_drag_target_selected = None;
+                                team_shift_drag_base_ids = None;
+                            }
+                            self.selected_search_team_ids = selected_team_ids;
+                            self.team_selection_anchor_id = team_selection_anchor_id;
+                            self.team_shift_drag_start_id = team_shift_drag_start_id;
+                            self.team_shift_drag_target_selected =
+                                team_shift_drag_target_selected;
+                            self.team_shift_drag_base_ids = team_shift_drag_base_ids;
+                        });
+                });
+            },
+        );
+
+        self.team_sort_column = sort_column;
+        self.team_sort_ascending = sort_ascending;
+        if refresh_requested {
+            self.refresh_teams();
+        }
+    }
+
+    fn render_staff_search_page(&mut self, ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.strong(self.localization.tr("search.staff.quick_filters"));
+                ui.separator();
+
+                let advanced_button = egui::Button::new(
+                    egui::RichText::new(self.localization.tr("search.staff.advanced_search"))
+                        .strong()
+                        .color(ui.visuals().selection.stroke.color),
+                )
+                .fill(ui.visuals().selection.bg_fill)
+                .stroke(ui.visuals().selection.stroke);
+                if ui.add(advanced_button).clicked() {
+                    self.advanced_staff_search_open = true;
+                }
+
+                let advanced_count = self.advanced_staff_search.active_condition_count();
+                if advanced_count > 0 {
+                    let advanced_count_text = advanced_count.to_string();
+                    ui.label(
+                        egui::RichText::new(self.localization.tr_with(
+                            "search.active_filters",
+                            &[("count", advanced_count_text.as_str())],
+                        ))
+                        .strong()
+                        .color(ui.visuals().selection.stroke.color),
+                    );
+                }
+
+                ui.separator();
+                ui.weak(self.localization.tr("search.staff.quick_filters_info"));
+            });
+            ui.add_space(5.0);
+
+            ui.horizontal_wrapped(|ui| {
+                ui.label(self.localization.tr("common.name"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.staff_database_search)
+                        .desired_width(190.0)
+                        .hint_text(self.localization.tr("search.staff.name_hint")),
+                );
+
+                ui.separator();
+                ui.label(self.localization.tr("common.team"));
+                let selected_team_text = if self.staff_search_team_filter == "Any Team" {
+                    self.localization.tr("search.players.any_team")
+                } else {
+                    self.staff_search_team_filter.clone()
+                };
+                egui::ComboBox::from_id_salt("search_staff_quick_team")
+                    .selected_text(selected_team_text)
+                    .width(150.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.staff_search_team_filter,
+                            "Any Team".to_string(),
+                            self.localization.tr("search.players.any_team"),
+                        );
+                        for team in &self.teams {
+                            let label = if team.display_name.trim().is_empty() {
+                                format!("Team {}", team.id)
+                            } else {
+                                team.display_name.clone()
+                            };
+                            ui.selectable_value(
+                                &mut self.staff_search_team_filter,
+                                label.clone(),
+                                label,
+                            );
+                        }
+                    });
+
+                ui.label(self.localization.tr("common.role"));
+                let selected_role_text = if self.staff_search_role_filter == "Any Role" {
+                    self.localization.tr("search.staff.any_role")
+                } else {
+                    localized_staff_role(&self.localization, &self.staff_search_role_filter)
+                };
+                egui::ComboBox::from_id_salt("search_staff_quick_role")
+                    .selected_text(selected_role_text)
+                    .width(155.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.staff_search_role_filter,
+                            "Any Role".to_string(),
+                            self.localization.tr("search.staff.any_role"),
+                        );
+                        for role in ["HeadCoach", "TrainingCoach", "Scouter", "Analyst"] {
+                            ui.selectable_value(
+                                &mut self.staff_search_role_filter,
+                                role.to_string(),
+                                localized_staff_role(&self.localization, role),
+                            );
+                        }
+                    });
+            });
+
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(self.localization.tr("common.age"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.staff_search_age_min)
+                        .desired_width(58.0)
+                        .hint_text(self.localization.tr("common.min")),
+                );
+                ui.label(self.localization.tr("common.to"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.staff_search_age_max)
+                        .desired_width(58.0)
+                        .hint_text(self.localization.tr("common.max")),
+                );
+
+                ui.separator();
+                ui.checkbox(
+                    &mut self.staff_search_free_agents_only,
+                    self.localization.tr("search.players.free_agents_only"),
+                );
+
+                ui.separator();
+                ui.label(self.localization.tr("lists.filter_label"));
+                let active_list_text = self
+                    .active_staff_list_filter
+                    .clone()
+                    .unwrap_or_else(|| self.localization.tr("lists.all_staff"));
+                egui::ComboBox::from_id_salt("staff_search_active_list_filter")
+                    .selected_text(active_list_text)
+                    .width(170.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.active_staff_list_filter,
+                            None,
+                            self.localization.tr("lists.all_staff"),
+                        );
+                        for list in &self.saved_player_lists {
+                            ui.selectable_value(
+                                &mut self.active_staff_list_filter,
+                                Some(list.name.clone()),
+                                &list.name,
+                            );
+                        }
+                    });
+            });
+        });
+
+        ui.add_space(8.0);
+
+        let query = self.staff_database_search.trim().to_lowercase();
+        let age_min = self.staff_search_age_min.trim().parse::<f64>().ok();
+        let age_max = self.staff_search_age_max.trim().parse::<f64>().ok();
+        let selected_team = self.staff_search_team_filter.clone();
+        let selected_role = self.staff_search_role_filter.clone();
+        let free_agents_only = self.staff_search_free_agents_only;
+        let advanced_filter = self.advanced_staff_search.clone();
+        let active_list_ids = self
+            .active_staff_list_filter
+            .as_ref()
+            .and_then(|name| {
+                self.saved_player_lists
+                    .iter()
+                    .find(|list| list.name.eq_ignore_ascii_case(name))
+            })
+            .map(|list| list.staff_ids.iter().copied().collect::<BTreeSet<_>>());
+
+        let mut filtered_staff = self
+            .staffs
+            .iter()
+            .filter(|staff| {
+                if active_list_ids
+                    .as_ref()
+                    .is_some_and(|ids| !ids.contains(&staff.id))
+                {
+                    return false;
+                }
+
+                if !query.is_empty() && !staff.name.to_lowercase().contains(&query) {
+                    return false;
+                }
+
+                let age = staff.age.parse::<f64>().ok();
+                if age_min.is_some_and(|min| age.map_or(true, |value| value < min)) {
+                    return false;
+                }
+                if age_max.is_some_and(|max| age.map_or(true, |value| value > max)) {
+                    return false;
+                }
+
+                if selected_team != "Any Team" && staff.team != selected_team {
+                    return false;
+                }
+                if selected_role != "Any Role" && staff.role != selected_role {
+                    return false;
+                }
+                if free_agents_only && staff.team != "Free Agent" {
+                    return false;
+                }
+
+                advanced_staff_filter_matches(staff, &advanced_filter)
+            })
+            .collect::<Vec<_>>();
+
+        let mut sort_column = self.staff_sort_column;
+        let mut sort_ascending = self.staff_sort_ascending;
+        filtered_staff.sort_by(|a, b| {
+            compare_staff_summaries(a, b, sort_column, sort_ascending)
+        });
+        let filtered_staff_ids = filtered_staff.iter().map(|staff| staff.id).collect::<Vec<_>>();
+
+        let mut refresh_staff_requested = false;
+        let mut reset_columns_requested = false;
+        let mut open_staff_id: Option<usize> = None;
+        let mut add_to_list_request: Option<(String, Vec<usize>)> = None;
+        let mut create_list_from_ids_request: Option<Vec<usize>> = None;
+        let mut select_all_visible_requested = false;
+
+        let available_height = ui.available_height().max(180.0);
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), available_height),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.group(|ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.set_min_height((ui.available_height() - 2.0).max(160.0));
+
+                    ui.horizontal_wrapped(|ui| {
+                        ui.strong(self.localization.tr("search.staff.list_heading"));
+                        let result_count = filtered_staff.len().to_string();
+                        ui.label(self.localization.tr_with(
+                            "search.staff.results",
+                            &[("count", result_count.as_str())],
+                        ));
+                        if ui.button(self.localization.tr("editor.refresh_staff")).clicked() {
+                            refresh_staff_requested = true;
+                        }
+                        if ui.button(self.localization.tr("search.players.reset_columns")).clicked() {
+                            reset_columns_requested = true;
+                        }
+                        ui.separator();
+                        let selected_count = self.selected_search_staff_ids.len().to_string();
+                        ui.label(self.localization.tr_with(
+                            "search.selected_count",
+                            &[("count", selected_count.as_str())],
+                        ));
+                        if ui.button(self.localization.tr("lists.select_all_visible")).clicked() {
+                            select_all_visible_requested = true;
+                        }
+                        if ui
+                            .add_enabled(
+                                !self.selected_search_staff_ids.is_empty(),
+                                egui::Button::new(self.localization.tr("lists.clear_selection")),
+                            )
+                            .clicked()
+                        {
+                            self.selected_search_staff_ids.clear();
+                            self.staff_selection_anchor_id = None;
+                            self.staff_shift_drag_start_id = None;
+                            self.staff_shift_drag_target_selected = None;
+                            self.staff_shift_drag_base_ids = None;
+                        }
+                        ui.separator();
+                        ui.weak(self.localization.tr(search_staff_table_help_key()));
+                    });
+                    ui.add_space(4.0);
+
+                    let table_height = (ui.available_height() - 26.0).max(120.0);
+                    let viewport_width = ui.available_width();
+                    let table_min_width = 2502.0_f32.max(viewport_width);
+
+                    egui::ScrollArea::horizontal()
+                        .id_salt("search_staff_table_horizontal")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.set_min_width(table_min_width);
+
+                            let widths = [
+                                42.0, 140.0, 58.0, 52.0, 150.0, 125.0, 125.0, 104.0,
+                                86.0, 86.0, 96.0, 118.0, 122.0, 88.0, 112.0,
+                                118.0, 132.0, 118.0, 108.0,
+                            ];
+
+                            let shift_down = ui.input(|input| input.modifiers.shift);
+                            let primary_down = ui.input(|input| input.pointer.primary_down());
+                            let primary_released = ui.input(|input| input.pointer.primary_released());
+
+                            let mut table = TableBuilder::new(ui)
+                                .id_salt("search_staff_resizable_table")
+                                .striped(true)
+                                .resizable(true)
+                                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                .sense(egui::Sense::click_and_drag())
+                                .min_scrolled_height(table_height)
+                                .max_scroll_height(table_height)
+                                .auto_shrink([false, false]);
+
+                            for width in widths {
+                                table = table.column(
+                                    Column::initial(width)
+                                        .at_least(48.0)
+                                        .clip(true)
+                                        .resizable(true),
+                                );
+                            }
+
+                            if reset_columns_requested {
+                                table.reset();
+                            }
+
+                            let mut selected_staff_ids = self.selected_search_staff_ids.clone();
+                            let mut staff_selection_anchor_id = self.staff_selection_anchor_id;
+                            let mut staff_shift_drag_start_id = self.staff_shift_drag_start_id;
+                            let mut staff_shift_drag_target_selected =
+                                self.staff_shift_drag_target_selected;
+                            let mut staff_shift_drag_base_ids =
+                                self.staff_shift_drag_base_ids.clone();
+                            if select_all_visible_requested {
+                                selected_staff_ids.extend(filtered_staff_ids.iter().copied());
+                                staff_selection_anchor_id = None;
+                                staff_shift_drag_start_id = None;
+                                staff_shift_drag_target_selected = None;
+                                staff_shift_drag_base_ids = None;
+                            }
+                            let saved_lists_for_menu = self
+                                .saved_player_lists
+                                .iter()
+                                .map(|list| list.name.clone())
+                                .collect::<Vec<_>>();
+
+                            table
+                                .header(22.0, |mut header| {
+                                    header.col(|ui| {
+                                        ui.strong(self.localization.tr("lists.select_column"));
+                                    });
+                                    for column in [
+                                        StaffSortColumn::Name,
+                                        StaffSortColumn::Id,
+                                        StaffSortColumn::Age,
+                                        StaffSortColumn::Team,
+                                        StaffSortColumn::Role,
+                                        StaffSortColumn::Salary,
+                                        StaffSortColumn::ContractEnd,
+                                        StaffSortColumn::BanPick,
+                                        StaffSortColumn::Strategy,
+                                        StaffSortColumn::Negotiation,
+                                        StaffSortColumn::JudgeAbility,
+                                        StaffSortColumn::JudgePotential,
+                                        StaffSortColumn::Feedback,
+                                        StaffSortColumn::PowerAnalysis,
+                                        StaffSortColumn::ControlCoaching,
+                                        StaffSortColumn::JudgmentCoaching,
+                                        StaffSortColumn::MentalCoaching,
+                                        StaffSortColumn::Communication,
+                                    ] {
+                                        header.col(|ui| {
+                                            staff_sort_header(
+                                                ui,
+                                                column,
+                                                &mut sort_column,
+                                                &mut sort_ascending,
+                                                &self.localization,
+                                            );
+                                        });
+                                    }
+                                })
+                                .body(|body| {
+                                    body.rows(21.0, filtered_staff.len(), |mut row| {
+                                        let staff = filtered_staff[row.index()];
+                                        row.set_selected(selected_staff_ids.contains(&staff.id));
+                                        let mut selection_checkbox_clicked = false;
+                                        row.col(|ui| {
+                                            let mut selected = selected_staff_ids.contains(&staff.id);
+                                            let checkbox_response = ui.checkbox(&mut selected, "");
+                                            selection_checkbox_clicked = checkbox_response.clicked();
+                                            if checkbox_response.changed() {
+                                                if selected {
+                                                    selected_staff_ids.insert(staff.id);
+                                                    staff_selection_anchor_id = Some(staff.id);
+                                                } else {
+                                                    selected_staff_ids.remove(&staff.id);
+                                                    staff_selection_anchor_id = None;
+                                                }
+                                                staff_shift_drag_start_id = None;
+                                                staff_shift_drag_target_selected = None;
+                                                staff_shift_drag_base_ids = None;
+                                            }
+                                        });
+                                        row.col(|ui| { ui.label(&staff.name); });
+                                        row.col(|ui| { ui.label(staff.id.to_string()); });
+                                        row.col(|ui| { ui.label(value_or_dash(&staff.age)); });
+                                        row.col(|ui| { ui.label(value_or_dash(&staff.team)); });
+                                        row.col(|ui| { ui.label(localized_staff_role(&self.localization, &staff.role)); });
+                                        row.col(|ui| { ui.label(pretty_or_dash(&staff.annual_salary)); });
+                                        row.col(|ui| { ui.label(value_or_dash(&display_contract_date(&staff.contract_end))); });
+                                        row.col(|ui| { ui.label(pretty_or_dash(&staff.banpick)); });
+                                        row.col(|ui| { ui.label(pretty_or_dash(&staff.strategy)); });
+                                        row.col(|ui| { ui.label(pretty_or_dash(&staff.negotiation)); });
+                                        row.col(|ui| { ui.label(pretty_or_dash(&staff.judge_ability)); });
+                                        row.col(|ui| { ui.label(pretty_or_dash(&staff.judge_potential)); });
+                                        row.col(|ui| { ui.label(pretty_or_dash(&staff.feedback)); });
+                                        row.col(|ui| { ui.label(pretty_or_dash(&staff.power_analysis)); });
+                                        row.col(|ui| { ui.label(pretty_or_dash(&staff.control_coaching)); });
+                                        row.col(|ui| { ui.label(pretty_or_dash(&staff.judgment_coaching)); });
+                                        row.col(|ui| { ui.label(pretty_or_dash(&staff.mental_coaching)); });
+                                        row.col(|ui| { ui.label(pretty_or_dash(&staff.communication)); });
+
+                                        let row_response = row.response();
+                                        if shift_down
+                                            && row_response.drag_started_by(egui::PointerButton::Primary)
+                                            && !selection_checkbox_clicked
+                                        {
+                                            staff_shift_drag_start_id = Some(staff.id);
+                                            staff_shift_drag_target_selected =
+                                                Some(!selected_staff_ids.contains(&staff.id));
+                                            staff_shift_drag_base_ids = Some(selected_staff_ids.clone());
+                                            staff_selection_anchor_id = None;
+                                        }
+                                        if (primary_down || primary_released) && row_response.contains_pointer() {
+                                            if let (
+                                                Some(start_id),
+                                                Some(target_selected),
+                                                Some(base_ids),
+                                            ) = (
+                                                staff_shift_drag_start_id,
+                                                staff_shift_drag_target_selected,
+                                                staff_shift_drag_base_ids.as_ref(),
+                                            ) {
+                                                selected_staff_ids = base_ids.clone();
+                                                apply_id_range_selection(
+                                                    &filtered_staff_ids,
+                                                    start_id,
+                                                    staff.id,
+                                                    target_selected,
+                                                    &mut selected_staff_ids,
+                                                );
+                                            }
+                                        }
+
+                                        let shift_drag_active = staff_shift_drag_start_id.is_some();
+                                        if row_response.double_clicked() && !selection_checkbox_clicked {
+                                            selected_staff_ids.insert(staff.id);
+                                            staff_selection_anchor_id = None;
+                                            staff_shift_drag_start_id = None;
+                                            staff_shift_drag_target_selected = None;
+                                            staff_shift_drag_base_ids = None;
+                                            open_staff_id = Some(staff.id);
+                                        } else if row_response.clicked()
+                                            && !selection_checkbox_clicked
+                                            && !shift_drag_active
+                                        {
+                                            if shift_down {
+                                                let target_selected = !selected_staff_ids.contains(&staff.id);
+                                                let anchor_id =
+                                                    staff_selection_anchor_id.unwrap_or(staff.id);
+                                                apply_id_range_selection(
+                                                    &filtered_staff_ids,
+                                                    anchor_id,
+                                                    staff.id,
+                                                    target_selected,
+                                                    &mut selected_staff_ids,
+                                                );
+                                                // A completed Shift-click is a one-shot range action.
+                                                // Resetting the anchor prevents the next Shift-click from
+                                                // accidentally reusing an old selection start.
+                                                staff_selection_anchor_id = None;
+                                            } else if selected_staff_ids.contains(&staff.id) {
+                                                selected_staff_ids.remove(&staff.id);
+                                                staff_selection_anchor_id = None;
+                                            } else {
+                                                selected_staff_ids.insert(staff.id);
+                                                staff_selection_anchor_id = Some(staff.id);
+                                            }
+                                        }
+
+                                        row_response.context_menu(|ui| {
+                                            if ui
+                                                .button(self.localization.tr("search.open_in_staff_editor"))
+                                                .clicked()
+                                            {
+                                                open_staff_id = Some(staff.id);
+                                                ui.close_menu();
+                                            }
+
+                                            ui.separator();
+                                            let ids_to_add = if selected_staff_ids.contains(&staff.id)
+                                                && !selected_staff_ids.is_empty()
+                                            {
+                                                selected_staff_ids.iter().copied().collect::<Vec<_>>()
+                                            } else {
+                                                vec![staff.id]
+                                            };
+                                            ui.menu_button(self.localization.tr("lists.add_to_list"), |ui| {
+                                                if ui
+                                                    .button(self.localization.tr("lists.create_from_selection"))
+                                                    .clicked()
+                                                {
+                                                    selected_staff_ids.extend(ids_to_add.iter().copied());
+                                                    create_list_from_ids_request = Some(ids_to_add.clone());
+                                                    ui.close_menu();
+                                                }
+                                                if !saved_lists_for_menu.is_empty() {
+                                                    ui.separator();
+                                                }
+                                                for list_name in &saved_lists_for_menu {
+                                                    if ui.button(list_name).clicked() {
+                                                        add_to_list_request = Some((
+                                                            list_name.clone(),
+                                                            ids_to_add.clone(),
+                                                        ));
+                                                        ui.close_menu();
+                                                    }
+                                                }
+                                            });
+                                        });
+                                    });
+                                });
+                            if primary_released || !primary_down {
+                                if staff_shift_drag_start_id.is_some() {
+                                    staff_selection_anchor_id = None;
+                                }
+                                staff_shift_drag_start_id = None;
+                                staff_shift_drag_target_selected = None;
+                                staff_shift_drag_base_ids = None;
+                            }
+                            self.selected_search_staff_ids = selected_staff_ids;
+                            self.staff_selection_anchor_id = staff_selection_anchor_id;
+                            self.staff_shift_drag_start_id = staff_shift_drag_start_id;
+                            self.staff_shift_drag_target_selected =
+                                staff_shift_drag_target_selected;
+                            self.staff_shift_drag_base_ids = staff_shift_drag_base_ids;
+                        });
+                });
+            },
+        );
+
+        self.staff_sort_column = sort_column;
+        self.staff_sort_ascending = sort_ascending;
+        if refresh_staff_requested {
+            self.refresh_staff();
+        }
+        if let Some(staff_ids) = create_list_from_ids_request {
+            self.pending_new_list_player_ids.clear();
+            self.pending_new_list_staff_ids = staff_ids;
+            self.list_name_popup_mode = ListNamePopupMode::Create;
+            self.list_name_draft.clear();
+            self.list_name_popup_open = true;
+        }
+        if let Some((list_name, staff_ids)) = add_to_list_request {
+            self.add_staff_ids_to_list(&list_name, &staff_ids);
+        }
+        if let Some(staff_id) = open_staff_id {
+            self.open_staff_in_editor(staff_id);
+        }
+    }
+
     fn render_player_search_page(&mut self, ui: &mut egui::Ui) {
         ui.group(|ui| {
             ui.set_min_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
-                ui.strong("Quick Filters");
+                ui.strong(self.localization.tr("search.players.quick_filters"));
                 ui.separator();
 
                 let advanced_button = egui::Button::new(
-                    egui::RichText::new("Advanced Search")
+                    egui::RichText::new(self.localization.tr("search.staff.advanced_search"))
                         .strong()
                         .color(ui.visuals().selection.stroke.color),
                 )
@@ -5787,33 +9724,46 @@ impl ModifierApp {
 
                 let advanced_count = self.advanced_player_search.active_condition_count();
                 if advanced_count > 0 {
+                    let advanced_count_text = advanced_count.to_string();
                     ui.label(
-                        egui::RichText::new(format!("{advanced_count} active"))
-                            .strong()
-                            .color(ui.visuals().selection.stroke.color),
+                        egui::RichText::new(self.localization.tr_with(
+                            "search.active_filters",
+                            &[("count", advanced_count_text.as_str())],
+                        ))
+                        .strong()
+                        .color(ui.visuals().selection.stroke.color),
                     );
                 }
 
                 ui.separator();
-                ui.weak("Fast filters for the full player database.");
+                ui.weak(self.localization.tr("search.players.quick_filters_info"));
             });
             ui.add_space(5.0);
 
             ui.horizontal_wrapped(|ui| {
-                ui.label("Name");
+                ui.label(self.localization.tr("common.name"));
                 ui.add(
                     egui::TextEdit::singleline(&mut self.search_preview_filter)
                         .desired_width(190.0)
-                        .hint_text("Player name"),
+                        .hint_text(self.localization.tr("search.players.name_hint")),
                 );
 
                 ui.separator();
-                ui.label("Team");
+                ui.label(self.localization.tr("common.team"));
+                let selected_team_text = if self.search_team_filter == "Any Team" {
+                    self.localization.tr("search.players.any_team")
+                } else {
+                    self.search_team_filter.clone()
+                };
                 egui::ComboBox::from_id_salt("search_quick_team")
-                    .selected_text(self.search_team_filter.as_str())
+                    .selected_text(selected_team_text)
                     .width(150.0)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.search_team_filter, "Any Team".to_string(), "Any Team");
+                        ui.selectable_value(
+                            &mut self.search_team_filter,
+                            "Any Team".to_string(),
+                            self.localization.tr("search.players.any_team"),
+                        );
                         for team in &self.teams {
                             let label = if team.display_name.trim().is_empty() {
                                 format!("Team {}", team.id)
@@ -5824,70 +9774,104 @@ impl ModifierApp {
                         }
                     });
 
-                ui.label("Region");
-                let region_label = selected_multi_filter_label(
-                    "Any Region",
+                ui.label(self.localization.tr("common.region"));
+                let region_label = selected_multi_filter_label_localized(
+                    &self.localization,
+                    "search.players.any_region",
                     &REGION_FILTER_NAMES,
                     &self.search_region_filters,
+                    localized_region_name,
                 );
                 ui.menu_button(region_label, |ui| {
-                    if ui.button("Clear").clicked() {
+                    if ui.button(self.localization.tr("common.clear")).clicked() {
                         self.search_region_filters = [false; 6];
                     }
                     ui.separator();
                     for (index, label) in REGION_FILTER_NAMES.iter().enumerate() {
-                        ui.checkbox(&mut self.search_region_filters[index], *label);
+                        ui.checkbox(
+                            &mut self.search_region_filters[index],
+                            localized_region_name(&self.localization, label),
+                        );
                     }
                 });
 
-                ui.label("Position");
-                let position_label = selected_multi_filter_label(
-                    "Any Position",
+                ui.label(self.localization.tr("search.players.position"));
+                let position_label = selected_multi_filter_label_localized(
+                    &self.localization,
+                    "search.players.any_position",
                     &POSITION_FILTER_NAMES,
                     &self.search_position_filters,
+                    localized_position_name,
                 );
                 ui.menu_button(position_label, |ui| {
-                    if ui.button("Clear").clicked() {
+                    if ui.button(self.localization.tr("common.clear")).clicked() {
                         self.search_position_filters = [false; 5];
                     }
                     ui.separator();
                     for (index, label) in POSITION_FILTER_NAMES.iter().enumerate() {
-                        ui.checkbox(&mut self.search_position_filters[index], *label);
+                        ui.checkbox(
+                            &mut self.search_position_filters[index],
+                            localized_position_name(&self.localization, label),
+                        );
                     }
                 });
             });
 
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
-                ui.label("Age");
+                ui.label(self.localization.tr("common.age"));
                 ui.add(
                     egui::TextEdit::singleline(&mut self.search_age_min)
                         .desired_width(58.0)
-                        .hint_text("Min"),
+                        .hint_text(self.localization.tr("common.min")),
                 );
-                ui.label("to");
+                ui.label(self.localization.tr("common.to"));
                 ui.add(
                     egui::TextEdit::singleline(&mut self.search_age_max)
                         .desired_width(58.0)
-                        .hint_text("Max"),
+                        .hint_text(self.localization.tr("common.max")),
                 );
 
                 ui.separator();
-                ui.label("Actual Potential");
+                ui.label(self.localization.tr("player_editor.potential.actual"));
                 ui.add(
                     egui::TextEdit::singleline(&mut self.search_actual_potential_min)
                         .desired_width(58.0)
-                        .hint_text("Min"),
+                        .hint_text(self.localization.tr("common.min")),
                 );
-                ui.label("to");
+                ui.label(self.localization.tr("common.to"));
                 ui.add(
                     egui::TextEdit::singleline(&mut self.search_actual_potential_max)
                         .desired_width(58.0)
-                        .hint_text("Max"),
+                        .hint_text(self.localization.tr("common.max")),
                 );
 
                 ui.separator();
-                ui.checkbox(&mut self.search_free_agents_only, "Free Agents Only");
+                ui.checkbox(&mut self.search_free_agents_only, self.localization.tr("search.players.free_agents_only"));
+
+                ui.separator();
+                ui.label(self.localization.tr("lists.filter_label"));
+                let active_list_text = self
+                    .active_player_list_filter
+                    .clone()
+                    .unwrap_or_else(|| self.localization.tr("lists.all_players"));
+                egui::ComboBox::from_id_salt("player_search_active_list_filter")
+                    .selected_text(active_list_text)
+                    .width(170.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.active_player_list_filter,
+                            None,
+                            self.localization.tr("lists.all_players"),
+                        );
+                        for list in &self.saved_player_lists {
+                            ui.selectable_value(
+                                &mut self.active_player_list_filter,
+                                Some(list.name.clone()),
+                                &list.name,
+                            );
+                        }
+                    });
             });
         });
 
@@ -5895,6 +9879,10 @@ impl ModifierApp {
 
         let mut refresh_players_requested = false;
         let mut reset_columns_requested = false;
+        let mut open_player_id: Option<usize> = None;
+        let mut add_to_list_request: Option<(String, Vec<usize>)> = None;
+        let mut create_list_from_ids_request: Option<Vec<usize>> = None;
+        let mut select_all_visible_requested = false;
         let mut sort_column = self.player_sort_column;
         let mut sort_ascending = self.player_sort_ascending;
 
@@ -5908,11 +9896,27 @@ impl ModifierApp {
         let selected_positions = self.search_position_filters;
         let free_agents_only = self.search_free_agents_only;
         let advanced_filter = self.advanced_player_search.clone();
+        let active_list_ids = self
+            .active_player_list_filter
+            .as_ref()
+            .and_then(|name| {
+                self.saved_player_lists
+                    .iter()
+                    .find(|list| list.name.eq_ignore_ascii_case(name))
+            })
+            .map(|list| list.player_ids.iter().copied().collect::<BTreeSet<_>>());
 
         let mut filtered_players = self
             .players
             .iter()
             .filter(|player| {
+                if active_list_ids
+                    .as_ref()
+                    .is_some_and(|ids| !ids.contains(&player.id))
+                {
+                    return false;
+                }
+
                 if !query.is_empty() && !player.name.to_lowercase().contains(&query) {
                     return false;
                 }
@@ -5969,11 +9973,16 @@ impl ModifierApp {
 
                 advanced_player_filter_matches(player, &advanced_filter)
             })
+            .cloned()
             .collect::<Vec<_>>();
 
         filtered_players.sort_by(|a, b| {
             compare_player_summaries(a, b, sort_column, sort_ascending)
         });
+        let filtered_player_ids = filtered_players
+            .iter()
+            .map(|player| player.id)
+            .collect::<Vec<_>>();
 
         let available_height = ui.available_height().max(180.0);
         ui.allocate_ui_with_layout(
@@ -5985,23 +9994,46 @@ impl ModifierApp {
                     ui.set_min_height((ui.available_height() - 2.0).max(160.0));
 
                     ui.horizontal_wrapped(|ui| {
-                        ui.strong("Player List");
-                        ui.label(format!("{} results", filtered_players.len()));
-                        if ui.button("Refresh Players").clicked() {
+                        ui.strong(self.localization.tr("search.players.list_heading"));
+                        let result_count = filtered_players.len().to_string();
+                        ui.label(self.localization.tr_with("search.players.results", &[("count", result_count.as_str())]));
+                        if ui.button(self.localization.tr("editor.refresh_players")).clicked() {
                             refresh_players_requested = true;
                         }
-                        if ui.button("Reset Columns").clicked() {
+                        if ui.button(self.localization.tr("search.players.reset_columns")).clicked() {
                             reset_columns_requested = true;
                         }
                         ui.separator();
-                        ui.weak("Click a header to sort. Drag column separators to resize; double-click a separator to auto-size.");
+                        let selected_count = self.selected_search_player_ids.len().to_string();
+                        ui.label(self.localization.tr_with(
+                            "search.selected_count",
+                            &[("count", selected_count.as_str())],
+                        ));
+                        if ui.button(self.localization.tr("lists.select_all_visible")).clicked() {
+                            select_all_visible_requested = true;
+                        }
+                        if ui
+                            .add_enabled(
+                                !self.selected_search_player_ids.is_empty(),
+                                egui::Button::new(self.localization.tr("lists.clear_selection")),
+                            )
+                            .clicked()
+                        {
+                            self.selected_search_player_ids.clear();
+                            self.player_selection_anchor_id = None;
+                            self.player_shift_drag_start_id = None;
+                            self.player_shift_drag_target_selected = None;
+                            self.player_shift_drag_base_ids = None;
+                        }
+                        ui.separator();
+                        ui.weak(self.localization.tr(search_player_table_help_key()));
                     });
-                    ui.weak(search_rating_info_text());
+                    ui.weak(self.localization.tr(search_rating_info_key()));
                     ui.add_space(4.0);
 
                     let table_height = (ui.available_height() - 26.0).max(120.0);
                     let viewport_width = ui.available_width();
-                    let table_min_width = 2860.0_f32.max(viewport_width);
+                    let table_min_width = 2905.0_f32.max(viewport_width);
 
                     egui::ScrollArea::horizontal()
                         .id_salt("search_players_table_horizontal")
@@ -6010,6 +10042,7 @@ impl ModifierApp {
                             ui.set_min_width(table_min_width);
 
                             let widths = [
+                                42.0,  // Select
                                 130.0, // Name
                                 58.0,  // ID
                                 52.0,  // Age
@@ -6035,11 +10068,16 @@ impl ModifierApp {
                                 76.0,  // History
                             ];
 
+                            let shift_down = ui.input(|input| input.modifiers.shift);
+                            let primary_down = ui.input(|input| input.pointer.primary_down());
+                            let primary_released = ui.input(|input| input.pointer.primary_released());
+
                             let mut table = TableBuilder::new(ui)
                                 .id_salt("search_players_resizable_table")
                                 .striped(true)
                                 .resizable(true)
                                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                .sense(egui::Sense::click_and_drag())
                                 .min_scrolled_height(table_height)
                                 .max_scroll_height(table_height)
                                 .auto_shrink([false, false]);
@@ -6057,8 +10095,31 @@ impl ModifierApp {
                                 table.reset();
                             }
 
+                            let mut selected_player_ids = self.selected_search_player_ids.clone();
+                            let mut player_selection_anchor_id = self.player_selection_anchor_id;
+                            let mut player_shift_drag_start_id = self.player_shift_drag_start_id;
+                            let mut player_shift_drag_target_selected =
+                                self.player_shift_drag_target_selected;
+                            let mut player_shift_drag_base_ids =
+                                self.player_shift_drag_base_ids.clone();
+                            if select_all_visible_requested {
+                                selected_player_ids.extend(filtered_players.iter().map(|player| player.id));
+                                player_selection_anchor_id = None;
+                                player_shift_drag_start_id = None;
+                                player_shift_drag_target_selected = None;
+                                player_shift_drag_base_ids = None;
+                            }
+                            let saved_lists_for_menu = self
+                                .saved_player_lists
+                                .iter()
+                                .map(|list| list.name.clone())
+                                .collect::<Vec<_>>();
+
                             table
                                 .header(22.0, |mut header| {
+                                    header.col(|ui| {
+                                        ui.strong(self.localization.tr("lists.select_column"));
+                                    });
                                     for column in [
                                         PlayerSortColumn::Name,
                                         PlayerSortColumn::Id,
@@ -6089,22 +10150,44 @@ impl ModifierApp {
                                                 column,
                                                 &mut sort_column,
                                                 &mut sort_ascending,
+                                                &self.localization,
                                             );
                                         });
                                     }
                                     header.col(|ui| {
-                                        ui.strong("History");
+                                        ui.strong(self.localization.tr("search.tabs.history"));
                                     });
                                 })
                                 .body(|body| {
                                     body.rows(21.0, filtered_players.len(), |mut row| {
-                                        let player = filtered_players[row.index()];
+                                        let player = &filtered_players[row.index()];
+                                        row.set_selected(selected_player_ids.contains(&player.id));
+                                        let mut selection_checkbox_clicked = false;
+                                        row.col(|ui| {
+                                            let mut selected = selected_player_ids.contains(&player.id);
+                                            let checkbox_response = ui.checkbox(&mut selected, "");
+                                            selection_checkbox_clicked = checkbox_response.clicked();
+                                            if checkbox_response.changed() {
+                                                if selected {
+                                                    selected_player_ids.insert(player.id);
+                                                    player_selection_anchor_id = Some(player.id);
+                                                } else {
+                                                    selected_player_ids.remove(&player.id);
+                                                    player_selection_anchor_id = None;
+                                                }
+                                                player_shift_drag_start_id = None;
+                                                player_shift_drag_target_selected = None;
+                                                player_shift_drag_base_ids = None;
+                                            }
+                                        });
                                         row.col(|ui| { ui.label(&player.name); });
                                         row.col(|ui| { ui.label(player.id.to_string()); });
                                         row.col(|ui| { ui.label(value_or_dash(&player.age)); });
                                         row.col(|ui| { ui.label(value_or_dash(&player.team)); });
-                                        row.col(|ui| { ui.label(value_or_dash(&player.position)); });
-                                        row.col(|ui| { render_actual_rating(ui, player); });
+                                        row.col(|ui| {
+                                            ui.label(localized_position_summary(&self.localization, &player.position));
+                                        });
+                                        row.col(|ui| { render_actual_rating(ui, player, &self.localization); });
                                         row.col(|ui| { potential_rating_stars(ui, &player.actual_potential); });
                                         row.col(|ui| { ui.label(pretty_or_dash(&player.actual_potential)); });
                                         row.col(|ui| { ui.label(pretty_or_dash(&player.salary)); });
@@ -6122,10 +10205,137 @@ impl ModifierApp {
                                         row.col(|ui| { ui.label(pretty_or_dash(&player.aggressive)); });
                                         row.col(|ui| { ui.label(pretty_or_dash(&player.ego)); });
                                         row.col(|ui| {
-                                            ui.add_enabled(false, egui::Button::new("Open"));
+                                            ui.add_enabled(
+                                                false,
+                                                egui::Button::new(
+                                                    self.localization.tr("search.tabs.history"),
+                                                ),
+                                            );
+                                        });
+
+                                        let row_response = row.response();
+                                        if shift_down
+                                            && row_response.drag_started_by(egui::PointerButton::Primary)
+                                            && !selection_checkbox_clicked
+                                        {
+                                            player_shift_drag_start_id = Some(player.id);
+                                            player_shift_drag_target_selected =
+                                                Some(!selected_player_ids.contains(&player.id));
+                                            player_shift_drag_base_ids = Some(selected_player_ids.clone());
+                                            player_selection_anchor_id = None;
+                                        }
+                                        if (primary_down || primary_released) && row_response.contains_pointer() {
+                                            if let (
+                                                Some(start_id),
+                                                Some(target_selected),
+                                                Some(base_ids),
+                                            ) = (
+                                                player_shift_drag_start_id,
+                                                player_shift_drag_target_selected,
+                                                player_shift_drag_base_ids.as_ref(),
+                                            ) {
+                                                selected_player_ids = base_ids.clone();
+                                                apply_id_range_selection(
+                                                    &filtered_player_ids,
+                                                    start_id,
+                                                    player.id,
+                                                    target_selected,
+                                                    &mut selected_player_ids,
+                                                );
+                                            }
+                                        }
+
+                                        let shift_drag_active = player_shift_drag_start_id.is_some();
+                                        if row_response.double_clicked() && !selection_checkbox_clicked {
+                                            selected_player_ids.insert(player.id);
+                                            player_selection_anchor_id = None;
+                                            player_shift_drag_start_id = None;
+                                            player_shift_drag_target_selected = None;
+                                            player_shift_drag_base_ids = None;
+                                            open_player_id = Some(player.id);
+                                        } else if row_response.clicked()
+                                            && !selection_checkbox_clicked
+                                            && !shift_drag_active
+                                        {
+                                            if shift_down {
+                                                let target_selected = !selected_player_ids.contains(&player.id);
+                                                let anchor_id =
+                                                    player_selection_anchor_id.unwrap_or(player.id);
+                                                apply_id_range_selection(
+                                                    &filtered_player_ids,
+                                                    anchor_id,
+                                                    player.id,
+                                                    target_selected,
+                                                    &mut selected_player_ids,
+                                                );
+                                                // A completed Shift-click is a one-shot range action.
+                                                // Resetting the anchor prevents the next Shift-click from
+                                                // accidentally reusing an old selection start.
+                                                player_selection_anchor_id = None;
+                                            } else if selected_player_ids.contains(&player.id) {
+                                                selected_player_ids.remove(&player.id);
+                                                player_selection_anchor_id = None;
+                                            } else {
+                                                selected_player_ids.insert(player.id);
+                                                player_selection_anchor_id = Some(player.id);
+                                            }
+                                        }
+                                        row_response.context_menu(|ui| {
+                                            if ui
+                                                .button(self.localization.tr("search.open_in_player_editor"))
+                                                .clicked()
+                                            {
+                                                open_player_id = Some(player.id);
+                                                ui.close_menu();
+                                            }
+
+                                            ui.separator();
+                                            let ids_to_add = if selected_player_ids.contains(&player.id)
+                                                && !selected_player_ids.is_empty()
+                                            {
+                                                selected_player_ids.iter().copied().collect::<Vec<_>>()
+                                            } else {
+                                                vec![player.id]
+                                            };
+                                            ui.menu_button(self.localization.tr("lists.add_to_list"), |ui| {
+                                                if ui
+                                                    .button(self.localization.tr("lists.create_from_selection"))
+                                                    .clicked()
+                                                {
+                                                    selected_player_ids.extend(ids_to_add.iter().copied());
+                                                    create_list_from_ids_request = Some(ids_to_add.clone());
+                                                    ui.close_menu();
+                                                }
+                                                if !saved_lists_for_menu.is_empty() {
+                                                    ui.separator();
+                                                }
+                                                for list_name in &saved_lists_for_menu {
+                                                    if ui.button(list_name).clicked() {
+                                                        add_to_list_request = Some((
+                                                            list_name.clone(),
+                                                            ids_to_add.clone(),
+                                                        ));
+                                                        ui.close_menu();
+                                                    }
+                                                }
+                                            });
                                         });
                                     });
                                 });
+                            if primary_released || !primary_down {
+                                if player_shift_drag_start_id.is_some() {
+                                    player_selection_anchor_id = None;
+                                }
+                                player_shift_drag_start_id = None;
+                                player_shift_drag_target_selected = None;
+                                player_shift_drag_base_ids = None;
+                            }
+                            self.selected_search_player_ids = selected_player_ids;
+                            self.player_selection_anchor_id = player_selection_anchor_id;
+                            self.player_shift_drag_start_id = player_shift_drag_start_id;
+                            self.player_shift_drag_target_selected =
+                                player_shift_drag_target_selected;
+                            self.player_shift_drag_base_ids = player_shift_drag_base_ids;
                         });
                 });
             },
@@ -6136,6 +10346,315 @@ impl ModifierApp {
         if refresh_players_requested {
             self.refresh_players();
         }
+        if let Some(player_ids) = create_list_from_ids_request {
+            self.pending_new_list_player_ids = player_ids;
+            self.pending_new_list_staff_ids.clear();
+            self.list_name_popup_mode = ListNamePopupMode::Create;
+            self.list_name_draft.clear();
+            self.list_name_popup_open = true;
+        }
+        if let Some((list_name, player_ids)) = add_to_list_request {
+            self.add_player_ids_to_list(&list_name, &player_ids);
+        }
+        if let Some(athlete_id) = open_player_id {
+            self.open_player_in_editor(athlete_id);
+        }
+    }
+
+    fn render_advanced_staff_search_window(&mut self, ctx: &egui::Context) {
+        if !self.advanced_staff_search_open {
+            return;
+        }
+
+        let mut open = self.advanced_staff_search_open;
+        let mut close_after = false;
+        let mut reset_filter = false;
+        let mut import_filter = false;
+        let mut export_filter = false;
+
+        egui::Window::new(self.localization.tr("search.staff.advanced_window_title"))
+            .id(egui::Id::new("advanced_staff_search_window_v040i"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size(egui::vec2(920.0, 680.0))
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(self.localization.tr("search.advanced.new_filter")).clicked() {
+                        reset_filter = true;
+                    }
+                    if ui.button(self.localization.tr("search.advanced.import_filter")).clicked() {
+                        import_filter = true;
+                    }
+                    if ui.button(self.localization.tr("search.advanced.export_filter")).clicked() {
+                        export_filter = true;
+                    }
+                    ui.separator();
+                    ui.weak(self.localization.tr("search.staff.saved_filters_info"));
+                });
+
+                ui.separator();
+                let footer_height = 34.0;
+                let body_height = (ui.available_height() - footer_height).max(0.0);
+                let body_width = ui.available_width();
+                let mut saved_filter_to_load: Option<String> = None;
+
+                ui.allocate_ui_with_layout(
+                    egui::vec2(body_width, body_height),
+                    egui::Layout::left_to_right(egui::Align::Min),
+                    |body_ui| {
+                        let full_height = body_ui.available_height();
+                        let available_body_width = body_ui.available_width();
+                        let max_left_width = (available_body_width - 90.0).max(90.0);
+                        self.saved_staff_filters_width =
+                            self.saved_staff_filters_width.clamp(90.0, max_left_width);
+
+                        body_ui.allocate_ui_with_layout(
+                            egui::vec2(self.saved_staff_filters_width, full_height),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |left_ui| {
+                                left_ui.set_min_height(full_height);
+                                left_ui.strong(self.localization.tr("search.advanced.saved_filters"));
+                                left_ui.separator();
+
+                                let list_height = left_ui.available_height();
+                                egui::ScrollArea::vertical()
+                                    .id_salt("saved_staff_filters_scroll")
+                                    .auto_shrink([false, false])
+                                    .max_height(list_height)
+                                    .show(left_ui, |ui| {
+                                        ui.set_min_height(list_height);
+                                        if self.saved_staff_filters.is_empty() {
+                                            ui.weak(self.localization.tr("search.advanced.no_saved_filters"));
+                                        }
+                                        for name in self.saved_staff_filters.clone() {
+                                            let selected = self
+                                                .selected_saved_staff_filter
+                                                .as_deref()
+                                                .is_some_and(|value| value.eq_ignore_ascii_case(&name));
+                                            if ui.selectable_label(selected, &name).clicked() {
+                                                saved_filter_to_load = Some(name);
+                                            }
+                                        }
+                                    });
+                            },
+                        );
+
+                        let (divider_rect, divider_response) = body_ui.allocate_exact_size(
+                            egui::vec2(8.0, full_height),
+                            egui::Sense::click_and_drag(),
+                        );
+                        let divider_response =
+                            divider_response.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+                        if divider_response.dragged() {
+                            let pointer_dx = body_ui.input(|input| input.pointer.delta().x);
+                            self.saved_staff_filters_width =
+                                (self.saved_staff_filters_width + pointer_dx)
+                                    .clamp(90.0, max_left_width);
+                        }
+                        let divider_color = if divider_response.hovered()
+                            || divider_response.dragged()
+                        {
+                            body_ui.visuals().selection.stroke.color
+                        } else {
+                            body_ui.visuals().widgets.noninteractive.bg_stroke.color
+                        };
+                        body_ui.painter().vline(
+                            divider_rect.center().x,
+                            divider_rect.y_range(),
+                            egui::Stroke::new(1.0_f32, divider_color),
+                        );
+
+                        let right_width = body_ui.available_width();
+                        body_ui.allocate_ui_with_layout(
+                            egui::vec2(right_width, full_height),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |right_ui| {
+                                right_ui.set_min_height(full_height);
+                                egui::ScrollArea::vertical()
+                                    .id_salt("advanced_staff_search_scroll")
+                                    .auto_shrink([false, false])
+                                    .max_height(full_height)
+                                    .show(right_ui, |ui| {
+                                        ui.set_min_height(full_height);
+
+                                        ui.horizontal(|ui| {
+                                            ui.add_sized(
+                                                [20.0, 24.0],
+                                                egui::Checkbox::without_text(
+                                                    &mut self.advanced_staff_search.role_enabled,
+                                                ),
+                                            );
+                                            ui.add_sized(
+                                                [138.0, 24.0],
+                                                egui::Label::new(self.localization.tr("common.role")),
+                                            );
+                                            ui.add_enabled_ui(
+                                                self.advanced_staff_search.role_enabled,
+                                                |ui| {
+                                                    let selected = if self.advanced_staff_search.role
+                                                        == "No Condition"
+                                                    {
+                                                        self.localization.tr("search.no_condition")
+                                                    } else {
+                                                        localized_staff_role(
+                                                            &self.localization,
+                                                            &self.advanced_staff_search.role,
+                                                        )
+                                                    };
+                                                    egui::ComboBox::from_id_salt(
+                                                        "advanced_staff_role_choice",
+                                                    )
+                                                    .selected_text(selected)
+                                                    .width(198.0)
+                                                    .show_ui(ui, |ui| {
+                                                        ui.selectable_value(
+                                                            &mut self.advanced_staff_search.role,
+                                                            "No Condition".to_string(),
+                                                            self.localization.tr("search.no_condition"),
+                                                        );
+                                                        for role in [
+                                                            "HeadCoach",
+                                                            "TrainingCoach",
+                                                            "Scouter",
+                                                            "Analyst",
+                                                        ] {
+                                                            ui.selectable_value(
+                                                                &mut self.advanced_staff_search.role,
+                                                                role.to_string(),
+                                                                localized_staff_role(
+                                                                    &self.localization,
+                                                                    role,
+                                                                ),
+                                                            );
+                                                        }
+                                                    });
+                                                },
+                                            );
+                                        });
+
+                                        for range in &mut self.advanced_staff_search.ranges {
+                                            advanced_range_filter_row(ui, range, &self.localization);
+                                        }
+
+                                        advanced_boolean_filter_row(
+                                            ui,
+                                            &self.localization.tr("search.players.free_agents_only"),
+                                            &mut self.advanced_staff_search.free_agents_only,
+                                        );
+                                    });
+                            },
+                        );
+                    },
+                );
+
+                if let Some(name) = saved_filter_to_load {
+                    self.load_saved_staff_filter(&name);
+                }
+
+                ui.separator();
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(self.localization.tr("common.reset")).clicked() {
+                        reset_filter = true;
+                    }
+                    if ui.button(self.localization.tr("common.confirm")).clicked() {
+                        self.status = format!(
+                            "Advanced Staff Search applied: {} active condition(s)",
+                            self.advanced_staff_search.active_condition_count()
+                        );
+                        close_after = true;
+                    }
+
+                    ui.separator();
+                    if ui.button(self.localization.tr("search.advanced.save_filter")).clicked() {
+                        self.staff_filter_name_draft = self
+                            .selected_saved_staff_filter
+                            .clone()
+                            .unwrap_or_default();
+                        self.staff_filter_name_popup_open = true;
+                    }
+
+                    let update = ui.add_enabled(
+                        self.selected_saved_staff_filter.is_some(),
+                        egui::Button::new(self.localization.tr("search.advanced.update_filter")),
+                    );
+                    if update.clicked() {
+                        self.update_selected_staff_filter();
+                    }
+
+                    let delete = ui.add_enabled(
+                        self.selected_saved_staff_filter.is_some(),
+                        egui::Button::new(self.localization.tr("search.advanced.delete_filter")),
+                    );
+                    if delete.clicked() {
+                        self.delete_selected_staff_filter();
+                    }
+                });
+            });
+
+        if reset_filter {
+            self.advanced_staff_search = AdvancedStaffSearch::default();
+            self.selected_saved_staff_filter = None;
+            self.status = "Advanced staff filter reset".to_string();
+        }
+        if import_filter {
+            self.import_advanced_staff_filter();
+        }
+        if export_filter {
+            self.export_advanced_staff_filter();
+        }
+        if close_after {
+            open = false;
+        }
+        self.advanced_staff_search_open = open;
+        self.render_staff_filter_name_popup(ctx);
+    }
+
+    fn render_staff_filter_name_popup(&mut self, ctx: &egui::Context) {
+        if !self.staff_filter_name_popup_open {
+            return;
+        }
+
+        let mut open = self.staff_filter_name_popup_open;
+        let mut save_requested = false;
+        let mut cancel_requested = false;
+
+        egui::Window::new(self.localization.tr("search.staff.filter_name_window"))
+            .open(&mut open)
+            .resizable(false)
+            .collapsible(false)
+            .default_width(360.0)
+            .show(ctx, |ui| {
+                ui.label(self.localization.tr("search.filter_name.label"));
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.staff_filter_name_draft)
+                        .desired_width(f32::INFINITY)
+                        .hint_text(self.localization.tr("search.staff.filter_name_hint")),
+                );
+                if response.lost_focus()
+                    && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                {
+                    save_requested = true;
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(self.localization.tr("common.save")).clicked() {
+                        save_requested = true;
+                    }
+                    if ui.button(self.localization.tr("common.cancel")).clicked() {
+                        cancel_requested = true;
+                    }
+                });
+            });
+
+        if save_requested {
+            let name = self.staff_filter_name_draft.clone();
+            self.save_named_staff_filter(&name, false);
+            open = false;
+        }
+        if cancel_requested {
+            open = false;
+        }
+        self.staff_filter_name_popup_open = open;
     }
 
     fn render_advanced_search_window(&mut self, ctx: &egui::Context) {
@@ -6149,7 +10668,7 @@ impl ModifierApp {
         let mut import_filter = false;
         let mut export_filter = false;
 
-        egui::Window::new("Advanced Player Search")
+        egui::Window::new(self.localization.tr("search.advanced.window_title"))
             // New persistent ID intentionally resets the undersized window rect
             // that could be remembered from v0.2.17.
             .id(egui::Id::new("advanced_player_search_window_v0218"))
@@ -6158,22 +10677,22 @@ impl ModifierApp {
             .default_size(egui::vec2(1040.0, 720.0))
             .show(ctx, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("New Filter").clicked() {
+                    if ui.button(self.localization.tr("search.advanced.new_filter")).clicked() {
                         reset_filter = true;
                     }
-                    if ui.button("Import Filter").clicked() {
+                    if ui.button(self.localization.tr("search.advanced.import_filter")).clicked() {
                         import_filter = true;
                     }
-                    if ui.button("Export Filter").clicked() {
+                    if ui.button(self.localization.tr("search.advanced.export_filter")).clicked() {
                         export_filter = true;
                     }
 
                     ui.separator();
-                    ui.weak("Saved filters are listed on the left.");
+                    ui.weak(self.localization.tr("search.advanced.saved_on_left"));
                 });
 
                 ui.add_space(4.0);
-                ui.weak(advanced_search_info_text());
+                ui.weak(self.localization.tr(advanced_search_info_key()));
                 ui.separator();
 
                 // Reserve a small fixed footer, then let the filter body consume
@@ -6202,7 +10721,7 @@ impl ModifierApp {
                             egui::Layout::top_down(egui::Align::Min),
                             |left_ui| {
                                 left_ui.set_min_height(full_height);
-                                left_ui.strong("Saved Filters");
+                                left_ui.strong(self.localization.tr("search.advanced.saved_filters"));
                                 left_ui.separator();
 
                                 let list_height = left_ui.available_height();
@@ -6214,7 +10733,7 @@ impl ModifierApp {
                                         ui.set_min_height(list_height);
 
                                         if self.saved_filters.is_empty() {
-                                            ui.weak("No saved filters");
+                                            ui.weak(self.localization.tr("search.advanced.no_saved_filters"));
                                         }
 
                                         for name in self.saved_filters.clone() {
@@ -6276,43 +10795,45 @@ impl ModifierApp {
 
                                         advanced_choice_filter_row(
                                             ui,
-                                            "Position",
+                                            &self.localization.tr("search.players.position"),
                                             &mut self.advanced_player_search.position_enabled,
                                             &mut self.advanced_player_search.position,
                                             &[
-                                                "No Condition",
-                                                "Top",
-                                                "Jungle",
-                                                "Mid",
-                                                "Bottom",
-                                                "Support",
+                                                ("No Condition", "search.no_condition"),
+                                                ("Top", "positions.top"),
+                                                ("Jungle", "positions.jungle"),
+                                                ("Mid", "positions.mid"),
+                                                ("Bottom", "positions.bottom"),
+                                                ("Support", "positions.support"),
                                             ],
                                             "advanced_position_choice",
+                                            &self.localization,
                                         );
                                         advanced_choice_filter_row(
                                             ui,
-                                            "Region",
+                                            &self.localization.tr("common.region"),
                                             &mut self.advanced_player_search.region_enabled,
                                             &mut self.advanced_player_search.region,
                                             &[
-                                                "No Condition",
-                                                "Korea",
-                                                "China",
-                                                "Europe",
-                                                "North America",
-                                                "South America",
-                                                "Japan",
+                                                ("No Condition", "search.no_condition"),
+                                                ("Korea", "regions.korea"),
+                                                ("China", "regions.china"),
+                                                ("Europe", "regions.europe"),
+                                                ("North America", "regions.north_america"),
+                                                ("South America", "regions.south_america"),
+                                                ("Japan", "regions.japan"),
                                             ],
                                             "advanced_region_choice",
+                                            &self.localization,
                                         );
 
                                         for range in &mut self.advanced_player_search.ranges {
-                                            advanced_range_filter_row(ui, range);
+                                            advanced_range_filter_row(ui, range, &self.localization);
                                         }
 
                                         advanced_boolean_filter_row(
                                             ui,
-                                            "Free Agents Only",
+                                            &self.localization.tr("search.players.free_agents_only"),
                                             &mut self.advanced_player_search.free_agents_only,
                                         );
                                     });
@@ -6329,10 +10850,10 @@ impl ModifierApp {
                 // consumes the remaining window height.
                 ui.separator();
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("Reset").clicked() {
+                    if ui.button(self.localization.tr("common.reset")).clicked() {
                         reset_filter = true;
                     }
-                    if ui.button("Confirm").clicked() {
+                    if ui.button(self.localization.tr("common.confirm")).clicked() {
                         self.status = format!(
                             "Advanced Search applied: {} active condition(s)",
                             self.advanced_player_search.active_condition_count()
@@ -6342,7 +10863,7 @@ impl ModifierApp {
 
                     ui.separator();
 
-                    if ui.button("Save Filter").clicked() {
+                    if ui.button(self.localization.tr("search.advanced.save_filter")).clicked() {
                         self.filter_name_draft =
                             self.selected_saved_filter.clone().unwrap_or_default();
                         self.filter_name_popup_open = true;
@@ -6350,7 +10871,7 @@ impl ModifierApp {
 
                     let update = ui.add_enabled(
                         self.selected_saved_filter.is_some(),
-                        egui::Button::new("Update Filter"),
+                        egui::Button::new(self.localization.tr("search.advanced.update_filter")),
                     );
                     if update.clicked() {
                         self.update_selected_filter();
@@ -6358,7 +10879,7 @@ impl ModifierApp {
 
                     let delete = ui.add_enabled(
                         self.selected_saved_filter.is_some(),
-                        egui::Button::new("Delete Filter"),
+                        egui::Button::new(self.localization.tr("search.advanced.delete_filter")),
                     );
                     if delete.clicked() {
                         self.delete_selected_filter();
@@ -6394,17 +10915,17 @@ impl ModifierApp {
         let mut save_requested = false;
         let mut cancel_requested = false;
 
-        egui::Window::new("Save Player Filter")
+        egui::Window::new(self.localization.tr("search.filter_name.window_title"))
             .open(&mut open)
             .resizable(false)
             .collapsible(false)
             .default_width(360.0)
             .show(ctx, |ui| {
-                ui.label("Filter name");
+                ui.label(self.localization.tr("search.filter_name.label"));
                 let response = ui.add(
                     egui::TextEdit::singleline(&mut self.filter_name_draft)
                         .desired_width(f32::INFINITY)
-                        .hint_text("e.g. EU Young Prospects"),
+                        .hint_text(self.localization.tr("search.filter_name.hint")),
                 );
 
                 if response.lost_focus()
@@ -6415,10 +10936,10 @@ impl ModifierApp {
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Save").clicked() {
+                    if ui.button(self.localization.tr("common.save")).clicked() {
                         save_requested = true;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(self.localization.tr("common.cancel")).clicked() {
                         cancel_requested = true;
                     }
                 });
@@ -6444,36 +10965,197 @@ impl ModifierApp {
 
 
 
+    fn render_list_name_popup(&mut self, ctx: &egui::Context) {
+        if !self.list_name_popup_open {
+            return;
+        }
+
+        let mut open = self.list_name_popup_open;
+        let mut save_requested = false;
+        let mut cancel_requested = false;
+        let title_key = match self.list_name_popup_mode {
+            ListNamePopupMode::Create => "lists.create_window_title",
+            ListNamePopupMode::Rename => "lists.rename_window_title",
+        };
+
+        egui::Window::new(self.localization.tr(title_key))
+            .id(egui::Id::new("player_list_name_popup"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(380.0)
+            .show(ctx, |ui| {
+                ui.label(self.localization.tr("lists.name_label"));
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.list_name_draft)
+                        .desired_width(f32::INFINITY)
+                        .hint_text(self.localization.tr("lists.name_hint")),
+                );
+                response.request_focus();
+                if response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                    save_requested = true;
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let action_key = match self.list_name_popup_mode {
+                        ListNamePopupMode::Create => "lists.create",
+                        ListNamePopupMode::Rename => "lists.rename",
+                    };
+                    if ui.button(self.localization.tr(action_key)).clicked() {
+                        save_requested = true;
+                    }
+                    if ui.button(self.localization.tr("common.cancel")).clicked() {
+                        cancel_requested = true;
+                    }
+                });
+            });
+
+        if save_requested {
+            let name = self.list_name_draft.trim().to_string();
+            if name.is_empty() {
+                self.status = self.localization.tr("lists.status.enter_name");
+            } else {
+                match self.list_name_popup_mode {
+                    ListNamePopupMode::Create => self.create_named_player_list(&name),
+                    ListNamePopupMode::Rename => self.rename_selected_player_list(&name),
+                }
+                self.list_name_draft.clear();
+                open = false;
+            }
+        }
+        if cancel_requested {
+            if self.list_name_popup_mode == ListNamePopupMode::Create {
+                self.pending_new_list_player_ids.clear();
+            }
+            open = false;
+        }
+        self.list_name_popup_open = open;
+    }
+
+    fn render_list_delete_confirmation(&mut self, ctx: &egui::Context) {
+        if !self.list_delete_confirmation_open {
+            return;
+        }
+
+        let mut open = self.list_delete_confirmation_open;
+        let mut delete_requested = false;
+        let mut cancel_requested = false;
+        let name = self.selected_saved_player_list.clone().unwrap_or_default();
+
+        egui::Window::new(self.localization.tr("lists.delete_window_title"))
+            .id(egui::Id::new("player_list_delete_confirmation"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(420.0)
+            .show(ctx, |ui| {
+                ui.label(self.localization.tr_with(
+                    "lists.delete_confirmation",
+                    &[("name", name.as_str())],
+                ));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(self.localization.tr("lists.delete")).clicked() {
+                        delete_requested = true;
+                    }
+                    if ui.button(self.localization.tr("common.cancel")).clicked() {
+                        cancel_requested = true;
+                    }
+                });
+            });
+
+        if delete_requested {
+            self.delete_selected_player_list();
+            self.selected_list_player_ids.clear();
+            open = false;
+        }
+        if cancel_requested {
+            open = false;
+        }
+        self.list_delete_confirmation_open = open;
+    }
+
+
 }
 
 impl eframe::App for ModifierApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::top("app_header").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("TFM2 Editor");
-                ui.weak("Made by jal-io");
+                ui.heading(self.localization.tr("app.title"));
+                ui.weak(self.localization.tr_with("app.made_by", &[("author", "jal-io")]));
                 ui.separator();
                 ui.label(display_version());
 
                 #[cfg(feature = "dev")]
                 {
                     ui.label(
-                        egui::RichText::new("DEV BUILD")
+                        egui::RichText::new(self.localization.tr("app.dev_build"))
                             .strong()
                             .color(ui.visuals().selection.stroke.color),
                     );
                 }
                 ui.separator();
 
-                let status_text = if self.connected {
-                    "● Connected"
+                let bridge_display = if self.bridge_version == "-" {
+                    "—".to_string()
                 } else {
-                    "● Disconnected"
+                    format!("v{}", self.bridge_version)
                 };
-                ui.label(status_text);
-                ui.label(format!("Bridge {}", self.bridge_version));
+                let (connection_key, compatibility_key, compatibility_color) =
+                    match self.compatibility_issue.as_ref() {
+                        Some(issue)
+                            if issue.severity == CompatibilitySeverity::NotSupported =>
+                        {
+                            (
+                                "connection.state.disconnected",
+                                "compatibility.status.not_supported",
+                                egui::Color32::from_rgb(220, 70, 70),
+                            )
+                        }
+                        Some(_) if self.connected => (
+                            "connection.state.connected",
+                            "compatibility.status.warning",
+                            egui::Color32::from_rgb(235, 196, 0),
+                        ),
+                        None if self.connected => (
+                            "connection.state.connected",
+                            "compatibility.status.ok",
+                            egui::Color32::from_rgb(80, 190, 100),
+                        ),
+                        _ => (
+                            "connection.state.disconnected",
+                            "compatibility.status.unknown",
+                            egui::Color32::GRAY,
+                        ),
+                    };
+                let connection_text = self.localization.tr(connection_key);
+                let compatibility_text = self.localization.tr(compatibility_key);
+                let compatibility_prefix = self.localization.tr_with(
+                    "connection.compatibility_prefix",
+                    &[
+                        ("connection", connection_text.as_str()),
+                        ("bridge", bridge_display.as_str()),
+                    ],
+                );
+                let compatibility_response = ui
+                    .horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        ui.label(compatibility_prefix);
+                        ui.label(
+                            egui::RichText::new(compatibility_text)
+                                .strong()
+                                .color(compatibility_color),
+                        );
+                    })
+                    .response;
 
-                if ui.button("Reconnect").clicked() {
+                #[cfg(feature = "dev")]
+                compatibility_response.on_hover_text(self.compatibility_debug_report());
+                #[cfg(not(feature = "dev"))]
+                let _ = compatibility_response;
+
+                if ui.button(self.localization.tr("connection.reconnect")).clicked() {
                     self.refresh_connection();
                     if self.connected {
                         self.refresh_economy();
@@ -6481,29 +11163,45 @@ impl eframe::App for ModifierApp {
                         self.refresh_staff();
                         self.refresh_teams();
                         self.refresh_recruitment_settings();
+                        self.restore_active_search_status();
                     }
                 }
+
+                ui.separator();
+                self.render_language_selector(ui);
             });
 
-            ui.add_space(6.0);
+            ui.add_space(8.0);
             let tab_before_click = self.active_tab;
-            ui.horizontal(|ui| {
-                for tab in AppTab::ALL {
-                    ui.selectable_value(&mut self.active_tab, tab, tab.label());
-                }
+            ui.scope(|ui| {
+                ui.spacing_mut().button_padding = egui::vec2(10.0, 5.0);
+                ui.spacing_mut().item_spacing.x = 7.0;
+                ui.horizontal(|ui| {
+                    for tab in AppTab::ALL {
+                        let label = self.localization.tr(tab.label_key());
+                        ui.selectable_value(
+                            &mut self.active_tab,
+                            tab,
+                            egui::RichText::new(label).size(15.0).strong(),
+                        );
+                    }
+                });
             });
             if tab_before_click != self.active_tab
                 && self.active_tab == AppTab::Search
                 && self.connected
             {
                 self.refresh_players();
+                self.refresh_staff();
+                self.restore_active_search_status();
             }
             ui.add_space(4.0);
         });
 
         egui::TopBottomPanel::bottom("app_status").show(ctx, |ui| {
             ui.separator();
-            ui.label(format!("Status: {}", self.status));
+            let status = self.status.clone();
+            ui.label(self.localization.tr_with("status.label", &[("status", status.as_str())]));
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -6523,6 +11221,7 @@ impl eframe::App for ModifierApp {
         });
 
         self.render_advanced_search_window(ctx);
+        self.render_advanced_staff_search_window(ctx);
 
         self.render_champion_mastery_window(ctx);
 
@@ -6533,6 +11232,10 @@ impl eframe::App for ModifierApp {
         self.render_staff_contract_window(ctx);
         #[cfg(feature = "dev")]
         self.render_staff_contract_probe_window(ctx);
+
+        self.render_list_name_popup(ctx);
+        self.render_list_delete_confirmation(ctx);
+        self.render_compatibility_popup(ctx);
     }
 }
 
@@ -6543,6 +11246,7 @@ fn player_sort_header(
     column: PlayerSortColumn,
     sort_column: &mut PlayerSortColumn,
     sort_ascending: &mut bool,
+    localization: &Localization,
 ) {
     let is_active = *sort_column == column;
     let arrow = if is_active {
@@ -6551,7 +11255,10 @@ fn player_sort_header(
         ""
     };
 
-    if ui.button(format!("{}{}", column.label(), arrow)).clicked() {
+    if ui
+        .button(format!("{}{}", localization.tr(column.label_key()), arrow))
+        .clicked()
+    {
         if is_active {
             *sort_ascending = !*sort_ascending;
         } else {
@@ -6562,12 +11269,304 @@ fn player_sort_header(
 }
 
 
+fn localized_staff_role(localization: &Localization, raw: &str) -> String {
+    match raw.trim() {
+        "HeadCoach" => localization.tr("staff.roles.head_coach"),
+        "TrainingCoach" => localization.tr("staff.roles.training_coach"),
+        "Scouter" => localization.tr("staff.roles.scouter"),
+        "Analyst" => localization.tr("staff.roles.analyst"),
+        other if other.is_empty() => localization.tr("common.unknown"),
+        other => other.to_string(),
+    }
+}
+
+fn staff_sort_header(
+    ui: &mut egui::Ui,
+    column: StaffSortColumn,
+    sort_column: &mut StaffSortColumn,
+    sort_ascending: &mut bool,
+    localization: &Localization,
+) {
+    let is_active = *sort_column == column;
+    let arrow = if is_active {
+        if *sort_ascending { " ↑" } else { " ↓" }
+    } else {
+        ""
+    };
+
+    if ui
+        .button(format!("{}{}", localization.tr(column.label_key()), arrow))
+        .clicked()
+    {
+        if is_active {
+            *sort_ascending = !*sort_ascending;
+        } else {
+            *sort_column = column;
+            *sort_ascending = true;
+        }
+    }
+}
+
+fn team_sort_header(
+    ui: &mut egui::Ui,
+    column: TeamSortColumn,
+    sort_column: &mut TeamSortColumn,
+    sort_ascending: &mut bool,
+    localization: &Localization,
+) {
+    let is_active = *sort_column == column;
+    let arrow = if is_active {
+        if *sort_ascending { " ↑" } else { " ↓" }
+    } else {
+        ""
+    };
+
+    if ui
+        .button(format!("{}{}", localization.tr(column.label_key()), arrow))
+        .clicked()
+    {
+        if is_active {
+            *sort_ascending = !*sort_ascending;
+        } else {
+            *sort_column = column;
+            *sort_ascending = true;
+        }
+    }
+}
+
+fn staff_advanced_range_value(staff: &StaffSummary, key: &str) -> Option<f64> {
+    let raw = match key {
+        "age" => &staff.age,
+        "salary" => &staff.annual_salary,
+        "banpick" => &staff.banpick,
+        "strategy" => &staff.strategy,
+        "negotiation" => &staff.negotiation,
+        "judge_ability" => &staff.judge_ability,
+        "judge_potential" => &staff.judge_potential,
+        "feedback" => &staff.feedback,
+        "power_analysis" => &staff.power_analysis,
+        "control_coaching" => &staff.control_coaching,
+        "judgment_coaching" => &staff.judgment_coaching,
+        "mental_coaching" => &staff.mental_coaching,
+        "communication" => &staff.communication,
+        _ => return None,
+    };
+    parse_filter_number(raw)
+}
+
+fn facility_grade_rank(raw: &str) -> i32 {
+    match raw
+        .trim()
+        .trim_start_matches("Grade")
+        .trim()
+        .to_ascii_uppercase()
+        .as_str()
+    {
+        "S" => 5,
+        "A" => 4,
+        "B" => 3,
+        "C" => 2,
+        "D" => 1,
+        _ => 0,
+    }
+}
+
+fn display_facility_grade(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "—".to_string();
+    }
+
+    let grade = trimmed.trim_start_matches("Grade").trim();
+    if matches!(grade, "S" | "A" | "B" | "C" | "D") {
+        format!("Grade {grade}")
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn compare_facility_grade(left: &str, right: &str, ascending: bool) -> Ordering {
+    let rank_order = facility_grade_rank(left).cmp(&facility_grade_rank(right));
+    let order = if rank_order == Ordering::Equal {
+        left.to_lowercase().cmp(&right.to_lowercase())
+    } else {
+        rank_order
+    };
+    if ascending { order } else { order.reverse() }
+}
+
+fn compare_team_summaries(
+    a: &TeamSummary,
+    b: &TeamSummary,
+    column: TeamSortColumn,
+    ascending: bool,
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    fn finish(order: Ordering, ascending: bool) -> Ordering {
+        if ascending { order } else { order.reverse() }
+    }
+
+    fn compare_text(a: &str, b: &str, ascending: bool) -> Ordering {
+        finish(a.to_lowercase().cmp(&b.to_lowercase()), ascending)
+    }
+
+    fn compare_f64(a: f64, b: f64, ascending: bool) -> Ordering {
+        finish(a.partial_cmp(&b).unwrap_or(Ordering::Equal), ascending)
+    }
+
+    fn compare_optional_f64(a: Option<f64>, b: Option<f64>, ascending: bool) -> Ordering {
+        match (a, b) {
+            (Some(left), Some(right)) => compare_f64(left, right, ascending),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
+        }
+    }
+
+    let order = match column {
+        TeamSortColumn::Name => compare_text(&a.display_name, &b.display_name, ascending),
+        TeamSortColumn::Id => finish(a.id.cmp(&b.id), ascending),
+        TeamSortColumn::League => finish(a.league_id.cmp(&b.league_id), ascending),
+        TeamSortColumn::Manager => compare_text(&a.manager_name, &b.manager_name, ascending),
+        TeamSortColumn::PlayerTeam => finish(a.is_player_team.cmp(&b.is_player_team), !ascending),
+        TeamSortColumn::RosterSize => finish(a.roster_size.cmp(&b.roster_size), ascending),
+        TeamSortColumn::StaffCount => finish(a.staff_count.cmp(&b.staff_count), ascending),
+        TeamSortColumn::RosterRating => compare_optional_f64(a.roster_rating, b.roster_rating, ascending),
+        TeamSortColumn::MerchandiseFacilityGrade => compare_facility_grade(
+            &a.merchandise_facility_grade,
+            &b.merchandise_facility_grade,
+            ascending,
+        ),
+        TeamSortColumn::StadiumGrade => {
+            compare_facility_grade(&a.stadium_grade, &b.stadium_grade, ascending)
+        }
+        TeamSortColumn::TrainingFacilityGrade => compare_facility_grade(
+            &a.training_facility_grade,
+            &b.training_facility_grade,
+            ascending,
+        ),
+        TeamSortColumn::Money => compare_f64(a.total_balance, b.total_balance, ascending),
+        TeamSortColumn::RecruitmentBudget => {
+            compare_f64(a.transfer_budget, b.transfer_budget, ascending)
+        }
+        TeamSortColumn::SalaryBudget => compare_f64(a.salary_budget, b.salary_budget, ascending),
+    };
+
+    if order == Ordering::Equal {
+        a.id.cmp(&b.id)
+    } else {
+        order
+    }
+}
+
+fn advanced_staff_filter_matches(staff: &StaffSummary, filter: &AdvancedStaffSearch) -> bool {
+    if filter.role_enabled
+        && filter.role != "No Condition"
+        && staff.role != filter.role
+    {
+        return false;
+    }
+
+    if filter.free_agents_only && staff.team != "Free Agent" {
+        return false;
+    }
+
+    for range in filter.ranges.iter().filter(|range| range.enabled) {
+        let min = parse_filter_number(&range.min);
+        let max = parse_filter_number(&range.max);
+        if min.is_none() && max.is_none() {
+            continue;
+        }
+
+        let Some(value) = staff_advanced_range_value(staff, range.key) else {
+            return false;
+        };
+        if min.is_some_and(|minimum| value < minimum) {
+            return false;
+        }
+        if max.is_some_and(|maximum| value > maximum) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn compare_staff_summaries(
+    a: &StaffSummary,
+    b: &StaffSummary,
+    column: StaffSortColumn,
+    ascending: bool,
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    fn compare_text(a: &str, b: &str, ascending: bool) -> Ordering {
+        let order = a.to_lowercase().cmp(&b.to_lowercase());
+        if ascending { order } else { order.reverse() }
+    }
+
+    fn compare_number(a: &str, b: &str, ascending: bool) -> Ordering {
+        match (parse_filter_number(a), parse_filter_number(b)) {
+            (Some(a), Some(b)) => {
+                let order = a.partial_cmp(&b).unwrap_or(Ordering::Equal);
+                if ascending { order } else { order.reverse() }
+            }
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
+        }
+    }
+
+    fn compare_optional_text(a: &str, b: &str, ascending: bool) -> Ordering {
+        let a_missing = a.trim().is_empty() || matches!(a.trim(), "—" | "-");
+        let b_missing = b.trim().is_empty() || matches!(b.trim(), "—" | "-");
+        match (a_missing, b_missing) {
+            (false, false) => compare_text(a, b, ascending),
+            (false, true) => Ordering::Less,
+            (true, false) => Ordering::Greater,
+            (true, true) => Ordering::Equal,
+        }
+    }
+
+    let order = match column {
+        StaffSortColumn::Name => compare_text(&a.name, &b.name, ascending),
+        StaffSortColumn::Id => {
+            let order = a.id.cmp(&b.id);
+            if ascending { order } else { order.reverse() }
+        }
+        StaffSortColumn::Age => compare_number(&a.age, &b.age, ascending),
+        StaffSortColumn::Team => compare_text(&a.team, &b.team, ascending),
+        StaffSortColumn::Role => compare_text(&a.role, &b.role, ascending),
+        StaffSortColumn::Salary => compare_number(&a.annual_salary, &b.annual_salary, ascending),
+        StaffSortColumn::ContractEnd => compare_optional_text(&a.contract_end, &b.contract_end, ascending),
+        StaffSortColumn::BanPick => compare_number(&a.banpick, &b.banpick, ascending),
+        StaffSortColumn::Strategy => compare_number(&a.strategy, &b.strategy, ascending),
+        StaffSortColumn::Negotiation => compare_number(&a.negotiation, &b.negotiation, ascending),
+        StaffSortColumn::JudgeAbility => compare_number(&a.judge_ability, &b.judge_ability, ascending),
+        StaffSortColumn::JudgePotential => compare_number(&a.judge_potential, &b.judge_potential, ascending),
+        StaffSortColumn::Feedback => compare_number(&a.feedback, &b.feedback, ascending),
+        StaffSortColumn::PowerAnalysis => compare_number(&a.power_analysis, &b.power_analysis, ascending),
+        StaffSortColumn::ControlCoaching => compare_number(&a.control_coaching, &b.control_coaching, ascending),
+        StaffSortColumn::JudgmentCoaching => compare_number(&a.judgment_coaching, &b.judgment_coaching, ascending),
+        StaffSortColumn::MentalCoaching => compare_number(&a.mental_coaching, &b.mental_coaching, ascending),
+        StaffSortColumn::Communication => compare_number(&a.communication, &b.communication, ascending),
+    };
+
+    if order == Ordering::Equal {
+        a.id.cmp(&b.id)
+    } else {
+        order
+    }
+}
+
+
 fn parse_filter_number(value: &str) -> Option<f64> {
-    let normalized = value.trim().replace(' ', "").replace(',', ".");
-    if normalized.is_empty() {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || matches!(trimmed, "—" | "-") {
         None
     } else {
-        normalized.parse::<f64>().ok()
+        parse_display_amount(trimmed).ok()
     }
 }
 
@@ -6580,6 +11579,7 @@ fn player_advanced_range_value(player: &PlayerSummary, key: &str) -> Option<f64>
         "age" => &player.age,
         "salary" => &player.salary,
         "transfer_fee" => &player.transfer_fee,
+        "actual_potential" => &player.actual_potential,
         "last_hit" => &player.last_hit,
         "skill_avoid" => &player.skill_avoid,
         "skill_hit" => &player.skill_hit,
@@ -6659,20 +11659,8 @@ fn compare_player_summaries(
         if ascending { order } else { order.reverse() }
     }
 
-    fn parse_number_for_sort(value: &str) -> Option<f64> {
-        let normalized = value
-            .trim()
-            .replace(' ', "")
-            .replace(',', ".");
-        if normalized.is_empty() || normalized == "—" || normalized == "-" {
-            None
-        } else {
-            normalized.parse::<f64>().ok()
-        }
-    }
-
     fn compare_number(a: &str, b: &str, ascending: bool) -> Ordering {
-        match (parse_number_for_sort(a), parse_number_for_sort(b)) {
+        match (parse_filter_number(a), parse_filter_number(b)) {
             (Some(a), Some(b)) => {
                 let order = a.partial_cmp(&b).unwrap_or(Ordering::Equal);
                 if ascending { order } else { order.reverse() }
@@ -6754,41 +11742,47 @@ fn advanced_choice_filter_row(
     label: &str,
     enabled: &mut bool,
     value: &mut String,
-    choices: &[&str],
+    choices: &[(&str, &str)],
     id: &'static str,
+    localization: &Localization,
 ) {
     ui.horizontal(|ui| {
         ui.add_sized([20.0, 24.0], egui::Checkbox::without_text(enabled));
         ui.add_sized([138.0, 24.0], egui::Label::new(label));
         ui.add_enabled_ui(*enabled, |ui| {
+            let selected_text = choices
+                .iter()
+                .find(|(raw, _)| *raw == value.as_str())
+                .map(|(_, key)| localization.tr(key))
+                .unwrap_or_else(|| value.clone());
             egui::ComboBox::from_id_salt(id)
-                .selected_text(value.as_str())
+                .selected_text(selected_text)
                 .width(198.0)
                 .show_ui(ui, |ui| {
-                    for choice in choices {
-                        ui.selectable_value(value, (*choice).to_string(), *choice);
+                    for (raw, key) in choices {
+                        ui.selectable_value(value, (*raw).to_string(), localization.tr(key));
                     }
                 });
         });
     });
 }
 
-fn advanced_range_filter_row(ui: &mut egui::Ui, filter: &mut AdvancedRangeFilter) {
+fn advanced_range_filter_row(ui: &mut egui::Ui, filter: &mut AdvancedRangeFilter, localization: &Localization) {
     ui.horizontal(|ui| {
         ui.add_sized([20.0, 24.0], egui::Checkbox::without_text(&mut filter.enabled));
-        ui.add_sized([138.0, 24.0], egui::Label::new(filter.label));
+        ui.add_sized([138.0, 24.0], egui::Label::new(localization.tr(filter.label)));
         ui.add_enabled(
             filter.enabled,
             egui::TextEdit::singleline(&mut filter.min)
                 .desired_width(82.0)
-                .hint_text("Min"),
+                .hint_text(localization.tr("common.min")),
         );
         ui.add_sized([14.0, 24.0], egui::Label::new("~"));
         ui.add_enabled(
             filter.enabled,
             egui::TextEdit::singleline(&mut filter.max)
                 .desired_width(82.0)
-                .hint_text("Max"),
+                .hint_text(localization.tr("common.max")),
         );
         if !filter.unit.is_empty() {
             ui.weak(filter.unit);
@@ -6831,6 +11825,43 @@ fn position_star_level_combo(ui: &mut egui::Ui, id: impl std::hash::Hash, value:
                 ui.selectable_value(value, raw, star_level_label(raw));
             }
         });
+}
+
+fn money_text_edit_with_preview(
+    ui: &mut egui::Ui,
+    localization: &Localization,
+    value: &mut String,
+    width: f32,
+    enabled: bool,
+) -> egui::Response {
+    ui.horizontal(|ui| {
+        let response = ui.add_enabled(
+            enabled,
+            egui::TextEdit::singleline(value).desired_width(width),
+        );
+
+        if enabled {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                ui.weak("—");
+            } else {
+                match parse_display_amount(trimmed) {
+                    Ok(amount) => {
+                        ui.weak(format!("→ {}", format_display_amount(amount)));
+                    }
+                    Err(()) => {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(220, 90, 90),
+                            localization.tr("currency.invalid_amount"),
+                        );
+                    }
+                }
+            }
+        }
+
+        response
+    })
+    .inner
 }
 
 fn stat_edit_cell(ui: &mut egui::Ui, label: &str, value: &mut String) {
@@ -6976,8 +12007,8 @@ fn parse_players_response(response: &str) -> Result<Vec<PlayerSummary>, String> 
             actual_rating: hex_decode(fields[6])?,
             _scout_potential_report: hex_decode(fields[7])?,
             actual_potential: hex_decode(fields[8])?,
-            salary: hex_decode(fields[9])?,
-            transfer_fee: hex_decode(fields[10])?,
+            salary: format_internal_amount(&hex_decode(fields[9])?),
+            transfer_fee: format_internal_amount(&hex_decode(fields[10])?),
             contract_end: hex_decode(fields[11])?,
             last_hit: hex_decode(fields[12])?,
             skill_avoid: hex_decode(fields[13])?,
@@ -7028,7 +12059,7 @@ fn parse_staffs_response(response: &str) -> Result<Vec<StaffSummary>, String> {
     let mut staffs = Vec::with_capacity(expected_count);
     for entry in payload.split(';') {
         let fields = entry.split(':').collect::<Vec<_>>();
-        if fields.len() != 5 {
+        if fields.len() != 18 {
             return Err("Invalid staff entry from bridge".to_string());
         }
         staffs.push(StaffSummary {
@@ -7039,6 +12070,19 @@ fn parse_staffs_response(response: &str) -> Result<Vec<StaffSummary>, String> {
             age: hex_decode(fields[2])?,
             team: hex_decode(fields[3])?,
             role: hex_decode(fields[4])?,
+            banpick: hex_decode(fields[5])?,
+            strategy: hex_decode(fields[6])?,
+            negotiation: hex_decode(fields[7])?,
+            judge_ability: hex_decode(fields[8])?,
+            judge_potential: hex_decode(fields[9])?,
+            feedback: hex_decode(fields[10])?,
+            power_analysis: hex_decode(fields[11])?,
+            control_coaching: hex_decode(fields[12])?,
+            judgment_coaching: hex_decode(fields[13])?,
+            mental_coaching: hex_decode(fields[14])?,
+            annual_salary: format_internal_amount(&hex_decode(fields[15])?),
+            contract_end: hex_decode(fields[16])?,
+            communication: hex_decode(fields[17])?,
         });
     }
 
@@ -7091,7 +12135,7 @@ fn parse_staff_response(response: &str) -> Result<StaffStats, String> {
         control_coaching: pretty_number(parts[14]),
         judgment_coaching: pretty_number(parts[15]),
         mental_coaching: pretty_number(parts[16]),
-        annual_salary: pretty_number(parts[17]),
+        annual_salary: format_internal_amount(parts[17]),
         contract_team_id: parse_optional_usize(parts[18])?,
         contract_start_date: hex_decode(parts[19])?,
         contract_end_date: hex_decode(parts[20])?,
@@ -7132,7 +12176,7 @@ fn parse_contract_defaults_response(response: &str) -> Result<(String, String, S
     Ok((
         parts[2].to_string(),
         parts[3].to_string(),
-        pretty_number(parts[4]),
+        format_internal_amount(parts[4]),
     ))
 }
 
@@ -7160,7 +12204,7 @@ fn parse_teams_response(response: &str) -> Result<Vec<TeamSummary>, String> {
     let mut teams = Vec::with_capacity(expected_count);
     for entry in payload.split(';') {
         let fields = entry.split(':').collect::<Vec<_>>();
-        if fields.len() != 5 {
+        if fields.len() != 14 {
             return Err("Invalid team entry from bridge".to_string());
         }
         let id = fields[0]
@@ -7176,12 +12220,48 @@ fn parse_teams_response(response: &str) -> Result<Vec<TeamSummary>, String> {
             "0" => false,
             _ => return Err("Invalid player-team flag from bridge".to_string()),
         };
+        let roster_size = fields[5]
+            .parse::<usize>()
+            .map_err(|_| "Invalid team roster size from bridge".to_string())?;
+        let staff_count = fields[6]
+            .parse::<usize>()
+            .map_err(|_| "Invalid team staff count from bridge".to_string())?;
+        let roster_rating = if fields[7].trim().is_empty() {
+            None
+        } else {
+            Some(
+                fields[7]
+                    .parse::<f64>()
+                    .map_err(|_| "Invalid team roster rating from bridge".to_string())?,
+            )
+        };
+        let merchandise_facility_grade = hex_decode(fields[8])?;
+        let stadium_grade = hex_decode(fields[9])?;
+        let training_facility_grade = hex_decode(fields[10])?;
+        let total_balance = fields[11]
+            .parse::<f64>()
+            .map_err(|_| "Invalid team balance from bridge".to_string())?;
+        let transfer_budget = fields[12]
+            .parse::<f64>()
+            .map_err(|_| "Invalid team recruitment budget from bridge".to_string())?;
+        let salary_budget = fields[13]
+            .parse::<f64>()
+            .map_err(|_| "Invalid team salary budget from bridge".to_string())?;
         teams.push(TeamSummary {
             id,
             display_name,
             manager_name,
             league_id,
             is_player_team,
+            roster_size,
+            staff_count,
+            roster_rating,
+            merchandise_facility_grade,
+            stadium_grade,
+            training_facility_grade,
+            total_balance,
+            transfer_budget,
+            salary_budget,
         });
     }
 
@@ -7228,18 +12308,18 @@ fn parse_player_response(response: &str) -> Result<PlayerStats, String> {
         bottom: pretty_number(parts[19]),
         support: pretty_number(parts[20]),
         potential: pretty_number(parts[21]),
-        annual_salary: pretty_number(parts[22]),
-        weekly_salary: pretty_number(parts[23]),
+        annual_salary: format_internal_amount(parts[22]),
+        weekly_salary: format_internal_amount(parts[23]),
         contract_team_id: parse_optional_usize(parts[24])?,
         contract_start_date: display_contract_date(&hex_decode(parts[25])?),
         contract_end_date: display_contract_date(&hex_decode(parts[26])?),
-        transfer_fee: pretty_number(parts[27]),
+        transfer_fee: format_internal_amount(parts[27]),
         squad_status: hex_decode(parts[28])?,
-        incentive_pog_bonus: pretty_number(parts[29]),
-        incentive_league_bonus: pretty_number(parts[30]),
+        incentive_pog_bonus: format_internal_amount(parts[29]),
+        incentive_league_bonus: format_internal_amount(parts[30]),
         incentive_league_rank: pretty_number(parts[31]),
-        incentive_match_bonus: pretty_number(parts[32]),
-        incentive_win_bonus: pretty_number(parts[33]),
+        incentive_match_bonus: format_internal_amount(parts[32]),
+        incentive_win_bonus: format_internal_amount(parts[33]),
         primary_region: parts[34].to_string(),
         communication_raw: hex_decode(parts[35])?,
         communication_xp_raw: hex_decode(parts[36])?,
@@ -7556,20 +12636,6 @@ fn hex_value(value: u8) -> Option<u8> {
     }
 }
 
-fn parse_number(input: &str) -> Result<f64, ()> {
-    let normalized = input
-        .trim()
-        .replace(' ', "")
-        .replace('_', "")
-        .replace(',', ".");
-
-    normalized
-        .parse::<f64>()
-        .ok()
-        .filter(|value| value.is_finite())
-        .ok_or(())
-}
-
 fn value_or_dash(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -7629,20 +12695,45 @@ fn pretty_number(raw: &str) -> String {
     grouped
 }
 
+fn apply_id_range_selection(
+    ordered_ids: &[usize],
+    start_id: usize,
+    end_id: usize,
+    target_selected: bool,
+    selected_ids: &mut BTreeSet<usize>,
+) {
+    let Some(start_index) = ordered_ids.iter().position(|id| *id == start_id) else {
+        return;
+    };
+    let Some(end_index) = ordered_ids.iter().position(|id| *id == end_id) else {
+        return;
+    };
+
+    let range_start = start_index.min(end_index);
+    let range_end = start_index.max(end_index);
+    for id in &ordered_ids[range_start..=range_end] {
+        if target_selected {
+            selected_ids.insert(*id);
+        } else {
+            selected_ids.remove(id);
+        }
+    }
+}
+
 fn contract_bonus_display(raw: &str) -> String {
     if raw.trim().is_empty() {
         "Disabled".to_string()
     } else {
-        pretty_number(raw)
+        raw.to_string()
     }
 }
 
 fn value_or_zero(raw: &str) -> String {
     let value = raw.trim();
     if value.is_empty() {
-        "0".to_string()
+        "$0".to_string()
     } else {
-        pretty_number(value)
+        value.to_string()
     }
 }
 
@@ -7716,6 +12807,339 @@ fn human_error(error: &str) -> String {
     }
 }
 
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+
+    fn test_player(age: u8, actual_potential: u8) -> PlayerSummary {
+        PlayerSummary {
+            id: 1,
+            name: "Test Player".to_string(),
+            age: age.to_string(),
+            team: "Free Agent".to_string(),
+            region: "Europe".to_string(),
+            position: "Mid".to_string(),
+            actual_rating: "60".to_string(),
+            _scout_potential_report: String::new(),
+            actual_potential: actual_potential.to_string(),
+            salary: "0".to_string(),
+            transfer_fee: "0".to_string(),
+            contract_end: String::new(),
+            last_hit: "50".to_string(),
+            skill_avoid: "50".to_string(),
+            skill_hit: "50".to_string(),
+            control_speed: "50".to_string(),
+            positioning: "50".to_string(),
+            judgement: "50".to_string(),
+            mental: "50".to_string(),
+            concentration: "50".to_string(),
+            order: "50".to_string(),
+            roaming: "50".to_string(),
+            aggressive: "50".to_string(),
+            ego: "50".to_string(),
+        }
+    }
+
+    fn range_mut<'a>(
+        filter: &'a mut AdvancedPlayerSearch,
+        key: &str,
+    ) -> &'a mut AdvancedRangeFilter {
+        filter
+            .ranges
+            .iter_mut()
+            .find(|range| range.key == key)
+            .expect("advanced range must exist")
+    }
+
+    #[test]
+    fn actual_potential_range_is_positioned_after_actual_rating() {
+        let filter = AdvancedPlayerSearch::default();
+        let keys = filter
+            .ranges
+            .iter()
+            .map(|range| range.key)
+            .collect::<Vec<_>>();
+        let rating = keys.iter().position(|key| *key == "actual_rating").unwrap();
+        let potential = keys.iter().position(|key| *key == "actual_potential").unwrap();
+        let last_hit = keys.iter().position(|key| *key == "last_hit").unwrap();
+
+        assert_eq!(potential, rating + 1);
+        assert_eq!(last_hit, potential + 1);
+    }
+
+    #[test]
+    fn actual_potential_range_supports_min_max_exact_disabled_and_combined_age() {
+        let player = test_player(18, 80);
+        let mut filter = AdvancedPlayerSearch::default();
+
+        {
+            let potential = range_mut(&mut filter, "actual_potential");
+            potential.enabled = true;
+            potential.min = "80".to_string();
+        }
+        assert!(advanced_player_filter_matches(&player, &filter));
+        range_mut(&mut filter, "actual_potential").min = "81".to_string();
+        assert!(!advanced_player_filter_matches(&player, &filter));
+
+        {
+            let potential = range_mut(&mut filter, "actual_potential");
+            potential.min.clear();
+            potential.max = "80".to_string();
+        }
+        assert!(advanced_player_filter_matches(&player, &filter));
+        range_mut(&mut filter, "actual_potential").max = "79".to_string();
+        assert!(!advanced_player_filter_matches(&player, &filter));
+
+        {
+            let potential = range_mut(&mut filter, "actual_potential");
+            potential.min = "80".to_string();
+            potential.max = "80".to_string();
+        }
+        assert!(advanced_player_filter_matches(&player, &filter));
+
+        {
+            let age = range_mut(&mut filter, "age");
+            age.enabled = true;
+            age.max = "18".to_string();
+        }
+        assert!(advanced_player_filter_matches(&player, &filter));
+        range_mut(&mut filter, "age").max = "17".to_string();
+        assert!(!advanced_player_filter_matches(&player, &filter));
+
+        {
+            let age = range_mut(&mut filter, "age");
+            age.enabled = false;
+            let potential = range_mut(&mut filter, "actual_potential");
+            potential.enabled = false;
+            potential.min = "100".to_string();
+            potential.max = "100".to_string();
+        }
+        assert!(advanced_player_filter_matches(&player, &filter));
+    }
+
+    #[test]
+    fn actual_potential_saved_filter_round_trip_preserves_condition() {
+        let mut source = AdvancedPlayerSearch::default();
+        {
+            let potential = range_mut(&mut source, "actual_potential");
+            potential.enabled = true;
+            potential.min = "80".to_string();
+            potential.max = "95".to_string();
+        }
+
+        let exported = source.export_text();
+        assert!(exported.contains("range.actual_potential.enabled=true"));
+        assert!(exported.contains("range.actual_potential.min=80"));
+        assert!(exported.contains("range.actual_potential.max=95"));
+
+        let mut loaded = AdvancedPlayerSearch::default();
+        loaded.import_text(&exported);
+        let potential = loaded
+            .ranges
+            .iter()
+            .find(|range| range.key == "actual_potential")
+            .unwrap();
+        assert!(potential.enabled);
+        assert_eq!(potential.min, "80");
+        assert_eq!(potential.max, "95");
+    }
+
+    #[test]
+    fn legacy_saved_filter_without_actual_potential_loads_with_empty_disabled_default() {
+        let legacy = concat!(
+            "money_unit_format=display_v1\n",
+            "position_enabled=false\n",
+            "position=No Condition\n",
+            "region_enabled=false\n",
+            "region=No Condition\n",
+            "free_agents_only=false\n",
+            "range.age.enabled=true\n",
+            "range.age.min=\n",
+            "range.age.max=18\n",
+            "range.actual_rating.enabled=true\n",
+            "range.actual_rating.min=50\n",
+            "range.actual_rating.max=\n",
+        );
+
+        let mut loaded = AdvancedPlayerSearch::default();
+        loaded.import_text(legacy);
+
+        let potential = loaded
+            .ranges
+            .iter()
+            .find(|range| range.key == "actual_potential")
+            .unwrap();
+        assert!(!potential.enabled);
+        assert!(potential.min.is_empty());
+        assert!(potential.max.is_empty());
+
+        let age = loaded
+            .ranges
+            .iter()
+            .find(|range| range.key == "age")
+            .unwrap();
+        assert!(age.enabled);
+        assert_eq!(age.max, "18");
+    }
+
+    #[test]
+    fn range_selection_selects_a_contiguous_range_in_both_directions() {
+        let ordered_ids = [1, 2, 3, 4, 5, 6];
+        let mut selected_ids = BTreeSet::from([1, 6]);
+
+        apply_id_range_selection(&ordered_ids, 5, 2, true, &mut selected_ids);
+
+        assert_eq!(selected_ids, BTreeSet::from([1, 2, 3, 4, 5, 6]));
+    }
+
+    #[test]
+    fn range_selection_deselects_only_the_requested_range() {
+        let ordered_ids = [1, 2, 3, 4, 5, 6];
+        let mut selected_ids = BTreeSet::from([1, 2, 3, 4, 5, 6]);
+
+        apply_id_range_selection(&ordered_ids, 2, 5, false, &mut selected_ids);
+
+        assert_eq!(selected_ids, BTreeSet::from([1, 6]));
+    }
+
+    #[test]
+    fn loaded_dataset_status_uses_the_search_table_count() {
+        assert_eq!(
+            ModifierApp::loaded_dataset_status("Player", 1014),
+            "Player data loaded: 1014"
+        );
+        assert_eq!(
+            ModifierApp::loaded_dataset_status("Staff", 327),
+            "Staff data loaded: 327"
+        );
+        assert_eq!(
+            ModifierApp::loaded_dataset_status("Team", 64),
+            "Team data loaded: 64"
+        );
+    }
+
+    #[test]
+    fn recruitment_player_search_matches_only_player_name_or_id() {
+        assert!(ModifierApp::recruitment_player_matches_search(
+            "Faker", 123, "fak"
+        ));
+        assert!(ModifierApp::recruitment_player_matches_search(
+            "Faker", 123, "123"
+        ));
+        assert!(!ModifierApp::recruitment_player_matches_search(
+            "Faker", 123, "t1"
+        ));
+    }
+
+    #[test]
+    fn matching_bridge_is_compatible() {
+        assert!(ModifierApp::compatibility_issue_for(
+            REQUIRED_BRIDGE_VERSION,
+            Some(BRIDGE_PROTOCOL_VERSION),
+            Some(SUPPORTED_TFM2_VERSION),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn legacy_bridge_is_unverified_warning() {
+        let issue = ModifierApp::compatibility_issue_for("0.2.39", None, None).unwrap();
+        assert_eq!(issue.severity, CompatibilitySeverity::Warning);
+        assert_eq!(issue.action, CompatibilityAction::BridgeUpdate);
+        assert_eq!(issue.reason, CompatibilityReason::UnverifiedLegacyBridge);
+    }
+
+    #[test]
+    fn older_bridge_requires_bridge_update_warning() {
+        let issue = ModifierApp::compatibility_issue_for(
+            "0.2.38",
+            Some(BRIDGE_PROTOCOL_VERSION),
+            Some(SUPPORTED_TFM2_VERSION),
+        )
+        .unwrap();
+        assert_eq!(issue.severity, CompatibilitySeverity::Warning);
+        assert_eq!(issue.action, CompatibilityAction::BridgeUpdate);
+        assert_eq!(issue.reason, CompatibilityReason::VersionMismatch);
+    }
+
+    #[test]
+    fn newer_bridge_requires_editor_update_warning() {
+        let issue = ModifierApp::compatibility_issue_for(
+            "0.2.44",
+            Some(BRIDGE_PROTOCOL_VERSION),
+            Some(SUPPORTED_TFM2_VERSION),
+        )
+        .unwrap();
+        assert_eq!(issue.severity, CompatibilitySeverity::Warning);
+        assert_eq!(issue.action, CompatibilityAction::EditorUpdate);
+        assert_eq!(issue.reason, CompatibilityReason::VersionMismatch);
+    }
+
+    #[test]
+    fn known_old_bridge_is_not_supported_even_without_protocol_data() {
+        let issue = ModifierApp::compatibility_issue_for("0.2.30", None, None).unwrap();
+        assert_eq!(issue.severity, CompatibilitySeverity::NotSupported);
+        assert_eq!(issue.action, CompatibilityAction::BridgeUpdate);
+        assert_eq!(
+            issue.reason,
+            CompatibilityReason::KnownUnsupportedCombination
+        );
+    }
+
+    #[test]
+    fn known_new_bridge_is_not_supported_and_requires_newer_editor() {
+        let issue = ModifierApp::compatibility_issue_for(
+            "0.2.46",
+            Some(BRIDGE_PROTOCOL_VERSION),
+            Some(SUPPORTED_TFM2_VERSION),
+        )
+        .unwrap();
+        assert_eq!(issue.severity, CompatibilitySeverity::NotSupported);
+        assert_eq!(issue.action, CompatibilityAction::EditorUpdate);
+        assert_eq!(issue.required_editor_version.as_deref(), Some("0.4.2"));
+    }
+
+    #[test]
+    fn unsafe_old_protocol_is_not_supported() {
+        let issue = ModifierApp::compatibility_issue_for(
+            REQUIRED_BRIDGE_VERSION,
+            Some(0),
+            Some(SUPPORTED_TFM2_VERSION),
+        )
+        .unwrap();
+        assert_eq!(issue.severity, CompatibilitySeverity::NotSupported);
+        assert_eq!(issue.action, CompatibilityAction::VerifyInstallation);
+        assert_eq!(issue.reason, CompatibilityReason::ProtocolMismatch);
+    }
+
+    #[test]
+    fn unsupported_future_protocol_requires_editor_update() {
+        let issue = ModifierApp::compatibility_issue_for(
+            "0.2.44",
+            Some(BRIDGE_PROTOCOL_VERSION + 1),
+            Some(SUPPORTED_TFM2_VERSION),
+        )
+        .unwrap();
+        assert_eq!(issue.severity, CompatibilitySeverity::NotSupported);
+        assert_eq!(issue.action, CompatibilityAction::EditorUpdate);
+        assert_eq!(issue.reason, CompatibilityReason::ProtocolMismatch);
+    }
+
+    #[test]
+    fn wrong_tfm2_target_has_separate_warning() {
+        let issue = ModifierApp::compatibility_issue_for(
+            REQUIRED_BRIDGE_VERSION,
+            Some(BRIDGE_PROTOCOL_VERSION),
+            Some("0.5.2"),
+        )
+        .unwrap();
+        assert_eq!(issue.severity, CompatibilitySeverity::Warning);
+        assert_eq!(issue.action, CompatibilityAction::GameVersionMismatch);
+        assert_eq!(issue.reason, CompatibilityReason::GameTargetMismatch);
+    }
+
+}
+
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -7730,7 +13154,13 @@ fn main() -> eframe::Result<()> {
         &title,
         options,
         Box::new(|cc| {
-            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            let mut visuals = egui::Visuals::dark();
+            visuals.selection.bg_fill = egui::Color32::from_rgb(35, 92, 170);
+            visuals.selection.stroke = egui::Stroke::new(
+                1.0_f32,
+                egui::Color32::from_rgb(145, 195, 255),
+            );
+            cc.egui_ctx.set_visuals(visuals);
             Ok(Box::new(ModifierApp::default()))
         }),
     )
