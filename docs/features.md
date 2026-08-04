@@ -5,132 +5,354 @@ title: Features
 
 # TFM2 Editor Features
 
-This page gives a quick overview of the main features available in **TFM2 Editor v0.3.0**.
+This page gives an overview of the main features available in **TFM2 Editor v0.4.0**.
 
 > **Supported game version:** Teamfight Manager 2 v0.5.3
-> **Bridge version:** TFM2 Editor Bridge v0.2.38
+> **Bridge version:** TFM2 Editor Bridge v0.2.43
 
 ---
 
-## Economy
+## Compatibility Status
 
-The **Economy** tab lets you edit the active team's financial values.
+TFM2 Editor now permanently shows the detected Bridge version and compatibility state in the header.
 
-![Economy tab](images/economy.png)
+![Header compatibility status](images/header-compatibility-ok-v0.4.0.png)
 
-You can edit Money, Transfer Budget, and Salary Budget.
+Possible states:
 
-> Economy values use Teamfight Manager 2's internal money units in this version.
+- **Compatibility: OK**
+- **Compatibility: Warning**
+- **Compatibility: Not Supported**
+
+Known unsupported combinations are blocked automatically to protect the active career from unsafe reads or writes.
+
+---
+
+## Search Overview
+
+The **Search** workspace now includes four sections:
+
+- **Players**
+- **Staff**
+- **Lists**
+- **Teams**
+
+![Search overview](images/search-player-v0.4.0.png)
+
+All search pages support consistent blue multi-selection behavior.
+
+You can:
+
+- click rows to select
+- click-drag to select or deselect
+- use **Shift-click**
+- use **Shift-drag**
+- use **Select All Visible**
+- use **Clear Selection**
+
+---
+
+## Player Search
+
+The **Players** page lets you browse, filter, sort, and compare the player database.
+
+![Player Search](images/search-player-v0.4.0.png)
+
+The table includes:
+
+- player identity
+- age
+- team
+- position
+- Actual Rating
+- Potential Rating
+- Actual Potential
+- salary
+- contract-related fields
+- the 12 core player attributes
+
+### Quick Filters
+
+Quick Filters support:
+
+- Name
+- Team
+- Region
+- Position
+- Age
+- Actual Potential
+- Free Agents Only
+- Saved List filtering
+
+### Advanced Player Search
+
+Advanced Player Search lets you combine multiple conditions to narrow the player database.
+
+![Advanced Player Search](images/advanced-player-search-v0.4.0.png)
+
+Supported filter groups include:
+
+- Position
+- Region
+- Age
+- Salary
+- Transfer Fee
+- Actual Rating
+- **Actual Potential**
+- all 12 player attributes
+- Free Agents Only
+
+Saved Filters support create, load, update, delete, import, and export.
+
+**Actual Potential Min/Max** is included in Advanced Player Search and is saved in `.tfm2filter` files.
+
+### Direct actions
+
+Player Search also supports:
+
+- double-click to open **Player Editor**
+- right-click to open the selected player
+- right-click to add selected players to a Saved List
+- create a new Saved List from the current selection
+
+![Player Search context menu](images/player-search-context-menu-v0.4.0.png)
+
+---
+
+## Staff Search
+
+The **Staff** page provides a full database-style search for staff members.
+
+![Staff Search](images/search-staff-v0.4.0.png)
+
+The table includes:
+
+- identity
+- age
+- team
+- role
+- salary
+- contract end
+- Ban/Pick
+- Strategy
+- Negotiation
+- other supported staff attributes
+
+### Quick Filters
+
+Quick Filters support:
+
+- Name
+- Team
+- Role
+- Age
+- Free Agents Only
+- Saved List filtering
+
+### Advanced Staff Search
+
+Advanced Staff Search supports:
+
+- Role
+- Age
+- Salary
+- Ban/Pick
+- Strategy
+- Negotiation
+- Ability Analysis
+- Potential Analysis
+- Feedback
+- Power Analysis
+- Control Coaching
+- Judgment Coaching
+- Mental Coaching
+- Communication
+- Free Agents Only
+
+![Advanced Staff Search](images/advanced-staff-search-v0.4.0.png)
+
+Staff filters are stored separately from player filters.
+
+---
+
+## Saved Lists
+
+The **Lists** page stores reusable player and staff shortlists.
+
+![Saved Lists](images/saved-lists-v0.4.0.png)
+
+Saved Lists support:
+
+- create
+- rename
+- delete
+- import
+- export
+- open in Player Search
+- open in Staff Search
+
+Lists are shared between Player Search and Staff Search and use the `.tfm2list` format.
+
+---
+
+## Teams Search
+
+The **Teams** page is included as a database and selection tool.
+
+![Teams Search](images/search-teams-v0.4.0.png)
+
+It includes:
+
+- team name
+- team ID
+- league
+- manager
+- player count
+- staff count
+- roster rating
+- money-related data
+- facility grades
+
+Quick Filters support:
+
+- team / manager search
+- league
+- My Team Only
+- player count range
+- staff count range
+
+> Teams Search is included in Community v0.4.0 as a database and selection workspace.
+> A dedicated Team editing workspace will return later when it contains real Team features.
 
 ---
 
 ## Player Editor
 
-The **Player Editor** lets you search for a player and edit several parts of the player's active career data.
+The **Player Editor** lets you search for a player and edit supported active-career data.
 
-![Player Editor](images/player-editor.png)
+![Player Editor](images/player-editor-v0.4.0.png)
+
+### Layout
+
+Community v0.4.0 uses the approved compact two-column layout:
+
+- **Attributes** on the left
+- **Positions** and **Potential** on the right
+- **Contract** and **Communication Level** below
+
+This keeps the most-used editing tools near the top of the editor.
 
 ### Attributes
 
-Edit all 12 player attributes from 1–100, apply the current values, or use **Max All**.
+Edit all 12 player attributes from 1–100.
+
+Available actions:
+
+- **Apply Attributes**
+- **Max All**
 
 ### Positions
 
-Edit up to three active positions using **Primary**, **Secondary**, and **Tertiary** slots, with proficiency for each active position.
+Edit up to three active positions:
+
+- Primary
+- Secondary
+- Tertiary
+
+You can also edit the proficiency value for each active position.
+
+Available actions:
+
+- **Apply Positions**
+- **Clear All**
 
 ### Potential
 
 TFM2 Editor can read and edit the player's hidden **Actual Potential** value.
 
-The Potential Grade updates automatically when the Actual Potential value changes.
+The section shows:
 
-> Save your career before editing Actual Potential.
+- Potential Grade
+- Actual Potential
+- Current Value
 
-### Contract & Finance
+The Potential Grade updates automatically when the value changes.
 
-The Player Editor now displays the complete active player contract.
+### Champion Mastery
 
-![Player Contract & Finance](images/contract-info.png)
+Champion Mastery is now opened directly from the Player Editor through **Open Champion Mastery**.
 
-Available contract information includes:
-
-- Current team
-- Contract start and end dates
-- Annual and weekly salary
-- Transfer fee
-- Squad Status
-- POG Award Bonus
-- League Rank Bonus and required rank
-- Match Appearance Bonus
-- Match Win Bonus
-
-Salary can still be applied directly from the Player Editor.
-
-Use **Edit Contract** to change the active contract.
-
-![Edit Player Contract](images/player-contract-edit.png)
-
-The Player Contract Editor supports:
-
-- Contract start and end dates
-- Annual salary
-- Transfer fee
-- Squad Status
-- POG Award Bonus
-- League Rank Bonus and required rank
-- Match Appearance Bonus
-- Match Win Bonus
-- Apply Contract
-- Reset
-- Cancel
-
-**Reset** reloads the current active contract values without applying changes.
-
-> Editing an active contract is supported. Full contract renewal, where the game creates a separate replacement contract, is not included yet.
-
-### Communication Level
-
-Player Communication editing supports:
-
-- Native region display
-- Region selection
-- Actual Communication from 0–100
-- Pending training XP display
-- Stored learned regions
-- Apply Actual Communication
-- Max Selected
-
-Actual Communication updates the value shown in the player profile. Pending training XP is handled separately by Teamfight Manager 2's weekly training progression.
-
-Changes persist through **Proceed** and **Save/Load**.
-
----
-
-## Champion Mastery
-
-Champion Mastery editing is available from the Player Editor.
-
-![Champion Mastery](images/player-edit-champion-mastery.png)
+![Champion Mastery](images/champion-mastery-v0.4.0.png)
 
 You can:
 
-- Edit individual Champion Mastery values
-- Check Active or Inactive champions
-- Check All or Clear Checks
-- Apply a bulk mastery value to checked champions
-- Apply changes only to selected champions
+- edit individual mastery values
+- check Active or Inactive champions
+- check all or clear checks
+- apply a bulk mastery value
+- apply changes only to checked champions
+
+### Contract
+
+The Contract section displays the current active contract.
+
+It includes:
+
+- team
+- contract start
+- contract end
+- annual salary
+- weekly salary
+- transfer fee
+- squad status
+- POG Award Bonus
+- League Rank Bonus
+- Match Appearance Bonus
+- Match Win Bonus
+
+You can use:
+
+- **Apply Salary**
+- **Edit Contract**
+
+### Communication Level
+
+The Player Communication section is simplified in v0.4.0.
+
+![Player Communication Level](images/player-communication-v0.4.0.png)
+
+It shows:
+
+- Native Region
+- Region selector
+- Actual Communication
+- Pending Training XP
+- Learned Regions
+
+Available actions:
+
+- **Apply Actual Communication**
+- **Set Actual to 100**
+
+**Pending Training XP** is shown as read-only information.
+It is separate from the current 0–100 **Communication Level** shown in the player profile.
 
 ---
 
 ## Staff Editor
 
-The **Staff Editor** lets you search for staff members and edit their active career data.
+The **Staff Editor** lets you search for staff members and edit supported active-career data.
 
-![Staff Editor](images/staff-editor.png)
+![Staff Editor](images/staff-editor-v0.4.0.png)
 
-### Staff Attributes
+### Attributes
 
-Edit all supported staff attributes from 1–100, apply the current values, or use **Max All**.
+Edit all supported staff attributes from 1–100.
+
+Available actions:
+
+- **Apply Attributes**
+- **Max All**
 
 Supported staff attributes include:
 
@@ -139,134 +361,112 @@ Supported staff attributes include:
 - Potential Analysis
 - Power Analysis
 - Judgment Coaching
-- Strategy Ideas
+- Strategy
 - Ability Analysis
 - Feedback
 - Control Coaching
 - Mental Coaching
 
-### Staff Contract & Finance
+### Contract
 
-The Staff Editor displays:
+The Staff Contract section displays:
 
-- Annual salary
-- Contract start date
-- Contract end date
+- Annual Salary
+- Contract Start
+- Contract End
 
-Use **Edit Contract** to change the active staff contract.
+You can use:
 
-The Staff Contract Editor includes:
+- **Apply Salary**
+- **Edit Contract**
 
-- Team
-- Start date
-- End date
-- Annual salary
-- Apply Contract
-- Reset
-- Cancel
+### Communication Level
 
-Salary editing is disabled for free-agent staff members without an active contract.
+The Staff Communication section now uses the same clearer presentation as the Player Editor.
 
-### Staff Communication
+![Staff Communication Level](images/staff-communication-v0.4.0.png)
 
-Staff Communication editing supports:
+It shows:
 
-- Region selection
-- Communication from 0–100
-- Stored learned regions
-- Apply Communication
-- Max Selected
+- Region
+- Actual Communication
+- Learned Regions
 
-Applying a region that is not already stored creates it for the selected staff member.
+Available actions:
 
-Changes persist through **Proceed** and **Save/Load**.
+- **Apply Actual Communication**
+- **Set Actual to 100**
 
 ---
 
 ## Recruitment
 
-The **Recruitment** tab contains transfer negotiation, retry cooldowns, and direct player and staff management tools.
+The **Recruitment** tab contains recruitment tools and direct player / staff management.
 
-### Recruitment Tools
-
-Available tools include:
-
+### Recruitment tools
 - Transfer Always Success
 - Instant Retry
 
 ### Player Management
-
 Player Management supports:
 
-- Move contracted players between teams
-- Set contracted players to free agency
-- Create a contract and move a free-agent player to any selected team
-
-When a free-agent player is selected, use **Create Contract & Move Player**.
-
-The contract form is automatically filled with valid starting values. Review or change the contract, then use **Apply Contract & Move Player**.
+- moving contracted players between teams
+- setting contracted players to Free Agent
+- creating a contract and moving a free-agent player to a selected team
 
 ### Staff Management
-
 Staff Management supports:
 
-- Move contracted staff between teams
-- Set contracted staff to free agency
-- Create a contract and move a free-agent staff member to any selected team
+- moving contracted staff between teams
+- setting contracted staff to Free Agent
+- creating a contract and moving a free-agent staff member to a selected team
 
-![Staff Management](images/staff-management.png)
-
-When a free-agent staff member is selected, use **Create Contract & Move Staff**.
-
-The contract form is automatically filled with valid starting values. Review or change the contract, then use **Apply Contract & Move Staff**.
-
-Reset keeps the original contract-window mode and selected destination team.
+For free agents, the contract form is filled with valid default values before the move is applied.
 
 ---
 
-## Player Search
+## Economy
 
-The **Search → Players** view lets you browse, filter, sort, and compare the player database.
+The **Economy** tab lets you edit the active team's financial values.
 
-![Player Search](images/player-search-1.png)
+![Economy tab](images/economy-v0.4.0.png)
 
-The table includes player identity, team, position, ratings, Actual Potential, salary, contract data, and all 12 attributes.
+You can edit:
 
-### Sorting by Actual Rating
+- Money
+- Recruitment Budget
+- Salary Budget
 
-![Player Search sorted by Actual Rating](images/player-search-sorted-ar.png)
+Community v0.4.0 uses compact TFM2-style money formatting with live previews.
 
-Values marked with `≈` are calculated as the average of the 12 player attributes.
+Examples include:
 
-### Quick Filters
-
-![Player Search with Quick Filter](images/player-search-quick-filter.png)
-
-Quick Filters include name, team, region, position, age, Actual Potential, and free-agent status.
-
-### Skill Data
-
-![Player Search skill data](images/player-search-skilldata.png)
-
-The table can be scrolled horizontally to inspect all player attributes.
+- `$400K`
+- `$2.5M`
+- `$1B`
 
 ---
 
-## Advanced Search
+## Mod Compatibility
 
-**Advanced Search** lets you combine multiple conditions to narrow the player database.
+TFM2 Editor v0.4.0 was validated successfully with:
 
-![Advanced Search filters](images/advanced-search-filter1.png)
+- **Real World Database '26**
+- **League of Legends Champions by Silverbear**
+- **Item Scroller**
+- **Riot Games Item Expansion Pack**
 
-All active conditions are combined using **AND** logic.
+Player, staff, team, and champion data are loaded dynamically from the active database.
 
-### Saved Filters
+---
 
-You can create, save, load, update, delete, import, and export reusable filters.
+## Known limitations
 
-![Advanced Search saved filter](images/advanced-search-filter2.png)
-
-Quick Filters and Advanced Search can be used together.
+- Champion Mastery can reopen too large after high mastery values
+- Champion Mastery can auto-maximize near the right edge of the main window
+- Team editing workspace is not included in v0.4.0
+- History / stats-over-time views are not included
+- Full contract renewal is not included; editing applies to the active contract
 
 ---
 
