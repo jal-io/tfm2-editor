@@ -10,7 +10,7 @@ pub fn parse_display_amount(input: &str) -> Result<f64, ()> {
     for symbol in ["$", "€", "£", "¥", "₩"] {
         text = text.replace(symbol, "");
     }
-    text = text.replace(' ', "").replace('_', "");
+    text = text.replace([' ', '_'], "");
 
     let (number_text, multiplier) = match text.chars().last().map(|ch| ch.to_ascii_uppercase()) {
         Some('K') => (&text[..text.len() - 1], 1_000.0),

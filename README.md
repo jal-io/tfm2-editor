@@ -6,9 +6,9 @@ It connects to the running game through **TFM2 Editor Bridge**, allowing you to 
 
 Created and maintained by **jal-io**.
 
-> **Current release:** v0.4.0
-> **Required Bridge:** v0.2.43
-> **Supported game version:** Teamfight Manager 2 v0.5.3
+> **Current release:** v0.4.2
+> **Required Bridge:** v0.2.49
+> **Supported game version:** Teamfight Manager 2 v0.5.4
 > **Platform:** Windows
 
 [Download the latest release](https://github.com/jal-io/tfm2-editor/releases/latest) ·
@@ -45,10 +45,12 @@ Start Teamfight Manager 2, load your career, then launch TFM2 Editor to inspect 
 - Click, Shift-click and Shift-drag selection
 - Direct Player and Staff Editor navigation
 
-Teams Search is included as a database and selection tool. A dedicated Team workspace will return later when it contains real Team editing features.
+Teams Search is included as a database and selection tool. Development-only Team editing and research tools are not included in the public Community release.
 
 ### Player Editor
 
+- Player name editing
+- Compact identity section showing Name, ID, Position, Age and Team
 - Editing for all 12 player attributes
 - Primary, Secondary and Tertiary positions
 - Position proficiency editing
@@ -64,6 +66,8 @@ Teams Search is included as a database and selection tool. A dedicated Team work
 
 ### Staff Editor
 
+- Staff name editing
+- Compact identity section showing Name, ID, Role, Age and Team
 - Staff search and selection
 - Editing for all ten staff attributes
 - Staff Communication Level editing
@@ -104,6 +108,18 @@ The Editor permanently displays the detected Bridge and compatibility state:
 
 Known unsupported combinations disconnect active game-data access and block reads and writes until a compatible Bridge is active.
 
+## Name editing
+
+Player and staff names can be edited directly in their respective editors.
+
+- Leading and trailing spaces are removed.
+- Empty names are rejected.
+- Control characters are rejected.
+- Names are limited to 100 characters.
+- Search and editor selection data refresh after a successful change.
+
+This is especially useful for free-agent players and staff whose names cannot always be changed through the normal in-game interface.
+
 ## Installation
 
 ### Recommended: Steam Workshop Bridge
@@ -115,11 +131,11 @@ Known unsupported combinations disconnect active game-data access and block read
 5. Enable **TFM2 Editor Bridge** in the Mods menu.
 6. Restart the game.
 7. Load your career.
-8. Start `tfm2_editor_0.4.0.exe`.
+8. Start `tfm2_editor_0.4.2.exe`.
 9. Confirm the Editor header shows:
 
 ```text
-Connected · Bridge v0.2.43 · Compatibility: OK
+Connected · Bridge v0.2.49 · Compatibility: OK
 ```
 
 If the Editor shows **Disconnected**, click **Reconnect**.
@@ -146,7 +162,7 @@ Full contract renewal, where the game creates a separate future replacement cont
 
 ## Mod compatibility
 
-TFM2 Editor v0.4.0 was validated successfully with:
+TFM2 Editor has been validated successfully with:
 
 - **Real World Database '26**
 - **League of Legends Champions by Silverbear**
@@ -160,15 +176,15 @@ Player, staff, team and champion data are loaded dynamically from the active dat
 
 - Champion Mastery can reopen too large after high mastery values.
 - Champion Mastery can auto-maximize near the right edge of the main window.
-- Team workspace / Team Overview is not included.
+- Development-only Team workspace and Team research tools are not included in Community.
 - History / Stats Over Time is not included.
 - Accepted Renewal is not included; contract editing affects the active contract.
 - CJK font fallback is not ready.
-- Community v0.4.0 ships with embedded English only.
+- Community v0.4.2 ships with embedded English only.
 
 ## Important
 
-**Always back up your save files before using TFM2 Editor.**
+**Recommended: Save your career before making changes with the editor.**
 
 TFM2 Editor modifies data in the active running career. Unexpected game behavior, data loss or save corruption may still be possible.
 
@@ -209,6 +225,10 @@ Copyright © 2026 jal-io.
 The project is **source-available** under the repository's custom attribution license. You may view, study, fork and privately modify the source. Public redistribution and derivative releases must retain the required attribution and license terms.
 
 See [LICENSE](LICENSE) for the full terms.
+
+## AI disclosure
+
+TFM2 Editor was created with AI-assisted coding and uses AI-assisted artwork. The project is developed, tested, packaged, maintained and released by **jal-io**.
 
 ## Disclaimer
 

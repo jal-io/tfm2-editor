@@ -1,6 +1,6 @@
 {
-  "locale": "en-US",
-  "name": "English",
+  "locale": "xx-YY",
+  "name": "Language name",
   "strings": {
     "app.dev_build": "DEV BUILD",
     "app.made_by": "Made by {author}",

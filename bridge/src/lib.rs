@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -12,9 +12,9 @@ use game_core::{Contract, Incentive, PaperState, SquadStatus};
 
 const MOD_ID: &str = "tfm2_modifier_bridge";
 const BRIDGE_ADDR: &str = "127.0.0.1:28452";
-const BRIDGE_VERSION: &str = "0.2.43";
-const BRIDGE_PROTOCOL_VERSION: u32 = 4;
-const TFM2_TARGET_VERSION: &str = "0.5.3";
+const BRIDGE_VERSION: &str = "0.2.49";
+const BRIDGE_PROTOCOL_VERSION: u32 = 9;
+const TFM2_TARGET_VERSION: &str = "0.5.4";
 
 #[derive(Debug, Clone, Copy)]
 struct EconomyValues {
@@ -126,6 +126,11 @@ struct StaffStatValues {
 
 
 #[derive(Debug, Clone)]
+struct EntityNameValue {
+    name: String,
+}
+
+#[derive(Debug, Clone)]
 struct StaffSalaryValue {
     annual_salary: String,
 }
@@ -161,9 +166,33 @@ struct TeamListEntry {
     merchandise_facility_grade: String,
     stadium_grade: String,
     training_facility_grade: String,
+    stadium_name: String,
+    stadium_capacity: String,
+    total_home_attendance: String,
+    home_match_count: String,
+    total_entrance_income: String,
+    popularity: String,
+    fan_expectation: String,
+    fan_satisfaction: String,
+    fan_count: String,
+    fan_momentum: String,
+    gaming_house_level: String,
+    welfare: String,
     total_balance: f64,
     transfer_budget: f64,
     salary_budget: f64,
+}
+
+#[derive(Debug, Clone)]
+struct TeamManagementSnapshot {
+    team_id: usize,
+    management: String,
+    current_strategy: String,
+    last_strategy: String,
+    team_color_strategy: String,
+    merchandise: String,
+    champion_setup: String,
+    gaming_house: String,
 }
 
 #[derive(Debug, Clone)]
@@ -264,6 +293,19 @@ struct PlayerContractValue {
     win_bonus: String,
 }
 
+#[derive(Debug, Clone)]
+struct PlayerConditionValue {
+    stamina: String,
+    condition: String,
+}
+
+#[derive(Debug, Clone)]
+struct PlayerConditionSnapshot {
+    athlete_id: usize,
+    stamina: String,
+    condition: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct PlayerCommunicationValue {
     region_id: usize,
@@ -298,6 +340,11 @@ enum GameRequest {
         staff_id: usize,
         reply: Sender<String>,
     },
+    SetStaffName {
+        staff_id: usize,
+        values: EntityNameValue,
+        reply: Sender<String>,
+    },
     SetStaffStats {
         staff_id: usize,
         values: StaffStatValues,
@@ -324,6 +371,14 @@ enum GameRequest {
         reply: Sender<String>,
     },
     GetTeams {
+        reply: Sender<String>,
+    },
+    GetTeamProbe {
+        team_id: usize,
+        reply: Sender<String>,
+    },
+    GetTeamManagement {
+        team_id: usize,
         reply: Sender<String>,
     },
     GetContractDefaults {
@@ -355,6 +410,16 @@ enum GameRequest {
     },
     GetPlayerContractProbe {
         athlete_id: usize,
+        reply: Sender<String>,
+    },
+    SetPlayerName {
+        athlete_id: usize,
+        values: EntityNameValue,
+        reply: Sender<String>,
+    },
+    SetPlayerCondition {
+        athlete_id: usize,
+        values: PlayerConditionValue,
         reply: Sender<String>,
     },
     SetPlayerStats {
@@ -679,6 +744,58 @@ fn hex_encode(value: &str) -> String {
     encoded
 }
 
+fn hex_decode(encoded: &str) -> Result<String, &'static str> {
+    if encoded.len() % 2 != 0 {
+        return Err("INVALID_NAME_ENCODING");
+    }
+
+    let mut bytes = Vec::with_capacity(encoded.len() / 2);
+    for pair in encoded.as_bytes().chunks_exact(2) {
+        let high = hex_value(pair[0]).ok_or("INVALID_NAME_ENCODING")?;
+        let low = hex_value(pair[1]).ok_or("INVALID_NAME_ENCODING")?;
+        bytes.push((high << 4) | low);
+    }
+
+    String::from_utf8(bytes).map_err(|_| "INVALID_NAME_ENCODING")
+}
+
+fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn validate_entity_name(value: &str) -> Result<String, &'static str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("NAME_EMPTY");
+    }
+    if trimmed.chars().count() > 100 {
+        return Err("NAME_TOO_LONG");
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err("NAME_CONTROL_CHARACTER");
+    }
+    Ok(trimmed.to_string())
+}
+
+fn entity_name_payload(entity_id: usize, values: &EntityNameValue) -> Vec<u8> {
+    format!("{}|{}", entity_id, hex_encode(&values.name)).into_bytes()
+}
+
+fn parse_server_entity_name(payload: &[u8]) -> Result<(usize, EntityNameValue), &'static str> {
+    let text = std::str::from_utf8(payload).map_err(|_| "INVALID_PAYLOAD")?;
+    let (entity_id, encoded_name) = text.split_once('|').ok_or("MISSING_VALUE")?;
+    let name = validate_entity_name(&hex_decode(encoded_name)?)?;
+    Ok((
+        entity_id.parse::<usize>().map_err(|_| "INVALID_ID")?,
+        EntityNameValue { name },
+    ))
+}
+
 fn response_ok_players(players: &[PlayerListEntry]) -> String {
     let payload = players
         .iter()
@@ -787,11 +904,18 @@ fn response_ok_player_contract_probe(raw: &str) -> String {
     format!("OK|PLAYER_CONTRACT_PROBE|{}", hex_encode(raw))
 }
 
+fn response_ok_player_condition(snapshot: PlayerConditionSnapshot) -> String {
+    format!(
+        "OK|PLAYER_CONDITION|{}|{}|{}",
+        snapshot.athlete_id, snapshot.stamina, snapshot.condition
+    )
+}
+
 fn response_ok_teams(teams: &[TeamListEntry]) -> String {
     let payload = teams
         .iter()
         .map(|team| format!(
-            "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
             team.id,
             hex_encode(&team.display_name),
             hex_encode(&team.manager_name),
@@ -808,11 +932,41 @@ fn response_ok_teams(teams: &[TeamListEntry]) -> String {
             team.total_balance,
             team.transfer_budget,
             team.salary_budget,
+            hex_encode(&team.stadium_name),
+            team.stadium_capacity,
+            team.total_home_attendance,
+            team.home_match_count,
+            team.total_entrance_income,
+            team.popularity,
+            hex_encode(&team.fan_expectation),
+            hex_encode(&team.fan_satisfaction),
+            team.fan_count,
+            team.fan_momentum,
+            hex_encode(&team.gaming_house_level),
+            team.welfare,
         ))
         .collect::<Vec<_>>()
         .join(";");
 
     format!("OK|TEAMS|{}|{}", teams.len(), payload)
+}
+
+fn response_ok_team_probe(raw: &str) -> String {
+    format!("OK|TEAM_PROBE|{}", hex_encode(raw))
+}
+
+fn response_ok_team_management(snapshot: TeamManagementSnapshot) -> String {
+    format!(
+        "OK|TEAM_MANAGEMENT|{}|{}|{}|{}|{}|{}|{}|{}",
+        snapshot.team_id,
+        hex_encode(&snapshot.management),
+        hex_encode(&snapshot.current_strategy),
+        hex_encode(&snapshot.last_strategy),
+        hex_encode(&snapshot.team_color_strategy),
+        hex_encode(&snapshot.merchandise),
+        hex_encode(&snapshot.champion_setup),
+        hex_encode(&snapshot.gaming_house),
+    )
 }
 
 fn response_ok_player(player: PlayerSnapshot) -> String {
@@ -1203,6 +1357,34 @@ fn read_staff(scene: &mut Scene, staff_id: usize) -> Result<StaffSnapshot, &'sta
     })
 }
 
+fn write_staff_name(
+    scene: &mut Scene,
+    staff_id: usize,
+    values: EntityNameValue,
+) -> Result<(), &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    let name = validate_entity_name(&values.name)?;
+    let values = EntityNameValue { name };
+
+    if !data.send_mod_command(
+        MOD_ID,
+        "set_staff_name",
+        entity_name_payload(staff_id, &values),
+    ) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+
+    let mut db = data.db_mut();
+    let Some(staff) = db.staffs.get_mut(&staff_id) else {
+        return Err("STAFF_NOT_FOUND");
+    };
+    staff.name = values.name;
+    Ok(())
+}
+
 fn validate_staff_stats(values: &StaffStatValues) -> Result<(), &'static str> {
     for value in [
         &values.banpick,
@@ -1569,6 +1751,423 @@ fn read_player_contract_probe(
     Ok(raw)
 }
 
+fn read_team_probe(scene: &mut Scene, team_id: usize) -> Result<String, &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    let db = data.db();
+    let Some(team) = db.teams.get(&team_id) else {
+        return Err("TEAM_NOT_FOUND");
+    };
+
+    Ok(format!(
+        "=== SELECTED TEAM RECORD ===\nTeam key: {team_id}\nDisplay name: {}\n{team:#?}",
+        db.team_display_name(team)
+    ))
+}
+
+fn sanitize_tsv_cell(value: &str) -> String {
+    value
+        .replace('\t', " ")
+        .replace('\r', " ")
+        .replace('\n', " ")
+}
+
+fn append_tsv_row(output: &mut String, cells: &[String]) {
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    output.push_str(
+        &cells
+            .iter()
+            .map(|cell| sanitize_tsv_cell(cell))
+            .collect::<Vec<_>>()
+            .join("\t"),
+    );
+}
+
+fn debug_option_or_auto<T: std::fmt::Debug>(value: &Option<T>) -> String {
+    value
+        .as_ref()
+        .map(|entry| format!("{entry:?}"))
+        .unwrap_or_else(|| "Auto".to_string())
+}
+
+fn read_team_management(
+    scene: &mut Scene,
+    team_id: usize,
+) -> Result<TeamManagementSnapshot, &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    let db = data.db();
+    let Some(team) = db.teams.get(&team_id) else {
+        return Err("TEAM_NOT_FOUND");
+    };
+
+    let mut management = String::new();
+    let lineup_slots = ["Top", "Jungle", "Mid", "Bottom", "Support"];
+    for (index, athlete_id) in team.last_starting.iter().enumerate() {
+        let slot = lineup_slots.get(index).copied().unwrap_or("Unknown");
+        match athlete_id {
+            Some(athlete_id) => {
+                let name = db
+                    .athletes
+                    .get(athlete_id)
+                    .map(|athlete| athlete.name.to_string())
+                    .unwrap_or_else(|| format!("Player {athlete_id}"));
+                append_tsv_row(
+                    &mut management,
+                    &[
+                        "lineup".to_string(),
+                        slot.to_string(),
+                        athlete_id.to_string(),
+                        name,
+                    ],
+                );
+            }
+            None => append_tsv_row(
+                &mut management,
+                &[
+                    "lineup".to_string(),
+                    slot.to_string(),
+                    String::new(),
+                    String::new(),
+                ],
+            ),
+        }
+    }
+
+    for athlete_id in &team.watched_athletes {
+        let name = db
+            .athletes
+            .get(athlete_id)
+            .map(|athlete| athlete.name.to_string())
+            .unwrap_or_else(|| format!("Player {athlete_id}"));
+        append_tsv_row(
+            &mut management,
+            &["watched_player".to_string(), athlete_id.to_string(), name],
+        );
+    }
+    for athlete_id in &team.no_transfer_athletes {
+        let name = db
+            .athletes
+            .get(athlete_id)
+            .map(|athlete| athlete.name.to_string())
+            .unwrap_or_else(|| format!("Player {athlete_id}"));
+        append_tsv_row(
+            &mut management,
+            &["no_transfer_player".to_string(), athlete_id.to_string(), name],
+        );
+    }
+    for athlete_id in &team.release_list_athletes {
+        let name = db
+            .athletes
+            .get(athlete_id)
+            .map(|athlete| athlete.name.to_string())
+            .unwrap_or_else(|| format!("Player {athlete_id}"));
+        append_tsv_row(
+            &mut management,
+            &["release_player".to_string(), athlete_id.to_string(), name],
+        );
+    }
+    for staff_id in &team.watched_staffs {
+        let name = db
+            .staffs
+            .get(staff_id)
+            .map(|staff| staff.name.to_string())
+            .unwrap_or_else(|| format!("Staff {staff_id}"));
+        append_tsv_row(
+            &mut management,
+            &["watched_staff".to_string(), staff_id.to_string(), name],
+        );
+    }
+    for staff_id in &team.release_list_staffs {
+        let name = db
+            .staffs
+            .get(staff_id)
+            .map(|staff| staff.name.to_string())
+            .unwrap_or_else(|| format!("Staff {staff_id}"));
+        append_tsv_row(
+            &mut management,
+            &["release_staff".to_string(), staff_id.to_string(), name],
+        );
+    }
+
+    let management_metrics = [
+        ("pending_installments", team.pending_installments.len().to_string()),
+        ("resale_clauses", team.resale_clauses.len().to_string()),
+        (
+            "scout_dispatch",
+            if team.scout_dispatch.is_some() {
+                "Active".to_string()
+            } else {
+                "None".to_string()
+            },
+        ),
+        ("merchandise_products", team.merchandise_products.len().to_string()),
+        ("champion_tiers", team.champion_tiers.len().to_string()),
+        (
+            "personal_tactics",
+            team.champion_personal_tactics.len().to_string(),
+        ),
+    ];
+    for (key, value) in management_metrics {
+        append_tsv_row(
+            &mut management,
+            &["metric".to_string(), key.to_string(), value],
+        );
+    }
+
+    let mut current_strategy = String::new();
+    let current_values = [
+        ("focused", format!("{:?}", &team.strategy.focused)),
+        ("early_jungle", format!("{:?}", &team.strategy.early_jungle)),
+        ("early_serpen", format!("{:?}", &team.strategy.early_serpen)),
+        (
+            "early_serpen_top",
+            format!("{:?}", &team.strategy.early_serpen_top),
+        ),
+        (
+            "object_buildup",
+            format!("{:?}", &team.strategy.object_buildup),
+        ),
+        (
+            "object_battle",
+            format!("{:?}", &team.strategy.object_battle),
+        ),
+        ("morgard_use", format!("{:?}", &team.strategy.morgard_use)),
+        ("tower_press", format!("{:?}", &team.strategy.tower_press)),
+        (
+            "morgard_defense",
+            format!("{:?}", &team.strategy.morgard_defense),
+        ),
+        (
+            "object_finish",
+            format!("{:?}", &team.strategy.object_finish),
+        ),
+        ("minion_wave", format!("{:?}", &team.strategy.minion_wave)),
+        ("game_finish", format!("{:?}", &team.strategy.game_finish)),
+    ];
+    for (key, value) in current_values {
+        append_tsv_row(&mut current_strategy, &[key.to_string(), value]);
+    }
+
+    let mut last_strategy = String::new();
+    let last_values = [
+        ("focused", format!("{:?}", &team.last_strategy.focused)),
+        (
+            "early_jungle",
+            format!("{:?}", &team.last_strategy.early_jungle),
+        ),
+        (
+            "early_serpen",
+            format!("{:?}", &team.last_strategy.early_serpen),
+        ),
+        (
+            "early_serpen_top",
+            format!("{:?}", &team.last_strategy.early_serpen_top),
+        ),
+        (
+            "object_buildup",
+            format!("{:?}", &team.last_strategy.object_buildup),
+        ),
+        (
+            "object_battle",
+            format!("{:?}", &team.last_strategy.object_battle),
+        ),
+        (
+            "morgard_use",
+            format!("{:?}", &team.last_strategy.morgard_use),
+        ),
+        (
+            "tower_press",
+            format!("{:?}", &team.last_strategy.tower_press),
+        ),
+        (
+            "morgard_defense",
+            format!("{:?}", &team.last_strategy.morgard_defense),
+        ),
+        (
+            "object_finish",
+            format!("{:?}", &team.last_strategy.object_finish),
+        ),
+        (
+            "minion_wave",
+            format!("{:?}", &team.last_strategy.minion_wave),
+        ),
+        (
+            "game_finish",
+            format!("{:?}", &team.last_strategy.game_finish),
+        ),
+    ];
+    for (key, value) in last_values {
+        append_tsv_row(&mut last_strategy, &[key.to_string(), value]);
+    }
+
+    let mut team_color_strategy = String::new();
+    let color_values = [
+        ("focused", debug_option_or_auto(&team.team_color_strategy.focused)),
+        (
+            "early_jungle",
+            debug_option_or_auto(&team.team_color_strategy.early_jungle),
+        ),
+        (
+            "early_serpen",
+            debug_option_or_auto(&team.team_color_strategy.early_serpen),
+        ),
+        (
+            "early_serpen_top",
+            debug_option_or_auto(&team.team_color_strategy.early_serpen_top),
+        ),
+        (
+            "object_buildup",
+            debug_option_or_auto(&team.team_color_strategy.object_buildup),
+        ),
+        (
+            "object_battle",
+            debug_option_or_auto(&team.team_color_strategy.object_battle),
+        ),
+        (
+            "morgard_use",
+            debug_option_or_auto(&team.team_color_strategy.morgard_use),
+        ),
+        (
+            "tower_press",
+            debug_option_or_auto(&team.team_color_strategy.tower_press),
+        ),
+        (
+            "morgard_defense",
+            debug_option_or_auto(&team.team_color_strategy.morgard_defense),
+        ),
+        (
+            "object_finish",
+            debug_option_or_auto(&team.team_color_strategy.object_finish),
+        ),
+        (
+            "minion_wave",
+            debug_option_or_auto(&team.team_color_strategy.minion_wave),
+        ),
+        (
+            "game_finish",
+            debug_option_or_auto(&team.team_color_strategy.game_finish),
+        ),
+    ];
+    for (key, value) in color_values {
+        append_tsv_row(&mut team_color_strategy, &[key.to_string(), value]);
+    }
+
+    let mut merchandise = String::new();
+    for product in &team.merchandise_products {
+        let athlete_name = db
+            .athletes
+            .get(&product.athlete_id)
+            .map(|athlete| athlete.name.to_string())
+            .unwrap_or_else(|| format!("Player {}", product.athlete_id));
+        append_tsv_row(
+            &mut merchandise,
+            &[
+                product.product_type.to_string(),
+                product.athlete_id.to_string(),
+                athlete_name,
+                product.stock.to_string(),
+                product.sell_price.to_string(),
+                product.yearly_sales.to_string(),
+                product.yearly_revenue.to_string(),
+                product.total_sales.to_string(),
+                product.total_revenue.to_string(),
+                product.daily_purchase_rate.to_string(),
+            ],
+        );
+    }
+
+    let mut champion_ids = BTreeSet::new();
+    champion_ids.extend(team.champion_tiers.keys().cloned());
+    champion_ids.extend(team.champion_personal_tactics.keys().cloned());
+    let mut champion_setup = String::new();
+    for champion_id in champion_ids {
+        let tier = team
+            .champion_tiers
+            .get(&champion_id)
+            .map(|value| format!("{value:?}"))
+            .unwrap_or_default();
+        let tactics = team.champion_personal_tactics.get(&champion_id);
+        let tactic_1 = tactics
+            .and_then(|values| values.get(0))
+            .map(|value| format!("{value:?}"))
+            .unwrap_or_default();
+        let tactic_2 = tactics
+            .and_then(|values| values.get(1))
+            .map(|value| format!("{value:?}"))
+            .unwrap_or_default();
+        let tactic_3 = tactics
+            .and_then(|values| values.get(2))
+            .map(|value| format!("{value:?}"))
+            .unwrap_or_default();
+        append_tsv_row(
+            &mut champion_setup,
+            &[champion_id, tier, tactic_1, tactic_2, tactic_3],
+        );
+    }
+
+    let inventory = &team.gaming_house_inventory;
+    let customization = &team.gaming_house_customization;
+    let owned_furniture_total = inventory
+        .furniture
+        .iter()
+        .map(|item| item.count as usize)
+        .sum::<usize>();
+    let owned_wallpaper_total = inventory
+        .wallpapers
+        .iter()
+        .map(|item| item.count as usize)
+        .sum::<usize>();
+    let owned_wall_total = inventory
+        .walls
+        .iter()
+        .map(|item| item.count as usize)
+        .sum::<usize>();
+    let owned_window_total = inventory
+        .windows
+        .iter()
+        .map(|item| item.count as usize)
+        .sum::<usize>();
+
+    let mut gaming_house = String::new();
+    let gaming_metrics = [
+        ("level", format!("{:?}", &team.gaming_house_level)),
+        ("welfare", team.welfare.to_string()),
+        ("owned_furniture_types", inventory.furniture.len().to_string()),
+        ("owned_furniture_total", owned_furniture_total.to_string()),
+        ("owned_wallpaper_types", inventory.wallpapers.len().to_string()),
+        ("owned_wallpaper_total", owned_wallpaper_total.to_string()),
+        ("owned_wall_types", inventory.walls.len().to_string()),
+        ("owned_wall_total", owned_wall_total.to_string()),
+        ("owned_window_types", inventory.windows.len().to_string()),
+        ("owned_window_total", owned_window_total.to_string()),
+        ("placed_furniture", customization.furniture.len().to_string()),
+        ("placed_wallpapers", customization.wallpapers.len().to_string()),
+        ("placed_walls", customization.walls.len().to_string()),
+        ("placed_windows", customization.windows.len().to_string()),
+    ];
+    for (key, value) in gaming_metrics {
+        append_tsv_row(&mut gaming_house, &[key.to_string(), value]);
+    }
+
+    Ok(TeamManagementSnapshot {
+        team_id,
+        management,
+        current_strategy,
+        last_strategy,
+        team_color_strategy,
+        merchandise,
+        champion_setup,
+        gaming_house,
+    })
+}
+
 fn read_teams(scene: &mut Scene) -> Result<Vec<TeamListEntry>, &'static str> {
     let Scene::InGame { data } = scene else {
         return Err("NOT_IN_GAME");
@@ -1647,6 +2246,18 @@ fn read_teams(scene: &mut Scene) -> Result<Vec<TeamListEntry>, &'static str> {
                 merchandise_facility_grade: format!("{:?}", team.merchandise_facility_grade),
                 stadium_grade: format!("{:?}", team.stadium.grade),
                 training_facility_grade: format!("{:?}", team.training_facility_grade),
+                stadium_name: team.stadium.name.to_string(),
+                stadium_capacity: team.stadium.capacity.to_string(),
+                total_home_attendance: team.total_home_attendance.to_string(),
+                home_match_count: team.home_match_count.to_string(),
+                total_entrance_income: team.total_entrance_income.to_string(),
+                popularity: team.popularity.to_string(),
+                fan_expectation: format!("{:?}", team.fan_expectation),
+                fan_satisfaction: format!("{:?}", team.fan_satisfaction),
+                fan_count: team.fan_count.to_string(),
+                fan_momentum: team.fan_momentum.to_string(),
+                gaming_house_level: format!("{:?}", team.gaming_house_level),
+                welfare: team.welfare.to_string(),
                 total_balance: team.total_balance,
                 transfer_budget: team.transfer_budget,
                 salary_budget: team.salary_budget,
@@ -2914,6 +3525,34 @@ fn read_player(scene: &mut Scene, athlete_id: usize) -> Result<PlayerSnapshot, &
     })
 }
 
+fn write_player_name(
+    scene: &mut Scene,
+    athlete_id: usize,
+    values: EntityNameValue,
+) -> Result<(), &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    let name = validate_entity_name(&values.name)?;
+    let values = EntityNameValue { name };
+
+    if !data.send_mod_command(
+        MOD_ID,
+        "set_player_name",
+        entity_name_payload(athlete_id, &values),
+    ) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+
+    let mut db = data.db_mut();
+    let Some(athlete) = db.athletes.get_mut(&athlete_id) else {
+        return Err("PLAYER_NOT_FOUND");
+    };
+    athlete.name = values.name;
+    Ok(())
+}
+
 fn validate_stat_text(value: &str) -> Result<(), &'static str> {
     let numeric = value.parse::<f64>().map_err(|_| "INVALID_STAT")?;
     if !numeric.is_finite()
@@ -3082,6 +3721,85 @@ fn parse_server_player_stats(payload: &[u8]) -> Result<(usize, PlayerStatValues)
     Ok((athlete_id, values))
 }
 
+
+fn validate_condition_number(value: &str, invalid: &'static str) -> Result<(), &'static str> {
+    let parsed = value.parse::<f64>().map_err(|_| invalid)?;
+    if !parsed.is_finite() || !(0.0..=100.0).contains(&parsed) {
+        return Err("CONDITION_OUT_OF_RANGE");
+    }
+    Ok(())
+}
+
+fn validate_player_condition(values: &PlayerConditionValue) -> Result<(), &'static str> {
+    validate_condition_number(&values.stamina, "INVALID_STAMINA")?;
+    validate_condition_number(&values.condition, "INVALID_CONDITION")?;
+    Ok(())
+}
+
+fn player_condition_payload(athlete_id: usize, values: &PlayerConditionValue) -> Vec<u8> {
+    format!("{}|{}|{}", athlete_id, values.stamina, values.condition).into_bytes()
+}
+
+fn apply_condition_to_athlete(
+    athlete_id: usize,
+    athlete: &mut Athlete,
+    values: &PlayerConditionValue,
+) -> Result<PlayerConditionSnapshot, &'static str> {
+    validate_player_condition(values)?;
+    athlete.management.stamina = values
+        .stamina
+        .parse()
+        .map_err(|_| "INVALID_STAMINA")?;
+    athlete.management.condition = values
+        .condition
+        .parse()
+        .map_err(|_| "INVALID_CONDITION")?;
+
+    Ok(PlayerConditionSnapshot {
+        athlete_id,
+        stamina: athlete.management.stamina.to_string(),
+        condition: athlete.management.condition.to_string(),
+    })
+}
+
+fn write_player_condition(
+    scene: &mut Scene,
+    athlete_id: usize,
+    values: PlayerConditionValue,
+) -> Result<PlayerConditionSnapshot, &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    validate_player_condition(&values)?;
+    if !data.send_mod_command(
+        MOD_ID,
+        "set_player_condition",
+        player_condition_payload(athlete_id, &values),
+    ) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+
+    let mut db = data.db_mut();
+    let Some(athlete) = db.athletes.get_mut(&athlete_id) else {
+        return Err("PLAYER_NOT_FOUND");
+    };
+    apply_condition_to_athlete(athlete_id, athlete, &values)
+}
+
+fn parse_server_player_condition(
+    payload: &[u8],
+) -> Result<(usize, PlayerConditionValue), &'static str> {
+    let text = std::str::from_utf8(payload).map_err(|_| "INVALID_PAYLOAD")?;
+    let mut parts = text.split('|');
+    let athlete_id = parse_usize(parts.next())?;
+    let values = PlayerConditionValue {
+        stamina: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        condition: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+    };
+    validate_player_condition(&values)?;
+    Ok((athlete_id, values))
+}
 
 fn validate_position_value(value: u16) -> Result<(), &'static str> {
     if value > 100 {
@@ -3686,6 +4404,17 @@ fn process_game_requests(scene: &mut Scene) {
                 };
                 let _ = reply.send(response);
             }
+            GameRequest::SetStaffName {
+                staff_id,
+                values,
+                reply,
+            } => {
+                let response = match write_staff_name(scene, staff_id, values) {
+                    Ok(()) => "OK|STAFF_NAME".to_string(),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
             GameRequest::SetStaffStats {
                 staff_id,
                 values,
@@ -3748,6 +4477,20 @@ fn process_game_requests(scene: &mut Scene) {
                 };
                 let _ = reply.send(response);
             }
+            GameRequest::GetTeamProbe { team_id, reply } => {
+                let response = match read_team_probe(scene, team_id) {
+                    Ok(raw) => response_ok_team_probe(&raw),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::GetTeamManagement { team_id, reply } => {
+                let response = match read_team_management(scene, team_id) {
+                    Ok(snapshot) => response_ok_team_management(snapshot),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
             GameRequest::GetContractDefaults {
                 entity,
                 team_id,
@@ -3805,6 +4548,28 @@ fn process_game_requests(scene: &mut Scene) {
             GameRequest::GetPlayerContractProbe { athlete_id, reply } => {
                 let response = match read_player_contract_probe(scene, athlete_id) {
                     Ok(raw) => response_ok_player_contract_probe(&raw),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::SetPlayerName {
+                athlete_id,
+                values,
+                reply,
+            } => {
+                let response = match write_player_name(scene, athlete_id, values) {
+                    Ok(()) => "OK|PLAYER_NAME".to_string(),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::SetPlayerCondition {
+                athlete_id,
+                values,
+                reply,
+            } => {
+                let response = match write_player_condition(scene, athlete_id, values) {
+                    Ok(snapshot) => response_ok_player_condition(snapshot),
                     Err(reason) => format!("ERR|{reason}"),
                 };
                 let _ = reply.send(response);
@@ -4050,6 +4815,24 @@ fn handle_client(mut stream: TcpStream, request_tx: &Sender<GameRequest>) {
             }),
             Err(reason) => format!("ERR|{reason}"),
         },
+        "SET_STAFF_NAME" => {
+            let parsed: Result<(usize, EntityNameValue), &'static str> = (|| {
+                let staff_id = parse_usize(parts.next())?;
+                let encoded_name = parts.next().ok_or("MISSING_VALUE")?;
+                let name = validate_entity_name(&hex_decode(encoded_name)?)?;
+                Ok((staff_id, EntityNameValue { name }))
+            })();
+            match parsed {
+                Ok((staff_id, values)) => send_game_request(request_tx, |reply| {
+                    GameRequest::SetStaffName {
+                        staff_id,
+                        values,
+                        reply,
+                    }
+                }),
+                Err(reason) => format!("ERR|{reason}"),
+            }
+        },
         "SET_STAFF_STATS" => {
             let staff_id = match parse_usize(parts.next()) {
                 Ok(value) => value,
@@ -4166,6 +4949,18 @@ fn handle_client(mut stream: TcpStream, request_tx: &Sender<GameRequest>) {
             })
         }
         "GET_TEAMS" => send_game_request(request_tx, |reply| GameRequest::GetTeams { reply }),
+        "GET_TEAM_PROBE" => match parse_usize(parts.next()) {
+            Ok(team_id) => send_game_request(request_tx, |reply| {
+                GameRequest::GetTeamProbe { team_id, reply }
+            }),
+            Err(reason) => format!("ERR|{reason}"),
+        },
+        "GET_TEAM_MANAGEMENT" => match parse_usize(parts.next()) {
+            Ok(team_id) => send_game_request(request_tx, |reply| {
+                GameRequest::GetTeamManagement { team_id, reply }
+            }),
+            Err(reason) => format!("ERR|{reason}"),
+        },
         "GET_CONTRACT_DEFAULTS" => {
             let parsed: Result<(ContractDefaultsEntity, usize), &'static str> = (|| {
                 let entity = match parts.next().ok_or("MISSING_VALUE")? {
@@ -4258,6 +5053,45 @@ fn handle_client(mut stream: TcpStream, request_tx: &Sender<GameRequest>) {
             }),
             Err(reason) => format!("ERR|{reason}"),
         },
+        "SET_PLAYER_NAME" => {
+            let parsed: Result<(usize, EntityNameValue), &'static str> = (|| {
+                let athlete_id = parse_usize(parts.next())?;
+                let encoded_name = parts.next().ok_or("MISSING_VALUE")?;
+                let name = validate_entity_name(&hex_decode(encoded_name)?)?;
+                Ok((athlete_id, EntityNameValue { name }))
+            })();
+            match parsed {
+                Ok((athlete_id, values)) => send_game_request(request_tx, |reply| {
+                    GameRequest::SetPlayerName {
+                        athlete_id,
+                        values,
+                        reply,
+                    }
+                }),
+                Err(reason) => format!("ERR|{reason}"),
+            }
+        },
+        "SET_PLAYER_CONDITION" => {
+            let parsed: Result<(usize, PlayerConditionValue), &'static str> = (|| {
+                let athlete_id = parse_usize(parts.next())?;
+                let values = PlayerConditionValue {
+                    stamina: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+                    condition: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+                };
+                validate_player_condition(&values)?;
+                Ok((athlete_id, values))
+            })();
+            match parsed {
+                Ok((athlete_id, values)) => send_game_request(request_tx, |reply| {
+                    GameRequest::SetPlayerCondition {
+                        athlete_id,
+                        values,
+                        reply,
+                    }
+                }),
+                Err(reason) => format!("ERR|{reason}"),
+            }
+        }
         "GET_CHAMPION_MASTERY_PROBE" => match parse_usize(parts.next()) {
             Ok(athlete_id) => send_game_request(request_tx, |reply| {
                 GameRequest::GetChampionMasteryProbe { athlete_id, reply }
@@ -4686,6 +5520,16 @@ impl ModServerExtension for ModifierBridgeServer {
             return ModServerCommandResult::Handled;
         }
 
+        if command.command == "set_player_condition" {
+            let Ok((athlete_id, values)) = parse_server_player_condition(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+            if let Some(athlete) = ctx.database.athletes.get_mut(athlete_id) {
+                let _ = apply_condition_to_athlete(athlete_id, athlete, &values);
+            }
+            return ModServerCommandResult::Handled;
+        }
+
         if command.command == "set_champion_mastery" {
             let Ok((athlete_id, values)) =
                 parse_server_champion_mastery(&command.payload)
@@ -4697,6 +5541,16 @@ impl ModServerExtension for ModifierBridgeServer {
                 let _ = apply_champion_mastery_to_athlete(athlete, &values);
             }
 
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "set_staff_name" {
+            let Ok((staff_id, values)) = parse_server_entity_name(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+            if let Some(staff) = ctx.database.staffs.get_mut(staff_id) {
+                staff.name = values.name;
+            }
             return ModServerCommandResult::Handled;
         }
 
@@ -4767,6 +5621,16 @@ impl ModServerExtension for ModifierBridgeServer {
                         staff.language.insert(*region_id, parsed);
                     }
                 }
+            }
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "set_player_name" {
+            let Ok((athlete_id, values)) = parse_server_entity_name(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+            if let Some(athlete) = ctx.database.athletes.get_mut(athlete_id) {
+                athlete.name = values.name;
             }
             return ModServerCommandResult::Handled;
         }
@@ -4880,6 +5744,30 @@ impl ModServerExtension for ModifierBridgeServer {
         }
 
         ModServerCommandResult::Pass
+    }
+}
+
+#[cfg(test)]
+mod name_payload_tests {
+    use super::*;
+
+    #[test]
+    fn entity_name_payload_round_trips_unicode_and_separator() {
+        let values = EntityNameValue {
+            name: "René | 홍길동".to_string(),
+        };
+        let payload = entity_name_payload(42, &values);
+        let (entity_id, decoded) = parse_server_entity_name(&payload).unwrap();
+        assert_eq!(entity_id, 42);
+        assert_eq!(decoded.name, values.name);
+    }
+
+    #[test]
+    fn entity_name_validation_trims_and_rejects_invalid_values() {
+        assert_eq!(validate_entity_name("  Valid Name  ").unwrap(), "Valid Name");
+        assert!(validate_entity_name("   ").is_err());
+        assert!(validate_entity_name("line\nbreak").is_err());
+        assert!(validate_entity_name(&"x".repeat(101)).is_err());
     }
 }
 

@@ -90,7 +90,7 @@ impl Localization {
             .values()
             .map(|locale| (locale.locale.clone(), locale.name.clone()))
             .collect::<Vec<_>>();
-        languages.sort_by(|left, right| left.1.to_lowercase().cmp(&right.1.to_lowercase()));
+        languages.sort_by_key(|language| language.1.to_lowercase());
         languages
     }
 

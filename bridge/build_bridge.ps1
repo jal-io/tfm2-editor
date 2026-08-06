@@ -4,7 +4,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$expectedSdkVersion = "0.5.3"
+$expectedSdkVersion = "0.5.4"
 
 $sdk = Resolve-Path -LiteralPath $SdkDir
 $depsDir = Join-Path $sdk "deps"
@@ -30,7 +30,7 @@ if ($pinned) {
     Write-Host "Using Rust toolchain $pinned"
 }
 
-# TFM2 0.5.3 classic SDK rlibs contain LLVM bitcode objects. MSVC link.exe
+# TFM2 0.5.4 classic SDK rlibs contain LLVM bitcode objects. MSVC link.exe
 # cannot consume those archives directly (LNK1107). Use the rust-lld shipped
 # with the SDK-pinned Rust toolchain so the linker can perform LLVM LTO.
 $sysroot = (& rustc --print sysroot).Trim()
@@ -76,7 +76,7 @@ $flags = @(
 if (Test-Path -LiteralPath $nativeDir) { $flags += @("-L", "native=$nativeDir") }
 $env:CARGO_ENCODED_RUSTFLAGS = $flags -join [char]31
 
-# Avoid stale artifacts from the 0.5.2 SDK while testing the 0.5.3 bridge.
+# Avoid stale artifacts from older SDK builds while testing the 0.5.4 bridge.
 if (Test-Path -LiteralPath $targetDir) {
     Write-Host "Cleaning previous bridge target directory..."
     Remove-Item -LiteralPath $targetDir -Recurse -Force

@@ -2,13 +2,81 @@
 
 All notable public changes to TFM2 Editor are documented here.
 
+## v0.4.2 — 2026-08-06
+
+### Compatibility
+
+- Updated TFM2 Editor to v0.4.2.
+- Updated TFM2 Editor Bridge to v0.2.49.
+- Added support for Teamfight Manager 2 v0.5.4.
+- Rebuilt the Bridge against the Teamfight Manager 2 v0.5.4 classic Mod SDK.
+- Updated Editor / Bridge compatibility rules for the new release combination.
+- Older Bridge builds that do not support name editing are blocked from active game-data access.
+- Community and Development compatibility handling remain separated so a valid Development combination is not blocked by an older Community rule.
+
+### Player name editing
+
+- Added Player Name Editing to Player Editor.
+- Added an editable name field and Apply Name action.
+- Added validation for empty names, control characters and names over 100 characters.
+- Leading and trailing spaces are removed before applying a name.
+- UTF-8 names and separator characters are transferred safely between the Editor and Bridge.
+- Player Search and Player Editor selection data update after a successful name change.
+- Name changes were validated through Refresh, Proceed and Save/Load.
+
+### Staff name editing
+
+- Added Staff Name Editing to Staff Editor.
+- Added an editable name field and Apply Name action.
+- Applied the same validation and safe text handling used by Player Name Editing.
+- Staff Search and Staff Editor selection data update after a successful name change.
+- Name changes were validated for contracted and free-agent staff.
+
+### Player Editor identity section
+
+- Added the same compact identity presentation used by Staff Editor.
+- The first row now shows Name, Apply Name and ID.
+- The second row shows Position and Age.
+- The third row shows Team.
+- Position uses the existing localized position formatter.
+- Identity information refreshes when the selected player or loaded player data changes.
+
+### Safety recommendation
+
+- Added the existing Player Editor save recommendation to Staff Editor.
+- Added the same recommendation to Recruitment.
+- Player Editor, Staff Editor and Recruitment now use one shared presentation:
+
+```text
+Recommended: Save your career before making changes with the editor.
+```
+
+### Community build cleanup
+
+- Kept Development-only Team workspace data and research tools outside the public Community payload.
+- Marked intentionally unused Development-only fields correctly in the Community build.
+- Removed release-gate compiler and Clippy warnings without changing runtime behavior.
+- Preserved all existing Player, Staff, Search, Recruitment, Economy, Lists and compatibility behavior.
+- No additional Community language pack is included; English remains embedded in the executable.
+
+### Known limitations
+
+- Champion Mastery can reopen too large after high mastery values.
+- Champion Mastery can auto-maximize near the right edge of the main window.
+- Development-only Team workspace and Team research tools are not included in Community.
+- History / Stats Over Time is not included.
+- Accepted Renewal is not included; contract editing affects the active contract.
+- CJK font fallback is not ready.
+- Community v0.4.2 ships with embedded English only.
+
+---
+
 ## v0.4.0 — 2026-08-04
 
 ### Compatibility
 
 - Updated TFM2 Editor to v0.4.0.
 - Updated TFM2 Editor Bridge to v0.2.43.
-- Added compatibility protocol 4.
 - Supports Teamfight Manager 2 v0.5.3.
 - Added permanent Editor / Bridge compatibility status.
 - Added warning-level compatibility handling.

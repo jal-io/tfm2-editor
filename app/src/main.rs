@@ -11,6 +11,8 @@ use std::time::Duration;
 
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
+#[cfg(feature = "dev")]
+use egui_extras::{Size, StripBuilder};
 use serde::{Deserialize, Serialize};
 
 mod currency;
@@ -23,11 +25,17 @@ use currency::{
 use localization::Localization;
 
 const BRIDGE_ADDR: &str = "127.0.0.1:28452";
-const REQUIRED_BRIDGE_VERSION: &str = "0.2.43";
-const BRIDGE_PROTOCOL_VERSION: u32 = 4;
+#[cfg(feature = "dev")]
+const REQUIRED_BRIDGE_VERSION: &str = "0.2.49";
+#[cfg(not(feature = "dev"))]
+const REQUIRED_BRIDGE_VERSION: &str = "0.2.49";
+#[cfg(feature = "dev")]
+const BRIDGE_PROTOCOL_VERSION: u32 = 9;
+#[cfg(not(feature = "dev"))]
+const BRIDGE_PROTOCOL_VERSION: u32 = 9;
 const MINIMUM_SAFE_BRIDGE_PROTOCOL: u32 = 1;
 const MAXIMUM_SAFE_BRIDGE_PROTOCOL: u32 = BRIDGE_PROTOCOL_VERSION;
-const SUPPORTED_TFM2_VERSION: &str = "0.5.3";
+const SUPPORTED_TFM2_VERSION: &str = "0.5.4";
 const GITHUB_RELEASES_URL: &str = "https://github.com/jal-io/tfm2-editor/releases/latest";
 const STEAM_WORKSHOP_URL: &str =
     "https://steamcommunity.com/sharedfiles/filedetails/?id=3775240765";
@@ -58,7 +66,6 @@ enum CompatibilityReason {
 #[derive(Debug, Clone, Copy)]
 enum UnsupportedRequirement {
     Bridge(&'static str),
-    Editor(&'static str),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -68,18 +75,19 @@ struct UnsupportedBridgeRule {
     requirement: UnsupportedRequirement,
 }
 
-const KNOWN_UNSUPPORTED_BRIDGE_RULES: &[UnsupportedBridgeRule] = &[
-    UnsupportedBridgeRule {
-        minimum_bridge_version: None,
-        maximum_bridge_version: Some("0.2.30"),
-        requirement: UnsupportedRequirement::Bridge(REQUIRED_BRIDGE_VERSION),
-    },
-    UnsupportedBridgeRule {
-        minimum_bridge_version: Some("0.2.46"),
-        maximum_bridge_version: None,
-        requirement: UnsupportedRequirement::Editor("0.4.2"),
-    },
-];
+#[cfg(feature = "dev")]
+const KNOWN_UNSUPPORTED_BRIDGE_RULES: &[UnsupportedBridgeRule] = &[UnsupportedBridgeRule {
+    minimum_bridge_version: None,
+    maximum_bridge_version: Some("0.2.48"),
+    requirement: UnsupportedRequirement::Bridge(REQUIRED_BRIDGE_VERSION),
+}];
+
+#[cfg(not(feature = "dev"))]
+const KNOWN_UNSUPPORTED_BRIDGE_RULES: &[UnsupportedBridgeRule] = &[UnsupportedBridgeRule {
+    minimum_bridge_version: None,
+    maximum_bridge_version: Some("0.2.48"),
+    requirement: UnsupportedRequirement::Bridge(REQUIRED_BRIDGE_VERSION),
+}];
 
 #[derive(Debug, Clone)]
 struct CompatibilityIssue {
@@ -92,9 +100,9 @@ struct CompatibilityIssue {
     required_editor_version: Option<String>,
 }
 #[cfg(feature = "dev")]
-const APP_VERSION: &str = "0.4.8a";
+const APP_VERSION: &str = "0.5.10";
 #[cfg(not(feature = "dev"))]
-const APP_VERSION: &str = "0.4.0";
+const APP_VERSION: &str = "0.4.2";
 
 #[cfg(feature = "dev")]
 fn display_version() -> String {
@@ -209,6 +217,23 @@ fn player_editor_intro_key() -> &'static str {
     "player_editor.intro"
 }
 
+fn render_editor_safety_recommendation(ui: &mut egui::Ui, localization: &Localization) {
+    #[cfg(feature = "dev")]
+    ui.weak(localization.tr("editor.recommended_save"));
+
+    #[cfg(not(feature = "dev"))]
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            egui::RichText::new(localization.tr("editor.recommended_save_prefix"))
+                .strong()
+                .color(egui::Color32::from_rgb(235, 196, 0)),
+        );
+        ui.label(localization.tr("editor.recommended_save_text"));
+    });
+
+    ui.add_space(8.0);
+}
+
 #[cfg(feature = "dev")]
 fn salary_info_key() -> Option<&'static str> {
     Some("player_editor.contract.finance_info.dev")
@@ -277,6 +302,72 @@ fn champion_mastery_help_key() -> &'static str {
 #[cfg(not(feature = "dev"))]
 fn champion_mastery_help_key() -> &'static str {
     "champion_mastery.help"
+}
+
+#[cfg(feature = "dev")]
+const CHAMPION_MASTERY_CARD_INNER_WIDTH: f32 = 172.0;
+#[cfg(feature = "dev")]
+const CHAMPION_MASTERY_CARD_INNER_HEIGHT: f32 = 38.0;
+#[cfg(feature = "dev")]
+const CHAMPION_MASTERY_CARD_NAME_WIDTH: f32 = 82.0;
+#[cfg(feature = "dev")]
+const CHAMPION_MASTERY_CARD_NAME_HEIGHT: f32 = 34.0;
+#[cfg(feature = "dev")]
+const CHAMPION_MASTERY_CARD_VALUE_WIDTH: f32 = 64.0;
+#[cfg(feature = "dev")]
+const CHAMPION_MASTERY_CARD_OUTER_WIDTH: f32 = 184.0;
+#[cfg(feature = "dev")]
+const CHAMPION_MASTERY_CARD_HORIZONTAL_GAP: f32 = 8.0;
+#[cfg(feature = "dev")]
+const CHAMPION_MASTERY_CARD_VERTICAL_GAP: f32 = 8.0;
+#[cfg(feature = "dev")]
+const CHAMPION_MASTERY_SCROLLBAR_RESERVE: f32 = 18.0;
+#[cfg(feature = "dev")]
+const CHAMPION_MASTERY_NAME_LINE_LIMIT: usize = 11;
+
+#[cfg(feature = "dev")]
+fn champion_mastery_card_display_name(name: &str) -> String {
+    let name = name.trim();
+    let chars = name.chars().collect::<Vec<_>>();
+
+    if chars.len() <= CHAMPION_MASTERY_NAME_LINE_LIMIT {
+        return name.to_string();
+    }
+
+    let first_break = (1..=CHAMPION_MASTERY_NAME_LINE_LIMIT)
+        .rev()
+        .find(|&index| chars[index - 1].is_whitespace())
+        .unwrap_or(CHAMPION_MASTERY_NAME_LINE_LIMIT);
+
+    let first_line = chars[..first_break]
+        .iter()
+        .collect::<String>()
+        .trim()
+        .to_string();
+
+    let mut remainder_start = first_break;
+    while remainder_start < chars.len() && chars[remainder_start].is_whitespace() {
+        remainder_start += 1;
+    }
+
+    let remainder = &chars[remainder_start..];
+    if remainder.len() <= CHAMPION_MASTERY_NAME_LINE_LIMIT {
+        return format!("{first_line}\n{}", remainder.iter().collect::<String>());
+    }
+
+    let visible_chars = CHAMPION_MASTERY_NAME_LINE_LIMIT.saturating_sub(1);
+    let second_line = remainder[..visible_chars].iter().collect::<String>();
+    format!("{first_line}\n{second_line}…")
+}
+
+#[cfg(feature = "dev")]
+fn champion_mastery_columns_for_width(available_width: f32) -> usize {
+    let usable_width = (available_width - CHAMPION_MASTERY_SCROLLBAR_RESERVE)
+        .max(CHAMPION_MASTERY_CARD_OUTER_WIDTH);
+    ((usable_width + CHAMPION_MASTERY_CARD_HORIZONTAL_GAP)
+        / (CHAMPION_MASTERY_CARD_OUTER_WIDTH + CHAMPION_MASTERY_CARD_HORIZONTAL_GAP))
+        .floor()
+        .max(1.0) as usize
 }
 
 #[cfg(feature = "dev")]
@@ -375,11 +466,24 @@ enum AppTab {
     Economy,
     PlayerEditor,
     StaffEditor,
+    #[cfg(feature = "dev")]
+    Team,
     Recruitment,
     Search,
 }
 
 impl AppTab {
+    #[cfg(feature = "dev")]
+    const ALL: [Self; 6] = [
+        Self::Search,
+        Self::PlayerEditor,
+        Self::StaffEditor,
+        Self::Team,
+        Self::Recruitment,
+        Self::Economy,
+    ];
+
+    #[cfg(not(feature = "dev"))]
     const ALL: [Self; 5] = [
         Self::Search,
         Self::PlayerEditor,
@@ -393,6 +497,8 @@ impl AppTab {
             Self::Economy => "tabs.economy",
             Self::PlayerEditor => "tabs.player_editor",
             Self::StaffEditor => "tabs.staff_editor",
+            #[cfg(feature = "dev")]
+            Self::Team => "tabs.team",
             Self::Recruitment => "tabs.recruitment",
             Self::Search => "tabs.search",
         }
@@ -680,16 +786,16 @@ impl AdvancedPlayerSearch {
         let mut lines = vec![
             "money_unit_format=display_v1".to_string(),
             format!("position_enabled={}", self.position_enabled),
-            format!("position={}", self.position.replace('\n', " " ).replace('\r', " ")),
+            format!("position={}", self.position.replace(['\n', '\r'], " ")),
             format!("region_enabled={}", self.region_enabled),
-            format!("region={}", self.region.replace('\n', " " ).replace('\r', " ")),
+            format!("region={}", self.region.replace(['\n', '\r'], " ")),
             format!("free_agents_only={}", self.free_agents_only),
         ];
 
         for range in &self.ranges {
             lines.push(format!("range.{}.enabled={}", range.key, range.enabled));
-            lines.push(format!("range.{}.min={}", range.key, range.min.replace('\n', " " ).replace('\r', " ")));
-            lines.push(format!("range.{}.max={}", range.key, range.max.replace('\n', " " ).replace('\r', " ")));
+            lines.push(format!("range.{}.min={}", range.key, range.min.replace(['\n', '\r'], " ")));
+            lines.push(format!("range.{}.max={}", range.key, range.max.replace(['\n', '\r'], " ")));
         }
 
         lines.join("\n") + "\n"
@@ -781,14 +887,14 @@ impl AdvancedStaffSearch {
         let mut lines = vec![
             "money_unit_format=display_v1".to_string(),
             format!("role_enabled={}", self.role_enabled),
-            format!("role={}", self.role.replace('\n', " ").replace('\r', " ")),
+            format!("role={}", self.role.replace(['\n', '\r'], " ")),
             format!("free_agents_only={}", self.free_agents_only),
         ];
 
         for range in &self.ranges {
             lines.push(format!("range.{}.enabled={}", range.key, range.enabled));
-            lines.push(format!("range.{}.min={}", range.key, range.min.replace('\n', " ").replace('\r', " ")));
-            lines.push(format!("range.{}.max={}", range.key, range.max.replace('\n', " ").replace('\r', " ")));
+            lines.push(format!("range.{}.min={}", range.key, range.min.replace(['\n', '\r'], " ")));
+            lines.push(format!("range.{}.max={}", range.key, range.max.replace(['\n', '\r'], " ")));
         }
 
         lines.join("\n") + "\n"
@@ -1021,6 +1127,259 @@ impl StaffStats {
     }
 }
 
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone)]
+struct TeamConditionEntry {
+    player_id: usize,
+    player_name: String,
+    stamina: String,
+    condition: String,
+    original_stamina: String,
+    original_condition: String,
+    write_status: String,
+}
+
+#[cfg(feature = "dev")]
+impl TeamConditionEntry {
+    fn has_changes(&self) -> bool {
+        self.stamina.trim() != self.original_stamina.trim()
+            || self.condition.trim() != self.original_condition.trim()
+    }
+}
+
+#[cfg(feature = "dev")]
+const TEAM_STRATEGY_KEYS: [&str; 12] = [
+    "focused",
+    "early_jungle",
+    "early_serpen",
+    "early_serpen_top",
+    "object_buildup",
+    "object_battle",
+    "morgard_use",
+    "tower_press",
+    "morgard_defense",
+    "object_finish",
+    "minion_wave",
+    "game_finish",
+];
+
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone)]
+struct TeamMemberReference {
+    id: usize,
+    name: String,
+}
+
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone)]
+struct TeamLineupEntry {
+    slot: String,
+    member: Option<TeamMemberReference>,
+}
+
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone)]
+struct TeamStrategyEntry {
+    key: String,
+    value: String,
+}
+
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone)]
+struct TeamMerchandiseEntry {
+    product_type: String,
+    athlete_id: usize,
+    athlete_name: String,
+    stock: String,
+    sell_price: String,
+    yearly_sales: String,
+    yearly_revenue: String,
+    total_sales: String,
+    total_revenue: String,
+    daily_purchase_rate: String,
+}
+
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone)]
+struct TeamChampionSetupEntry {
+    champion_id: String,
+    tier: String,
+    tactic_1: String,
+    tactic_2: String,
+    tactic_3: String,
+}
+
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone, Default)]
+struct TeamGamingHouseSummary {
+    level: String,
+    welfare: String,
+    owned_furniture_types: usize,
+    owned_furniture_total: usize,
+    owned_wallpaper_types: usize,
+    owned_wallpaper_total: usize,
+    owned_wall_types: usize,
+    owned_wall_total: usize,
+    owned_window_types: usize,
+    owned_window_total: usize,
+    placed_furniture: usize,
+    placed_wallpapers: usize,
+    placed_walls: usize,
+    placed_windows: usize,
+}
+
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone)]
+struct TeamManagementData {
+    team_id: usize,
+    lineup: Vec<TeamLineupEntry>,
+    watched_players: Vec<TeamMemberReference>,
+    no_transfer_players: Vec<TeamMemberReference>,
+    release_players: Vec<TeamMemberReference>,
+    watched_staff: Vec<TeamMemberReference>,
+    release_staff: Vec<TeamMemberReference>,
+    pending_installments: usize,
+    resale_clauses: usize,
+    scout_dispatch: String,
+    merchandise_product_count: usize,
+    champion_tier_count: usize,
+    personal_tactic_count: usize,
+    current_strategy: Vec<TeamStrategyEntry>,
+    last_strategy: Vec<TeamStrategyEntry>,
+    team_color_strategy: Vec<TeamStrategyEntry>,
+    merchandise: Vec<TeamMerchandiseEntry>,
+    champion_setup: Vec<TeamChampionSetupEntry>,
+    gaming_house: TeamGamingHouseSummary,
+}
+
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone)]
+struct TeamMatchSetEntry {
+    set_number: usize,
+    pattern: String,
+    team1_kills: usize,
+    team2_kills: usize,
+    team1_gold: usize,
+    team2_gold: usize,
+    mvp_player_id: usize,
+    mvp_player_name: String,
+    mvp_champion_id: String,
+    mvp_kills: usize,
+    mvp_deaths: usize,
+    mvp_assists: usize,
+    was_comeback: bool,
+    was_blue_side: bool,
+}
+
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone)]
+struct TeamMatchHistoryEntry {
+    date: String,
+    match_id: usize,
+    opponent_id: usize,
+    opponent_name: String,
+    is_practice: bool,
+    is_win: bool,
+    my_score: usize,
+    enemy_score: usize,
+    article_pattern: String,
+    sets: Vec<TeamMatchSetEntry>,
+}
+
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone)]
+struct TeamPreMatchTacticEntry {
+    category: String,
+    value: String,
+}
+
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone)]
+struct TeamPreMatchChampionEntry {
+    champion_id: String,
+    position: String,
+    wins: usize,
+    losses: usize,
+}
+
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone)]
+struct TeamPreMatchInsightEntry {
+    section: String,
+    label: String,
+    details: String,
+    source_key: String,
+}
+
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone)]
+struct TeamPreMatchAnalysisEntry {
+    date: String,
+    match_id: usize,
+    opponent_id: usize,
+    opponent_name: String,
+    analysis_level: String,
+    has_match_history: bool,
+    star_player_id: usize,
+    star_player_name: String,
+    tactics: Vec<TeamPreMatchTacticEntry>,
+    champion_picks: Vec<TeamPreMatchChampionEntry>,
+    insights: Vec<TeamPreMatchInsightEntry>,
+}
+
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone)]
+struct TeamHistoryData {
+    team_id: usize,
+    matches: Vec<TeamMatchHistoryEntry>,
+    analyses: Vec<TeamPreMatchAnalysisEntry>,
+    latest_rating: Option<i64>,
+    latest_rank: Option<usize>,
+    latest_rating_date: String,
+}
+
+#[cfg(feature = "dev")]
+impl TeamHistoryData {
+    fn wins(&self) -> usize {
+        self.matches.iter().filter(|entry| entry.is_win).count()
+    }
+
+    fn losses(&self) -> usize {
+        self.matches.len().saturating_sub(self.wins())
+    }
+
+    fn set_wins(&self) -> usize {
+        self.matches.iter().map(|entry| entry.my_score).sum()
+    }
+
+    fn set_losses(&self) -> usize {
+        self.matches.iter().map(|entry| entry.enemy_score).sum()
+    }
+
+    fn official_matches(&self) -> usize {
+        self.matches.iter().filter(|entry| !entry.is_practice).count()
+    }
+
+    fn practice_matches(&self) -> usize {
+        self.matches.iter().filter(|entry| entry.is_practice).count()
+    }
+
+    fn recent_form(&self) -> String {
+        let form = self
+            .matches
+            .iter()
+            .rev()
+            .take(5)
+            .map(|entry| if entry.is_win { "W" } else { "L" })
+            .collect::<Vec<_>>();
+        if form.is_empty() {
+            "—".to_string()
+        } else {
+            form.join("-")
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct TeamSummary {
     id: usize,
@@ -1034,12 +1393,49 @@ struct TeamSummary {
     merchandise_facility_grade: String,
     stadium_grade: String,
     training_facility_grade: String,
+    // These expanded Team fields remain in the shared response model so Community and
+    // Development can use the same Bridge payload. They are rendered only in Development.
+    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
+    stadium_name: String,
+    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
+    stadium_capacity: String,
+    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
+    total_home_attendance: String,
+    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
+    home_match_count: String,
+    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
+    total_entrance_income: f64,
+    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
+    popularity: String,
+    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
+    fan_expectation: String,
+    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
+    fan_satisfaction: String,
+    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
+    fan_count: String,
+    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
+    fan_momentum: String,
+    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
+    gaming_house_level: String,
+    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
+    welfare: String,
     total_balance: f64,
     transfer_budget: f64,
     salary_budget: f64,
 }
 
 impl TeamSummary {
+    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
+    fn average_home_attendance(&self) -> Option<f64> {
+        let attendance = self.total_home_attendance.trim().parse::<f64>().ok()?;
+        let matches = self.home_match_count.trim().parse::<f64>().ok()?;
+        if matches > 0.0 {
+            Some(attendance / matches)
+        } else {
+            None
+        }
+    }
+
     fn localized_label(&self, localization: &Localization) -> String {
         let name = if self.display_name.trim().is_empty() {
             self.localization_fallback_name(localization)
@@ -1080,20 +1476,16 @@ impl TeamSummary {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum SquadStatusChoice {
     Core,
     Important,
+    #[default]
     General,
     Sub,
     Prospect,
 }
 
-impl Default for SquadStatusChoice {
-    fn default() -> Self {
-        Self::General
-    }
-}
 
 impl SquadStatusChoice {
     const ALL: [Self; 5] = [
@@ -1767,8 +2159,75 @@ fn display_staff_role(raw: &str) -> String {
         "TrainingCoach" => "Training Coach".to_string(),
         "Scouter" => "Scouter".to_string(),
         "Analyst" => "Analyst".to_string(),
-        other if other.is_empty() => "Unknown".to_string(),
+        "" => "Unknown".to_string(),
         other => other.to_string(),
+    }
+}
+
+#[cfg(feature = "dev")]
+fn summary_belongs_to_team(member_team: &str, team: &TeamSummary) -> bool {
+    let member_team = member_team.trim();
+    if member_team.is_empty() || member_team.eq_ignore_ascii_case("Free Agent") {
+        return false;
+    }
+
+    let team_name = team.display_name.trim();
+    (!team_name.is_empty() && member_team.eq_ignore_ascii_case(team_name))
+        || member_team.eq_ignore_ascii_case(&format!("Team {}", team.id))
+}
+
+#[cfg(feature = "dev")]
+fn validate_condition_editor_value(value: &str, label: &str) -> Result<(), String> {
+    let parsed = value
+        .trim()
+        .parse::<f64>()
+        .map_err(|_| format!("{label} must be a number from 0 to 100"))?;
+    if !parsed.is_finite() || !(0.0..=100.0).contains(&parsed) {
+        return Err(format!("{label} must be a number from 0 to 100"));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "dev")]
+fn parse_team_condition_from_player_probe(raw: &str) -> Result<(String, String), String> {
+    let marker = "management: AthleteManagementStat";
+    let start = raw
+        .find(marker)
+        .ok_or_else(|| "AthleteManagementStat block not found".to_string())?;
+
+    let mut stamina = None;
+    let mut condition = None;
+    let mut depth = 0_i32;
+    let mut block_started = false;
+
+    for line in raw[start..].lines() {
+        let trimmed = line.trim();
+
+        if let Some(value) = trimmed.strip_prefix("stamina:") {
+            stamina = Some(value.trim().trim_end_matches(',').to_string());
+        } else if let Some(value) = trimmed.strip_prefix("condition:") {
+            condition = Some(value.trim().trim_end_matches(',').to_string());
+        }
+
+        for character in line.chars() {
+            match character {
+                '{' => {
+                    depth += 1;
+                    block_started = true;
+                }
+                '}' if block_started => depth -= 1,
+                _ => {}
+            }
+        }
+
+        if block_started && depth <= 0 {
+            break;
+        }
+    }
+
+    match (stamina, condition) {
+        (Some(stamina), Some(condition)) => Ok((stamina, condition)),
+        _ => Err("Stamina or condition field not found".to_string()),
     }
 }
 
@@ -1898,6 +2357,58 @@ struct ModifierApp {
     team_search_staff_max: String,
     team_sort_column: TeamSortColumn,
     team_sort_ascending: bool,
+    #[cfg(feature = "dev")]
+    team_workspace_search: String,
+    #[cfg(feature = "dev")]
+    team_workspace_team_id: Option<usize>,
+    #[cfg(feature = "dev")]
+    team_roster_window_open: bool,
+    #[cfg(feature = "dev")]
+    team_staff_window_open: bool,
+    #[cfg(feature = "dev")]
+    team_roster_selected_player_id: Option<usize>,
+    #[cfg(feature = "dev")]
+    team_staff_selected_staff_id: Option<usize>,
+    #[cfg(feature = "dev")]
+    team_condition_window_open: bool,
+    #[cfg(feature = "dev")]
+    team_condition_entries: Vec<TeamConditionEntry>,
+    #[cfg(feature = "dev")]
+    team_condition_team_id: Option<usize>,
+    #[cfg(feature = "dev")]
+    team_condition_selected_player_ids: BTreeSet<usize>,
+    #[cfg(feature = "dev")]
+    team_condition_bulk_stamina: String,
+    #[cfg(feature = "dev")]
+    team_condition_bulk_condition: String,
+    #[cfg(feature = "dev")]
+    team_data_probe_window_open: bool,
+    #[cfg(feature = "dev")]
+    team_data_probe_team_id: Option<usize>,
+    #[cfg(feature = "dev")]
+    team_data_probe_raw: String,
+    #[cfg(feature = "dev")]
+    team_management_data: Option<TeamManagementData>,
+    #[cfg(feature = "dev")]
+    team_management_last_request_team_id: Option<usize>,
+    #[cfg(feature = "dev")]
+    team_strategy_window_open: bool,
+    #[cfg(feature = "dev")]
+    team_merchandise_window_open: bool,
+    #[cfg(feature = "dev")]
+    team_champion_setup_window_open: bool,
+    #[cfg(feature = "dev")]
+    team_gaming_house_window_open: bool,
+    #[cfg(feature = "dev")]
+    team_history_data: Option<TeamHistoryData>,
+    #[cfg(feature = "dev")]
+    team_history_last_request_team_id: Option<usize>,
+    #[cfg(feature = "dev")]
+    team_match_history_window_open: bool,
+    #[cfg(feature = "dev")]
+    team_pre_match_analysis_window_open: bool,
+    #[cfg(feature = "dev")]
+    team_history_summary_window_open: bool,
     recruitment_management_tab: RecruitmentManagementTab,
     recruitment_player_search: String,
     recruitment_player_id: Option<usize>,
@@ -2050,6 +2561,58 @@ impl Default for ModifierApp {
             team_search_staff_max: String::new(),
             team_sort_column: TeamSortColumn::Name,
             team_sort_ascending: true,
+            #[cfg(feature = "dev")]
+            team_workspace_search: String::new(),
+            #[cfg(feature = "dev")]
+            team_workspace_team_id: None,
+            #[cfg(feature = "dev")]
+            team_roster_window_open: false,
+            #[cfg(feature = "dev")]
+            team_staff_window_open: false,
+            #[cfg(feature = "dev")]
+            team_roster_selected_player_id: None,
+            #[cfg(feature = "dev")]
+            team_staff_selected_staff_id: None,
+            #[cfg(feature = "dev")]
+            team_condition_window_open: false,
+            #[cfg(feature = "dev")]
+            team_condition_entries: Vec::new(),
+            #[cfg(feature = "dev")]
+            team_condition_team_id: None,
+            #[cfg(feature = "dev")]
+            team_condition_selected_player_ids: BTreeSet::new(),
+            #[cfg(feature = "dev")]
+            team_condition_bulk_stamina: String::new(),
+            #[cfg(feature = "dev")]
+            team_condition_bulk_condition: String::new(),
+            #[cfg(feature = "dev")]
+            team_data_probe_window_open: false,
+            #[cfg(feature = "dev")]
+            team_data_probe_team_id: None,
+            #[cfg(feature = "dev")]
+            team_data_probe_raw: String::new(),
+            #[cfg(feature = "dev")]
+            team_management_data: None,
+            #[cfg(feature = "dev")]
+            team_management_last_request_team_id: None,
+            #[cfg(feature = "dev")]
+            team_strategy_window_open: false,
+            #[cfg(feature = "dev")]
+            team_merchandise_window_open: false,
+            #[cfg(feature = "dev")]
+            team_champion_setup_window_open: false,
+            #[cfg(feature = "dev")]
+            team_gaming_house_window_open: false,
+            #[cfg(feature = "dev")]
+            team_history_data: None,
+            #[cfg(feature = "dev")]
+            team_history_last_request_team_id: None,
+            #[cfg(feature = "dev")]
+            team_match_history_window_open: false,
+            #[cfg(feature = "dev")]
+            team_pre_match_analysis_window_open: false,
+            #[cfg(feature = "dev")]
+            team_history_summary_window_open: false,
             recruitment_management_tab: RecruitmentManagementTab::Players,
             recruitment_player_search: String::new(),
             recruitment_player_id: None,
@@ -2084,6 +2647,77 @@ impl Default for ModifierApp {
         }
         app
     }
+}
+
+#[cfg(feature = "dev")]
+fn format_team_member_references(entries: &[TeamMemberReference]) -> String {
+    if entries.is_empty() {
+        return "—".to_string();
+    }
+    entries
+        .iter()
+        .map(|entry| format!("{} [{}]", entry.name, entry.id))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+#[cfg(feature = "dev")]
+fn format_team_lineup(entries: &[TeamLineupEntry]) -> String {
+    if entries.is_empty() {
+        return "—".to_string();
+    }
+    entries
+        .iter()
+        .map(|entry| match &entry.member {
+            Some(member) => format!("{}: {} [{}]", entry.slot, member.name, member.id),
+            None => format!("{}: —", entry.slot),
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+#[cfg(feature = "dev")]
+fn team_strategy_value(entries: &[TeamStrategyEntry], key: &str) -> String {
+    entries
+        .iter()
+        .find(|entry| entry.key == key)
+        .map(|entry| value_or_dash(&entry.value))
+        .unwrap_or_else(|| "—".to_string())
+}
+
+#[cfg(feature = "dev")]
+fn parse_usize_value(value: &str) -> usize {
+    value.trim().parse::<usize>().unwrap_or(0)
+}
+
+#[cfg(feature = "dev")]
+fn parse_f64_value(value: &str) -> f64 {
+    value.trim().parse::<f64>().unwrap_or(0.0)
+}
+
+#[cfg(feature = "dev")]
+fn render_team_member_table_viewport(
+    ui: &mut egui::Ui,
+    horizontal_scroll_id: &'static str,
+    table_min_width: f32,
+    render_table: impl FnOnce(&mut egui::Ui, f32),
+) {
+    StripBuilder::new(ui)
+        .clip(true)
+        .size(Size::remainder().at_least(120.0))
+        .vertical(|mut strip| {
+            strip.cell(|ui| {
+                let viewport_height = ui.available_height().max(1.0);
+                egui::ScrollArea::horizontal()
+                    .id_salt(horizontal_scroll_id)
+                    .auto_shrink([false, false])
+                    .max_height(viewport_height)
+                    .show(ui, |ui| {
+                        ui.set_min_width(table_min_width);
+                        render_table(ui, viewport_height);
+                    });
+            });
+        });
 }
 
 impl ModifierApp {
@@ -2207,11 +2841,6 @@ impl ModifierApp {
                         Some(required_bridge_version.to_string()),
                         None,
                     ),
-                    UnsupportedRequirement::Editor(required_editor_version) => (
-                        CompatibilityAction::EditorUpdate,
-                        None,
-                        Some(required_editor_version.to_string()),
-                    ),
                 };
             return Some(CompatibilityIssue {
                 severity: CompatibilitySeverity::NotSupported,
@@ -2254,8 +2883,8 @@ impl ModifierApp {
             }
         };
 
-        if protocol < MINIMUM_SAFE_BRIDGE_PROTOCOL
-            || protocol > MAXIMUM_SAFE_BRIDGE_PROTOCOL
+        if !(MINIMUM_SAFE_BRIDGE_PROTOCOL..=MAXIMUM_SAFE_BRIDGE_PROTOCOL)
+            .contains(&protocol)
         {
             return Some(CompatibilityIssue {
                 severity: CompatibilitySeverity::NotSupported,
@@ -2970,6 +3599,275 @@ Bridge TFM2 target: v{}",
         self.refresh_selected_staff();
     }
 
+    #[cfg(feature = "dev")]
+    fn open_team_workspace(&mut self, team_id: usize) {
+        if self.teams.iter().any(|team| team.id == team_id) {
+            let selection_changed = self.team_workspace_team_id != Some(team_id);
+            if selection_changed {
+                self.team_roster_selected_player_id = None;
+                self.team_staff_selected_staff_id = None;
+                self.team_condition_window_open = false;
+                self.team_condition_entries.clear();
+                self.team_condition_team_id = None;
+                self.team_condition_selected_player_ids.clear();
+                self.team_data_probe_window_open = false;
+                self.team_data_probe_team_id = None;
+                self.team_data_probe_raw.clear();
+                self.team_management_data = None;
+                self.team_management_last_request_team_id = None;
+                self.team_history_data = None;
+                self.team_history_last_request_team_id = None;
+            }
+            self.team_workspace_team_id = Some(team_id);
+            self.active_tab = AppTab::Team;
+            if let Some(team) = self.teams.iter().find(|team| team.id == team_id) {
+                self.status = format!("Team data loaded: {}", team.display_name);
+            }
+            if selection_changed
+                || self.team_management_last_request_team_id != Some(team_id)
+            {
+                self.refresh_team_management_data();
+            }
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn refresh_team_management_data(&mut self) {
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.status = "Select a team first".to_string();
+            return;
+        };
+
+        self.team_management_last_request_team_id = Some(team.id);
+        let command = format!("GET_TEAM_MANAGEMENT|{}", team.id);
+        match self
+            .game_request(&command)
+            .and_then(|response| parse_team_management_response(&response))
+        {
+            Ok(data) => {
+                self.team_management_data = Some(data);
+                self.status = format!("Team management data loaded: {}", team.display_name);
+            }
+            Err(error) => {
+                self.team_management_data = None;
+                self.status = human_error(&error);
+            }
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn refresh_team_history_data(&mut self) {
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.status = "Select a team first".to_string();
+            return;
+        };
+
+        self.team_history_last_request_team_id = Some(team.id);
+        let command = format!("GET_TEAM_PROBE|{}", team.id);
+        match self.game_request(&command).and_then(|response| {
+            let parts = response.split('|').collect::<Vec<_>>();
+            if parts.len() != 3 || parts[0] != "OK" || parts[1] != "TEAM_PROBE" {
+                return Err(response);
+            }
+            let raw = hex_decode(parts[2])?;
+            parse_team_history_probe(&raw, team.id, &self.teams, &self.players)
+        }) {
+            Ok(data) => {
+                self.team_history_data = Some(data);
+                self.status = format!("Team match history loaded: {}", team.display_name);
+            }
+            Err(error) => {
+                self.team_history_data = None;
+                self.status = human_error(&error);
+            }
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn refresh_team_data_probe(&mut self) {
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.status = "Select a team first".to_string();
+            return;
+        };
+
+        let command = format!("GET_TEAM_PROBE|{}", team.id);
+        match self.game_request(&command).and_then(|response| {
+            let parts = response.split('|').collect::<Vec<_>>();
+            if parts.len() != 3 || parts[0] != "OK" || parts[1] != "TEAM_PROBE" {
+                return Err(response);
+            }
+            hex_decode(parts[2])
+        }) {
+            Ok(raw) => {
+                self.team_data_probe_raw = raw;
+                self.team_data_probe_team_id = Some(team.id);
+                self.team_data_probe_window_open = true;
+                self.status = format!("Team data probe loaded: {}", team.display_name);
+            }
+            Err(error) => {
+                self.status = human_error(&error);
+            }
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn refresh_team_condition_probe(&mut self) {
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.status = "Select a team first".to_string();
+            return;
+        };
+
+        let roster = self
+            .players
+            .iter()
+            .filter(|player| summary_belongs_to_team(&player.team, &team))
+            .map(|player| (player.id, player.name.clone()))
+            .collect::<Vec<_>>();
+
+        let mut entries = Vec::with_capacity(roster.len());
+        for (player_id, player_name) in roster {
+            let command = format!("GET_PLAYER_CONTRACT_PROBE|{player_id}");
+            let result = self.game_request(&command).and_then(|response| {
+                let parts = response.split('|').collect::<Vec<_>>();
+                if parts.first() == Some(&"ERR") {
+                    return Err(human_error(parts.get(1).copied().unwrap_or("UNKNOWN_ERROR")));
+                }
+                if parts.len() != 3
+                    || parts[0] != "OK"
+                    || parts[1] != "PLAYER_CONTRACT_PROBE"
+                {
+                    return Err(format!("Unexpected probe response: {response}"));
+                }
+                let raw = hex_decode(parts[2])?;
+                parse_team_condition_from_player_probe(&raw)
+            });
+
+            match result {
+                Ok((stamina, condition)) => entries.push(TeamConditionEntry {
+                    player_id,
+                    player_name,
+                    original_stamina: stamina.clone(),
+                    original_condition: condition.clone(),
+                    stamina,
+                    condition,
+                    write_status: self.localization.tr("team_condition.ready"),
+                }),
+                Err(error) => entries.push(TeamConditionEntry {
+                    player_id,
+                    player_name,
+                    stamina: String::new(),
+                    condition: String::new(),
+                    original_stamina: String::new(),
+                    original_condition: String::new(),
+                    write_status: error,
+                }),
+            }
+        }
+
+        self.team_condition_entries = entries;
+        self.team_condition_team_id = Some(team.id);
+        self.team_condition_selected_player_ids.clear();
+        self.team_condition_window_open = true;
+        self.status = format!(
+            "Team condition data loaded: {} player(s)",
+            self.team_condition_entries.len()
+        );
+    }
+
+    #[cfg(feature = "dev")]
+    fn apply_team_condition_changes(&mut self) {
+        let changed_indices = self
+            .team_condition_entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| entry.has_changes().then_some(index))
+            .collect::<Vec<_>>();
+
+        if changed_indices.is_empty() {
+            self.status = self.localization.tr("team_condition.no_changes");
+            return;
+        }
+
+        let mut applied = 0_usize;
+        let mut failed = 0_usize;
+
+        for index in changed_indices {
+            let (player_id, stamina, condition) = {
+                let entry = &self.team_condition_entries[index];
+                (
+                    entry.player_id,
+                    entry.stamina.trim().to_string(),
+                    entry.condition.trim().to_string(),
+                )
+            };
+
+            let validation = validate_condition_editor_value(&stamina, "Stamina")
+                .and_then(|_| validate_condition_editor_value(&condition, "Condition"));
+            if let Err(error) = validation {
+                self.team_condition_entries[index].write_status = error;
+                failed += 1;
+                continue;
+            }
+
+            let command = format!("SET_PLAYER_CONDITION|{player_id}|{stamina}|{condition}");
+            match self.game_request(&command) {
+                Ok(response) => {
+                    let parts = response.split('|').collect::<Vec<_>>();
+                    if parts.first() == Some(&"ERR") {
+                        self.team_condition_entries[index].write_status =
+                            human_error(parts.get(1).copied().unwrap_or("UNKNOWN_ERROR"));
+                        failed += 1;
+                    } else if parts.len() == 5
+                        && parts[0] == "OK"
+                        && parts[1] == "PLAYER_CONDITION"
+                        && parts[2].parse::<usize>().ok() == Some(player_id)
+                    {
+                        let actual_stamina = parts[3].to_string();
+                        let actual_condition = parts[4].to_string();
+                        let entry = &mut self.team_condition_entries[index];
+                        entry.stamina = actual_stamina.clone();
+                        entry.condition = actual_condition.clone();
+                        entry.original_stamina = actual_stamina;
+                        entry.original_condition = actual_condition;
+                        entry.write_status = self.localization.tr("team_condition.applied");
+                        applied += 1;
+                    } else {
+                        self.team_condition_entries[index].write_status =
+                            format!("Unexpected response: {response}");
+                        failed += 1;
+                    }
+                }
+                Err(error) => {
+                    self.team_condition_entries[index].write_status = error;
+                    failed += 1;
+                }
+            }
+        }
+
+        let applied_text = applied.to_string();
+        let failed_text = failed.to_string();
+        self.status = self.localization.tr_with(
+            "team_condition.apply_summary",
+            &[("applied", applied_text.as_str()), ("failed", failed_text.as_str())],
+        );
+    }
+
     fn refresh_selected_staff(&mut self) {
         let Some(id) = self.selected_staff_id else {
             self.selected_staff = None;
@@ -3002,6 +3900,48 @@ Bridge TFM2 target: v{}",
                 }
                 Err(error) => self.status = human_error(&error),
             },
+            Err(error) => {
+                self.connected = false;
+                self.status = error;
+            }
+        }
+    }
+
+    fn apply_staff_name(&mut self) {
+        let Some(staff) = self.selected_staff.as_ref() else {
+            self.status = "Select a staff member first".to_string();
+            return;
+        };
+
+        let name = match validate_editor_name(&staff.name) {
+            Ok(name) => name,
+            Err(error) => {
+                self.status = error;
+                return;
+            }
+        };
+        let staff_id = staff.id;
+        let command = format!("SET_STAFF_NAME|{staff_id}|{}", hex_encode(&name));
+
+        match self.game_request(&command) {
+            Ok(response) if response == "OK|STAFF_NAME" => {
+                if let Some(staff) = self.selected_staff.as_mut() {
+                    staff.name = name.clone();
+                }
+                if let Some(summary) = self.staffs.iter_mut().find(|staff| staff.id == staff_id) {
+                    summary.name = name.clone();
+                }
+                self.connected = true;
+                self.update_staff_search_status();
+                self.status = format!("Staff name updated: {name}");
+            }
+            Ok(response) => {
+                if let Some(error) = response.strip_prefix("ERR|") {
+                    self.status = human_error(error);
+                } else {
+                    self.status = format!("Unexpected staff name response: {response}");
+                }
+            }
             Err(error) => {
                 self.connected = false;
                 self.status = error;
@@ -3682,51 +4622,81 @@ Bridge TFM2 target: v{}",
 
         let stroke = if active {
             if ui.visuals().dark_mode {
-                egui::Stroke::new(
-                    1.0_f32,
-                    egui::Color32::from_gray(82),
-                )
+                egui::Stroke::new(1.0_f32, egui::Color32::from_gray(82))
             } else {
-                egui::Stroke::new(
-                    1.0_f32,
-                    egui::Color32::from_gray(170),
-                )
+                egui::Stroke::new(1.0_f32, egui::Color32::from_gray(170))
             }
         } else {
             ui.visuals().widgets.noninteractive.bg_stroke
         };
 
+        #[cfg(feature = "dev")]
+        let card_name = champion_mastery_card_display_name(&champion.display_name);
+
         let response = egui::Frame::group(ui.style())
             .fill(fill)
             .stroke(stroke)
             .show(ui, |ui| {
-                // Match the compact v0.2.24 cards.
-                ui.set_min_width(125.0);
-                ui.set_max_width(145.0);
+                #[cfg(feature = "dev")]
+                {
+                    ui.set_min_width(CHAMPION_MASTERY_CARD_INNER_WIDTH);
+                    ui.set_max_width(CHAMPION_MASTERY_CARD_INNER_WIDTH);
+                    ui.set_min_height(CHAMPION_MASTERY_CARD_INNER_HEIGHT);
 
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut champion.selected, "");
-                    ui.label(
-                        egui::RichText::new(&champion.display_name).strong(),
-                    );
-                });
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.checkbox(&mut champion.selected, "");
+                        ui.add_sized(
+                            [
+                                CHAMPION_MASTERY_CARD_NAME_WIDTH,
+                                CHAMPION_MASTERY_CARD_NAME_HEIGHT,
+                            ],
+                            egui::Label::new(egui::RichText::new(&card_name).strong())
+                                .wrap(),
+                        )
+                        .on_hover_text(champion.display_name.clone());
 
-                let old = champion.edit_mastery;
-                let changed = ui
-                    .add(
-                        egui::DragValue::new(&mut champion.edit_mastery)
-                            .range(0..=100)
-                            .speed(1.0)
-                            .suffix(" / 100"),
-                    )
-                    .changed();
+                        let old = champion.edit_mastery;
+                        let changed = ui
+                            .add_sized(
+                                [CHAMPION_MASTERY_CARD_VALUE_WIDTH, 24.0],
+                                egui::DragValue::new(&mut champion.edit_mastery)
+                                    .range(0..=100)
+                                    .speed(1.0)
+                                    .suffix(" / 100"),
+                            )
+                            .changed();
 
-                if changed && champion.edit_mastery != old {
-                    champion.selected = true;
+                        if changed && champion.edit_mastery != old {
+                            champion.selected = true;
+                        }
+                    });
                 }
 
-                // Keep card height constant while values are edited in bulk.
-                // Current/pending values remain available in the hover tooltip.
+                #[cfg(not(feature = "dev"))]
+                {
+                    // Preserve the validated Community v0.4.1 card geometry and behavior.
+                    ui.set_min_width(125.0);
+                    ui.set_max_width(145.0);
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut champion.selected, "");
+                        ui.label(egui::RichText::new(&champion.display_name).strong());
+                    });
+
+                    let old = champion.edit_mastery;
+                    let changed = ui
+                        .add(
+                            egui::DragValue::new(&mut champion.edit_mastery)
+                                .range(0..=100)
+                                .speed(1.0)
+                                .suffix(" / 100"),
+                        )
+                        .changed();
+
+                    if changed && champion.edit_mastery != old {
+                        champion.selected = true;
+                    }
+                }
             })
             .response;
 
@@ -3744,7 +4714,8 @@ Bridge TFM2 target: v{}",
                 .unwrap_or_else(|| "—".to_string());
 
             response.on_hover_text(format!(
-                "{state}\nID: {}\nCurrent mastery: {}\nPending mastery: {}\nRaw value: {}\nRaw floor: {}",
+                "{}\n{state}\nID: {}\nCurrent mastery: {}\nPending mastery: {}\nRaw value: {}\nRaw floor: {}",
+                champion.display_name,
                 champion.id,
                 champion.mastery_text(),
                 champion.edit_mastery,
@@ -3759,6 +4730,233 @@ Bridge TFM2 target: v{}",
             champion.mastery_text(),
             champion.edit_mastery,
         ));
+    }
+
+    fn render_champion_mastery_contents(
+        &mut self,
+        ui: &mut egui::Ui,
+    ) -> (bool, bool) {
+        let mut refresh_requested = false;
+        let mut apply_requested = false;
+
+        let active_count = self
+            .champion_mastery_entries
+            .iter()
+            .filter(|entry| entry.active)
+            .count();
+        let inactive_count = self.champion_mastery_entries.len() - active_count;
+        let selected_count = self
+            .champion_mastery_entries
+            .iter()
+            .filter(|entry| entry.selected)
+            .count();
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!(
+                "{active_count} active · {inactive_count} inactive · {selected_count} selected"
+            ));
+            ui.separator();
+
+            if ui
+                .button(self.localization.tr("champion_mastery.check_active"))
+                .clicked()
+            {
+                for entry in &mut self.champion_mastery_entries {
+                    entry.selected = entry.active;
+                }
+            }
+
+            if ui
+                .button(self.localization.tr("champion_mastery.check_inactive"))
+                .clicked()
+            {
+                for entry in &mut self.champion_mastery_entries {
+                    entry.selected = !entry.active;
+                }
+            }
+
+            if ui
+                .button(self.localization.tr("champion_mastery.check_all"))
+                .clicked()
+            {
+                for entry in &mut self.champion_mastery_entries {
+                    entry.selected = true;
+                }
+            }
+
+            if ui
+                .button(self.localization.tr("champion_mastery.clear_checks"))
+                .clicked()
+            {
+                for entry in &mut self.champion_mastery_entries {
+                    entry.selected = false;
+                }
+            }
+
+            if ui.button(self.localization.tr("common.refresh")).clicked() {
+                refresh_requested = true;
+            }
+        });
+
+        ui.add_space(6.0);
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(self.localization.tr("champion_mastery.bulk"));
+            ui.add(
+                egui::Slider::new(&mut self.champion_mastery_bulk_value, 0..=100)
+                    .show_value(true),
+            );
+
+            if ui
+                .add_enabled(
+                    selected_count > 0,
+                    egui::Button::new(
+                        self.localization.tr("champion_mastery.set_checked"),
+                    ),
+                )
+                .clicked()
+            {
+                for entry in &mut self.champion_mastery_entries {
+                    if entry.selected {
+                        entry.edit_mastery = self.champion_mastery_bulk_value;
+                    }
+                }
+            }
+
+            ui.separator();
+
+            if ui
+                .add_enabled(
+                    self.connected && selected_count > 0,
+                    egui::Button::new(
+                        self.localization.tr("champion_mastery.apply_selected"),
+                    ),
+                )
+                .clicked()
+            {
+                apply_requested = true;
+            }
+        });
+
+        ui.add_space(6.0);
+        ui.weak(self.localization.tr(champion_mastery_help_key()));
+        ui.add_space(8.0);
+        ui.separator();
+
+        // This is the embedded Champion Mastery window's own content width.
+        // The scrollbar reserve keeps the final column fully inside the clip rect.
+        let local_width = ui.available_width().max(180.0);
+
+        #[cfg(feature = "dev")]
+        let cards_per_row = champion_mastery_columns_for_width(local_width);
+
+        #[cfg(not(feature = "dev"))]
+        let cards_per_row = (local_width / 165.0_f32).floor().max(1.0) as usize;
+
+        let mastery_scroll = egui::ScrollArea::vertical()
+            .id_salt("champion_mastery_grid_scroll")
+            .auto_shrink([false, false]);
+
+        #[cfg(feature = "dev")]
+        let mastery_scroll = mastery_scroll.max_height(ui.available_height().max(120.0));
+
+        mastery_scroll.show(ui, |ui| {
+                ui.heading(self.localization.tr("champion_mastery.active_heading"));
+                ui.label(self.localization.tr("champion_mastery.active_info"));
+                ui.add_space(4.0);
+
+                let active_indices = self
+                    .champion_mastery_entries
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, entry)| entry.active.then_some(index))
+                    .collect::<Vec<_>>();
+
+                #[cfg(feature = "dev")]
+                egui::Grid::new("champion_mastery_active_fixed_grid")
+                    .num_columns(cards_per_row)
+                    .spacing([
+                        CHAMPION_MASTERY_CARD_HORIZONTAL_GAP,
+                        CHAMPION_MASTERY_CARD_VERTICAL_GAP,
+                    ])
+                    .show(ui, |ui| {
+                        for (cell, &index) in active_indices.iter().enumerate() {
+                            let champion = &mut self.champion_mastery_entries[index];
+                            Self::render_champion_mastery_card(ui, champion, true);
+                            if (cell + 1) % cards_per_row == 0 {
+                                ui.end_row();
+                            }
+                        }
+                        if !active_indices.is_empty()
+                            && active_indices.len() % cards_per_row != 0
+                        {
+                            ui.end_row();
+                        }
+                    });
+
+                #[cfg(not(feature = "dev"))]
+                for row in active_indices.chunks(cards_per_row) {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        for &index in row {
+                            let champion = &mut self.champion_mastery_entries[index];
+                            Self::render_champion_mastery_card(ui, champion, true);
+                        }
+                    });
+                    ui.add_space(10.0);
+                }
+
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                ui.heading(self.localization.tr("champion_mastery.inactive_heading"));
+                ui.label(self.localization.tr(champion_inactive_info_key()));
+                ui.add_space(4.0);
+
+                let inactive_indices = self
+                    .champion_mastery_entries
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, entry)| (!entry.active).then_some(index))
+                    .collect::<Vec<_>>();
+
+                #[cfg(feature = "dev")]
+                egui::Grid::new("champion_mastery_inactive_fixed_grid")
+                    .num_columns(cards_per_row)
+                    .spacing([
+                        CHAMPION_MASTERY_CARD_HORIZONTAL_GAP,
+                        CHAMPION_MASTERY_CARD_VERTICAL_GAP,
+                    ])
+                    .show(ui, |ui| {
+                        for (cell, &index) in inactive_indices.iter().enumerate() {
+                            let champion = &mut self.champion_mastery_entries[index];
+                            Self::render_champion_mastery_card(ui, champion, false);
+                            if (cell + 1) % cards_per_row == 0 {
+                                ui.end_row();
+                            }
+                        }
+                        if !inactive_indices.is_empty()
+                            && inactive_indices.len() % cards_per_row != 0
+                        {
+                            ui.end_row();
+                        }
+                    });
+
+                #[cfg(not(feature = "dev"))]
+                for row in inactive_indices.chunks(cards_per_row) {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        for &index in row {
+                            let champion = &mut self.champion_mastery_entries[index];
+                            Self::render_champion_mastery_card(ui, champion, false);
+                        }
+                    });
+                    ui.add_space(10.0);
+                }
+            });
+
+        (refresh_requested, apply_requested)
     }
 
     fn render_champion_mastery_window(&mut self, ctx: &egui::Context) {
@@ -3776,183 +4974,25 @@ Bridge TFM2 target: v{}",
             .map(|player| player.name.clone())
             .unwrap_or_else(|| self.localization.tr("champion_mastery.selected_player"));
 
-        egui::Window::new(self.localization.tr_with("champion_mastery.window_title", &[("player", player_name.as_str())]))
+        let title = self.localization.tr_with(
+            "champion_mastery.window_title",
+            &[("player", player_name.as_str())],
+        );
+
+        let mastery_window = egui::Window::new(title)
             .id(egui::Id::new("champion_mastery_grid_v030"))
             .open(&mut open)
             .resizable(true)
-            .default_size(egui::vec2(1080.0, 720.0))
-            .show(ctx, |ui| {
-                let active_count = self
-                    .champion_mastery_entries
-                    .iter()
-                    .filter(|entry| entry.active)
-                    .count();
-                let inactive_count =
-                    self.champion_mastery_entries.len() - active_count;
-                let selected_count = self
-                    .champion_mastery_entries
-                    .iter()
-                    .filter(|entry| entry.selected)
-                    .count();
+            .default_size(egui::vec2(1080.0, 720.0));
 
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(format!(
-                        "{active_count} active · {inactive_count} inactive · {selected_count} selected"
-                    ));
-                    ui.separator();
+        #[cfg(feature = "dev")]
+        let mastery_window = mastery_window.min_width(380.0).min_height(320.0);
 
-                    if ui.button(self.localization.tr("champion_mastery.check_active")).clicked() {
-                        for entry in &mut self.champion_mastery_entries {
-                            entry.selected = entry.active;
-                        }
-                    }
-
-                    if ui.button(self.localization.tr("champion_mastery.check_inactive")).clicked() {
-                        for entry in &mut self.champion_mastery_entries {
-                            entry.selected = !entry.active;
-                        }
-                    }
-
-                    if ui.button(self.localization.tr("champion_mastery.check_all")).clicked() {
-                        for entry in &mut self.champion_mastery_entries {
-                            entry.selected = true;
-                        }
-                    }
-
-                    if ui.button(self.localization.tr("champion_mastery.clear_checks")).clicked() {
-                        for entry in &mut self.champion_mastery_entries {
-                            entry.selected = false;
-                        }
-                    }
-
-                    if ui.button(self.localization.tr("common.refresh")).clicked() {
-                        refresh_requested = true;
-                    }
-                });
-
-                ui.add_space(6.0);
-
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(self.localization.tr("champion_mastery.bulk"));
-                    ui.add(
-                        egui::Slider::new(
-                            &mut self.champion_mastery_bulk_value,
-                            0..=100,
-                        )
-                        .show_value(true),
-                    );
-
-                    if ui
-                        .add_enabled(
-                            selected_count > 0,
-                            egui::Button::new(self.localization.tr("champion_mastery.set_checked")),
-                        )
-                        .clicked()
-                    {
-                        for entry in &mut self.champion_mastery_entries {
-                            if entry.selected {
-                                entry.edit_mastery =
-                                    self.champion_mastery_bulk_value;
-                            }
-                        }
-                    }
-
-                    ui.separator();
-
-                    if ui
-                        .add_enabled(
-                            self.connected && selected_count > 0,
-                            egui::Button::new(self.localization.tr("champion_mastery.apply_selected")),
-                        )
-                        .clicked()
-                    {
-                        apply_requested = true;
-                    }
-                });
-
-                ui.add_space(6.0);
-                ui.weak(self.localization.tr(champion_mastery_help_key()));
-
-                ui.add_space(8.0);
-                ui.separator();
-
-                // Measure the Champion Mastery window's own content width here,
-                // BEFORE entering ScrollArea. This avoids both the main-window
-                // viewport bug and ScrollArea desired-size feedback.
-                let local_width = ui.available_width().max(180.0);
-
-                // A v0.2.24 card is ~145 px wide plus Frame margins/spacing.
-                // Use a conservative 165 px slot so rows never request more
-                // width than the current Champion Mastery window.
-                let slot_width = 165.0_f32;
-                let cards_per_row =
-                    (local_width / slot_width).floor().max(1.0) as usize;
-
-                egui::ScrollArea::vertical()
-                    .id_salt("champion_mastery_grid_scroll")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.heading(self.localization.tr("champion_mastery.active_heading"));
-                        ui.label(self.localization.tr("champion_mastery.active_info"));
-                        ui.add_space(4.0);
-
-                        let active_indices = self
-                            .champion_mastery_entries
-                            .iter()
-                            .enumerate()
-                            .filter_map(|(index, entry)| entry.active.then_some(index))
-                            .collect::<Vec<_>>();
-
-                        for row in active_indices.chunks(cards_per_row) {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 10.0;
-
-                                for &index in row {
-                                    let champion =
-                                        &mut self.champion_mastery_entries[index];
-                                    Self::render_champion_mastery_card(
-                                        ui,
-                                        champion,
-                                        true,
-                                    );
-                                }
-                            });
-                            ui.add_space(10.0);
-                        }
-
-                        ui.add_space(6.0);
-                        ui.separator();
-                        ui.add_space(8.0);
-
-                        ui.heading(self.localization.tr("champion_mastery.inactive_heading"));
-                        ui.label(self.localization.tr(champion_inactive_info_key()));
-                        ui.add_space(4.0);
-
-                        let inactive_indices = self
-                            .champion_mastery_entries
-                            .iter()
-                            .enumerate()
-                            .filter_map(|(index, entry)| (!entry.active).then_some(index))
-                            .collect::<Vec<_>>();
-
-                        for row in inactive_indices.chunks(cards_per_row) {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 10.0;
-
-                                for &index in row {
-                                    let champion =
-                                        &mut self.champion_mastery_entries[index];
-                                    Self::render_champion_mastery_card(
-                                        ui,
-                                        champion,
-                                        false,
-                                    );
-                                }
-                            });
-                            ui.add_space(10.0);
-                        }
-                    });
-            });
+        mastery_window.show(ctx, |ui| {
+            let (refresh, apply) = self.render_champion_mastery_contents(ui);
+            refresh_requested |= refresh;
+            apply_requested |= apply;
+        });
 
         self.champion_mastery_open = open;
 
@@ -3962,7 +5002,6 @@ Bridge TFM2 target: v{}",
             self.load_champion_mastery();
         }
     }
-
 
     fn render_player_contract_window(&mut self, ctx: &egui::Context) {
         if !self.player_contract_window_open {
@@ -4646,6 +5685,48 @@ Bridge TFM2 target: v{}",
         }
     }
 
+    fn apply_player_name(&mut self) {
+        let Some(player) = self.selected_player.as_ref() else {
+            self.status = "Select a player first".to_string();
+            return;
+        };
+
+        let name = match validate_editor_name(&player.name) {
+            Ok(name) => name,
+            Err(error) => {
+                self.status = error;
+                return;
+            }
+        };
+        let athlete_id = player.id;
+        let command = format!("SET_PLAYER_NAME|{athlete_id}|{}", hex_encode(&name));
+
+        match self.game_request(&command) {
+            Ok(response) if response == "OK|PLAYER_NAME" => {
+                if let Some(player) = self.selected_player.as_mut() {
+                    player.name = name.clone();
+                }
+                if let Some(summary) = self.players.iter_mut().find(|player| player.id == athlete_id) {
+                    summary.name = name.clone();
+                }
+                self.connected = true;
+                self.update_player_search_status();
+                self.status = format!("Player name updated: {name}");
+            }
+            Ok(response) => {
+                if let Some(error) = response.strip_prefix("ERR|") {
+                    self.status = human_error(error);
+                } else {
+                    self.status = format!("Unexpected player name response: {response}");
+                }
+            }
+            Err(error) => {
+                self.connected = false;
+                self.status = error;
+            }
+        }
+    }
+
     fn apply_selected_player(&mut self) {
         let Some(player) = self.selected_player.as_ref() else {
             self.status = "Select a player first".to_string();
@@ -5142,19 +6223,7 @@ Bridge TFM2 target: v{}",
 
         ui.heading(self.localization.tr("player_editor.heading"));
         ui.label(self.localization.tr(player_editor_intro_key()));
-        #[cfg(feature = "dev")]
-        ui.weak(self.localization.tr("editor.recommended_save"));
-
-        #[cfg(not(feature = "dev"))]
-        ui.horizontal_wrapped(|ui| {
-            ui.label(
-                egui::RichText::new(self.localization.tr("editor.recommended_save_prefix"))
-                    .strong()
-                    .color(egui::Color32::from_rgb(235, 196, 0)),
-            );
-            ui.label(self.localization.tr("editor.recommended_save_text"));
-        });
-        ui.add_space(8.0);
+        render_editor_safety_recommendation(ui, &self.localization);
 
         ui.horizontal(|ui| {
             ui.label(self.localization.tr("common.search"));
@@ -5257,6 +6326,7 @@ Bridge TFM2 target: v{}",
         }
 
         ui.add_space(8.0);
+        let mut apply_player_name_clicked = false;
         let mut apply_player_clicked = false;
         let mut max_all_clicked = false;
         let mut apply_positions_clicked = false;
@@ -5264,14 +6334,58 @@ Bridge TFM2 target: v{}",
         let mut apply_salary_clicked = false;
         let mut open_contract_clicked = false;
 
-        let selected_identity = self
-            .selected_player
-            .as_ref()
-            .map(|player| format!("{}  ·  ID {}", player.name, player.id));
+        if self.selected_player.is_some() {
+            let (player_age, player_team, player_position) = self
+                .selected_player_id
+                .and_then(|id| self.players.iter().find(|player| player.id == id))
+                .map(|player| {
+                    (
+                        player.age.clone(),
+                        player.team.clone(),
+                        localized_position_summary(&self.localization, &player.position),
+                    )
+                })
+                .unwrap_or_else(|| ("-".to_string(), "-".to_string(), "-".to_string()));
 
-        if let Some(selected_identity) = selected_identity {
-            ui.label(selected_identity);
-            ui.add_space(6.0);
+            if let Some(player) = self.selected_player.as_mut() {
+                egui::Grid::new("player_identity_grid")
+                    .num_columns(4)
+                    .spacing([20.0, 5.0])
+                    .show(ui, |ui| {
+                        ui.label(self.localization.tr("common.name"));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut player.name)
+                                .desired_width(240.0)
+                                .char_limit(100),
+                        );
+                        if ui
+                            .add_enabled(
+                                self.connected,
+                                egui::Button::new(self.localization.tr("editor.apply_name")),
+                            )
+                            .clicked()
+                        {
+                            apply_player_name_clicked = true;
+                        }
+                        ui.label(format!(
+                            "{}: {}",
+                            self.localization.tr("common.id"),
+                            player.id
+                        ));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("search.players.position"));
+                        ui.strong(player_position);
+                        ui.label(self.localization.tr("common.age"));
+                        ui.strong(player_age);
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("common.team"));
+                        ui.strong(player_team);
+                        ui.end_row();
+                    });
+            }
+            ui.add_space(12.0);
 
             if use_two_column_layout {
                 let column_item_spacing = ui.spacing().item_spacing;
@@ -5343,6 +6457,9 @@ Bridge TFM2 target: v{}",
             ui.label(self.localization.tr("player_editor.no_data"));
         }
 
+        if apply_player_name_clicked {
+            self.apply_player_name();
+        }
         if apply_positions_clicked {
             self.apply_player_positions();
         }
@@ -5810,10 +6927,11 @@ Bridge TFM2 target: v{}",
     fn render_staff_editor_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading(self.localization.tr("staff_editor.heading"));
         ui.label(self.localization.tr("staff_editor.intro"));
-        ui.add_space(8.0);
+        render_editor_safety_recommendation(ui, &self.localization);
 
         let mut refresh_staff_clicked = false;
         let mut selection_changed = false;
+        let mut apply_staff_name_clicked = false;
         let mut apply_staff_clicked = false;
         let mut max_all_clicked = false;
         let mut apply_salary_clicked = false;
@@ -5896,9 +7014,21 @@ Bridge TFM2 target: v{}",
                 .spacing([20.0, 5.0])
                 .show(ui, |ui| {
                     ui.label(self.localization.tr("common.name"));
-                    ui.strong(&staff.name);
-                    ui.label(self.localization.tr("common.id"));
-                    ui.strong(staff.id.to_string());
+                    ui.add(
+                        egui::TextEdit::singleline(&mut staff.name)
+                            .desired_width(240.0)
+                            .char_limit(100),
+                    );
+                    if ui
+                        .add_enabled(
+                            self.connected,
+                            egui::Button::new(self.localization.tr("editor.apply_name")),
+                        )
+                        .clicked()
+                    {
+                        apply_staff_name_clicked = true;
+                    }
+                    ui.label(format!("{}: {}", self.localization.tr("common.id"), staff.id));
                     ui.end_row();
 
                     ui.label(self.localization.tr("common.role"));
@@ -6180,7 +7310,9 @@ Bridge TFM2 target: v{}",
             );
         }
 
-        if apply_staff_clicked {
+        if apply_staff_name_clicked {
+            self.apply_staff_name();
+        } else if apply_staff_clicked {
             self.apply_staff_attributes();
         } else if apply_salary_clicked {
             self.apply_staff_salary();
@@ -6455,15 +7587,12 @@ Bridge TFM2 target: v{}",
     }
 
     fn refresh_recruitment_settings(&mut self) {
-        match self.game_request("GET_RECRUITMENT_SETTINGS") {
-            Ok(response) => {
-                let parts: Vec<&str> = response.split('|').collect();
-                if parts.len() >= 4 && parts[0] == "OK" && parts[1] == "RECRUITMENT" {
-                    self.transfer_always_success = parts[2] == "1";
-                    self.recruitment_instant_retry = parts[3] == "1";
-                }
+        if let Ok(response) = self.game_request("GET_RECRUITMENT_SETTINGS") {
+            let parts: Vec<&str> = response.split('|').collect();
+            if parts.len() >= 4 && parts[0] == "OK" && parts[1] == "RECRUITMENT" {
+                self.transfer_always_success = parts[2] == "1";
+                self.recruitment_instant_retry = parts[3] == "1";
             }
-            Err(_) => {}
         }
     }
 
@@ -6483,6 +7612,20 @@ Bridge TFM2 target: v{}",
                             .find(|team| team.is_player_team)
                             .or_else(|| self.teams.first())
                             .map(|team| team.id);
+                    }
+                    #[cfg(feature = "dev")]
+                    {
+                        let keep_workspace_selection = self
+                            .team_workspace_team_id
+                            .is_some_and(|id| self.teams.iter().any(|team| team.id == id));
+                        if !keep_workspace_selection {
+                            self.team_workspace_team_id = self
+                                .teams
+                                .iter()
+                                .find(|team| team.is_player_team)
+                                .or_else(|| self.teams.first())
+                                .map(|team| team.id);
+                        }
                     }
                     self.status = format!("Loaded {} teams", self.teams.len());
                     self.update_team_search_status();
@@ -6771,7 +7914,7 @@ Bridge TFM2 target: v{}",
     fn render_recruitment_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading(self.localization.tr("recruitment.heading"));
         ui.label(self.localization.tr("recruitment.info"));
-        ui.add_space(12.0);
+        render_editor_safety_recommendation(ui, &self.localization);
 
         ui.group(|ui| {
             ui.strong(self.localization.tr("recruitment.transfer_negotiation"));
@@ -7346,7 +8489,7 @@ Bridge TFM2 target: v{}",
 
         let Some(path) = rfd::FileDialog::new()
             .set_title("Export TFM2 Player Filter")
-            .set_file_name(&format!(
+            .set_file_name(format!(
                 "{}.tfm2filter",
                 Self::sanitize_filter_name(default_name)
             ))
@@ -7491,7 +8634,7 @@ Bridge TFM2 target: v{}",
             lists.push(list);
         }
 
-        lists.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+        lists.sort_by_key(|list| list.name.to_lowercase());
         lists.dedup_by(|left, right| left.name.eq_ignore_ascii_case(&right.name));
         self.saved_player_lists = lists;
 
@@ -7835,7 +8978,7 @@ Bridge TFM2 target: v{}",
 
         let Some(path) = rfd::FileDialog::new()
             .set_title(self.localization.tr("lists.export_title"))
-            .set_file_name(&format!("{}.tfm2list", Self::sanitize_list_name(&list.name)))
+            .set_file_name(format!("{}.tfm2list", Self::sanitize_list_name(&list.name)))
             .add_filter("TFM2 List", &["tfm2list"])
             .save_file()
         else {
@@ -8019,7 +9162,7 @@ Bridge TFM2 target: v{}",
 
         let Some(path) = rfd::FileDialog::new()
             .set_title("Export TFM2 Staff Filter")
-            .set_file_name(&format!(
+            .set_file_name(format!(
                 "{}.tfm2filter",
                 Self::sanitize_filter_name(default_name)
             ))
@@ -8691,6 +9834,2221 @@ Bridge TFM2 target: v{}",
         }
     }
 
+    #[cfg(feature = "dev")]
+    fn render_team_workspace_tab(&mut self, ui: &mut egui::Ui) {
+        ui.heading(self.localization.tr("team_workspace.heading"));
+        ui.label(self.localization.tr("team_workspace.intro"));
+        ui.add_space(8.0);
+
+        let mut refresh_requested = false;
+        let mut selection_changed = false;
+        let mut condition_probe_requested = false;
+        let mut team_data_probe_requested = false;
+        let mut team_management_requested = false;
+        let mut team_history_requested = false;
+
+        ui.horizontal(|ui| {
+            ui.label(self.localization.tr("team_workspace.search"));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.team_workspace_search)
+                    .desired_width(260.0)
+                    .hint_text(self.localization.tr("team_workspace.search_hint")),
+            );
+            if ui.button(self.localization.tr("common.clear")).clicked() {
+                self.team_workspace_search.clear();
+            }
+        });
+
+        let query = self.team_workspace_search.trim().to_lowercase();
+        let team_options = self
+            .teams
+            .iter()
+            .filter(|team| query.is_empty() || team.matches_search(&query))
+            .map(|team| (team.id, team.localized_label(&self.localization)))
+            .collect::<Vec<_>>();
+
+        ui.horizontal(|ui| {
+            ui.label(self.localization.tr("common.team"));
+            let selected_text = self
+                .team_workspace_team_id
+                .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+                .map(|team| team.localized_label(&self.localization))
+                .unwrap_or_else(|| self.localization.tr("common.select_team"));
+
+            egui::ComboBox::from_id_salt("team_workspace_team_selector")
+                .selected_text(selected_text)
+                .width(320.0)
+                .show_ui(ui, |ui| {
+                    for (team_id, label) in &team_options {
+                        if ui
+                            .selectable_value(
+                                &mut self.team_workspace_team_id,
+                                Some(*team_id),
+                                label,
+                            )
+                            .changed()
+                        {
+                            selection_changed = true;
+                        }
+                    }
+                });
+
+            let count = self.teams.len().to_string();
+            ui.label(self.localization.tr_with(
+                "common.total_count",
+                &[("count", count.as_str())],
+            ));
+
+            if ui
+                .add_enabled(
+                    self.connected,
+                    egui::Button::new(self.localization.tr("team_workspace.refresh_data")),
+                )
+                .clicked()
+            {
+                refresh_requested = true;
+            }
+        });
+
+        ui.add_space(6.0);
+
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            ui.weak(self.localization.tr("team_workspace.no_team"));
+            if refresh_requested {
+                self.refresh_players();
+                self.refresh_staff();
+                self.refresh_teams();
+            }
+            return;
+        };
+
+        if selection_changed {
+            self.team_roster_selected_player_id = None;
+            self.team_staff_selected_staff_id = None;
+            self.team_condition_window_open = false;
+            self.team_condition_entries.clear();
+            self.team_condition_team_id = None;
+            self.team_condition_selected_player_ids.clear();
+            self.team_data_probe_window_open = false;
+            self.team_data_probe_team_id = None;
+            self.team_data_probe_raw.clear();
+            self.team_management_data = None;
+            self.team_management_last_request_team_id = None;
+            self.team_history_data = None;
+            self.team_history_last_request_team_id = None;
+            self.status = format!("Team data loaded: {}", team.display_name);
+        }
+
+        let loaded_roster_count = self
+            .players
+            .iter()
+            .filter(|player| summary_belongs_to_team(&player.team, &team))
+            .count();
+        let loaded_staff_count = self
+            .staffs
+            .iter()
+            .filter(|staff| summary_belongs_to_team(&staff.team, &team))
+            .count();
+        let management_data = self
+            .team_management_data
+            .as_ref()
+            .filter(|data| data.team_id == team.id)
+            .cloned();
+        let management_auto_request =
+            self.team_management_last_request_team_id != Some(team.id);
+        let history_data = self
+            .team_history_data
+            .as_ref()
+            .filter(|data| data.team_id == team.id)
+            .cloned();
+        let history_auto_request = (self.team_match_history_window_open
+            || self.team_pre_match_analysis_window_open
+            || self.team_history_summary_window_open)
+            && self.team_history_last_request_team_id != Some(team.id);
+
+        ui.horizontal_wrapped(|ui| {
+            if ui.button(self.localization.tr("team_workspace.open_roster")).clicked() {
+                self.team_roster_window_open = true;
+            }
+            if ui.button(self.localization.tr("team_workspace.open_staff")).clicked() {
+                self.team_staff_window_open = true;
+            }
+            if ui
+                .button(self.localization.tr("team_workspace.open_condition_probe"))
+                .clicked()
+            {
+                condition_probe_requested = true;
+            }
+            if ui
+                .button(self.localization.tr("team_workspace.open_strategy"))
+                .clicked()
+            {
+                self.team_strategy_window_open = true;
+                team_management_requested = management_data.is_none();
+            }
+            if ui
+                .button(self.localization.tr("team_workspace.open_merchandise"))
+                .clicked()
+            {
+                self.team_merchandise_window_open = true;
+                team_management_requested = management_data.is_none();
+            }
+            if ui
+                .button(self.localization.tr("team_workspace.open_champion_setup"))
+                .clicked()
+            {
+                self.team_champion_setup_window_open = true;
+                team_management_requested = management_data.is_none();
+            }
+            if ui
+                .button(self.localization.tr("team_workspace.open_gaming_house"))
+                .clicked()
+            {
+                self.team_gaming_house_window_open = true;
+                team_management_requested = management_data.is_none();
+            }
+            if ui
+                .button(self.localization.tr("team_workspace.open_match_history"))
+                .clicked()
+            {
+                self.team_match_history_window_open = true;
+                team_history_requested = history_data.is_none();
+            }
+            if ui
+                .button(self.localization.tr("team_workspace.open_pre_match_analysis"))
+                .clicked()
+            {
+                self.team_pre_match_analysis_window_open = true;
+                team_history_requested = history_data.is_none();
+            }
+            if ui
+                .button(self.localization.tr("team_workspace.open_history_summary"))
+                .clicked()
+            {
+                self.team_history_summary_window_open = true;
+                team_history_requested = history_data.is_none();
+            }
+            if ui
+                .button(self.localization.tr("team_workspace.open_data_probe"))
+                .clicked()
+            {
+                team_data_probe_requested = true;
+            }
+            ui.separator();
+            ui.weak(self.localization.tr("team_workspace.read_only"));
+        });
+
+        ui.add_space(10.0);
+
+        {
+        let render_overview = |ui: &mut egui::Ui| {
+            ui.group(|ui| {
+                ui.set_min_width(420.0);
+                ui.strong(self.localization.tr("team_workspace.overview"));
+                ui.add_space(6.0);
+                egui::Grid::new("team_workspace_overview_grid")
+                    .num_columns(2)
+                    .spacing(egui::vec2(24.0, 6.0))
+                    .show(ui, |ui| {
+                        ui.label(self.localization.tr("team_workspace.team_name"));
+                        ui.label(value_or_dash(&team.display_name));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("team_workspace.team_id"));
+                        ui.label(team.id.to_string());
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("search.teams.league"));
+                        let league_id = team.league_id.to_string();
+                        ui.label(self.localization.tr_with(
+                            "common.league_number",
+                            &[("id", league_id.as_str())],
+                        ));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("search.teams.manager"));
+                        ui.label(value_or_dash(&team.manager_name));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("search.teams.player_team"));
+                        ui.label(if team.is_player_team {
+                            self.localization.tr("common.my_team")
+                        } else {
+                            "—".to_string()
+                        });
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("team_workspace.roster_size"));
+                        ui.label(format!("{loaded_roster_count} / {}", team.roster_size));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("team_workspace.staff_count"));
+                        ui.label(format!("{loaded_staff_count} / {}", team.staff_count));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("search.teams.roster_rating"));
+                        ui.label(
+                            team.roster_rating
+                                .map(|value| format!("{value:.1}"))
+                                .unwrap_or_else(|| "—".to_string()),
+                        );
+                        ui.end_row();
+                    });
+            });
+        };
+
+        let render_finance = |ui: &mut egui::Ui| {
+            ui.group(|ui| {
+                ui.set_min_width(420.0);
+                ui.strong(self.localization.tr("team_workspace.finance"));
+                ui.add_space(6.0);
+                egui::Grid::new("team_workspace_finance_grid")
+                    .num_columns(2)
+                    .spacing(egui::vec2(24.0, 6.0))
+                    .show(ui, |ui| {
+                        ui.label(self.localization.tr("economy.money"));
+                        ui.label(format_internal_amount(&team.total_balance.to_string()));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("economy.transfer_budget"));
+                        ui.label(format_internal_amount(&team.transfer_budget.to_string()));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("economy.salary_budget"));
+                        ui.label(format_internal_amount(&team.salary_budget.to_string()));
+                        ui.end_row();
+                    });
+            });
+        };
+
+        let render_stadium = |ui: &mut egui::Ui| {
+            ui.group(|ui| {
+                ui.set_min_width(420.0);
+                ui.strong(self.localization.tr("team_workspace.stadium"));
+                ui.add_space(6.0);
+                egui::Grid::new("team_workspace_stadium_grid")
+                    .num_columns(2)
+                    .spacing(egui::vec2(24.0, 6.0))
+                    .show(ui, |ui| {
+                        ui.label(self.localization.tr("team_workspace.stadium_name"));
+                        ui.label(value_or_dash(&team.stadium_name));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("search.teams.stadium_grade"));
+                        ui.label(display_facility_grade(&team.stadium_grade));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("team_workspace.stadium_capacity"));
+                        ui.label(value_or_dash(&team.stadium_capacity));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("team_workspace.average_attendance"));
+                        ui.label(
+                            team.average_home_attendance()
+                                .map(|value| format!("{value:.0}"))
+                                .unwrap_or_else(|| "—".to_string()),
+                        );
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("team_workspace.total_entrance_income"));
+                        ui.label(format_internal_amount(
+                            &team.total_entrance_income.to_string(),
+                        ));
+                        ui.end_row();
+                    });
+            });
+        };
+
+        let render_fans = |ui: &mut egui::Ui| {
+            ui.group(|ui| {
+                ui.set_min_width(420.0);
+                ui.strong(self.localization.tr("team_workspace.fans"));
+                ui.add_space(6.0);
+                egui::Grid::new("team_workspace_fans_grid")
+                    .num_columns(2)
+                    .spacing(egui::vec2(24.0, 6.0))
+                    .show(ui, |ui| {
+                        ui.label(self.localization.tr("team_workspace.popularity"));
+                        ui.label(value_or_dash(&team.popularity));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("team_workspace.fan_count"));
+                        ui.label(value_or_dash(&team.fan_count));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("team_workspace.fan_expectation"));
+                        ui.label(value_or_dash(&team.fan_expectation));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("team_workspace.fan_satisfaction"));
+                        ui.label(value_or_dash(&team.fan_satisfaction));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("team_workspace.fan_momentum"));
+                        ui.label(value_or_dash(&team.fan_momentum));
+                        ui.end_row();
+                    });
+            });
+        };
+
+        let render_facilities = |ui: &mut egui::Ui| {
+            ui.group(|ui| {
+                ui.set_min_width(420.0);
+                ui.strong(self.localization.tr("team_workspace.facilities"));
+                ui.add_space(6.0);
+                egui::Grid::new("team_workspace_facilities_grid")
+                    .num_columns(2)
+                    .spacing(egui::vec2(24.0, 6.0))
+                    .show(ui, |ui| {
+                        ui.label(
+                            self.localization
+                                .tr("search.teams.merchandise_facility_grade"),
+                        );
+                        ui.label(display_facility_grade(
+                            &team.merchandise_facility_grade,
+                        ));
+                        ui.end_row();
+
+                        ui.label(
+                            self.localization
+                                .tr("search.teams.training_facility_grade"),
+                        );
+                        ui.label(display_facility_grade(&team.training_facility_grade));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("team_workspace.gaming_house_level"));
+                        ui.label(value_or_dash(&team.gaming_house_level));
+                        ui.end_row();
+
+                        ui.label(self.localization.tr("team_workspace.welfare"));
+                        ui.label(value_or_dash(&team.welfare));
+                        ui.end_row();
+                    });
+            });
+        };
+
+        let render_management = |ui: &mut egui::Ui| {
+            ui.group(|ui| {
+                ui.set_min_width(420.0);
+                ui.strong(self.localization.tr("team_workspace.management"));
+                ui.add_space(6.0);
+                if let Some(data) = management_data.as_ref() {
+                    egui::Grid::new("team_workspace_management_grid")
+                        .num_columns(2)
+                        .spacing(egui::vec2(24.0, 6.0))
+                        .show(ui, |ui| {
+                            ui.label(self.localization.tr("team_workspace.last_starting"));
+                            ui.add(
+                                egui::Label::new(format_team_lineup(&data.lineup)).wrap(),
+                            );
+                            ui.end_row();
+
+                            ui.label(self.localization.tr("team_workspace.watched_players"));
+                            ui.label(data.watched_players.len().to_string()).on_hover_text(
+                                format_team_member_references(&data.watched_players),
+                            );
+                            ui.end_row();
+
+                            ui.label(self.localization.tr("team_workspace.no_transfer_players"));
+                            ui.label(data.no_transfer_players.len().to_string()).on_hover_text(
+                                format_team_member_references(&data.no_transfer_players),
+                            );
+                            ui.end_row();
+
+                            ui.label(self.localization.tr("team_workspace.release_players"));
+                            ui.label(data.release_players.len().to_string()).on_hover_text(
+                                format_team_member_references(&data.release_players),
+                            );
+                            ui.end_row();
+
+                            ui.label(self.localization.tr("team_workspace.watched_staff"));
+                            ui.label(data.watched_staff.len().to_string()).on_hover_text(
+                                format_team_member_references(&data.watched_staff),
+                            );
+                            ui.end_row();
+
+                            ui.label(self.localization.tr("team_workspace.release_staff"));
+                            ui.label(data.release_staff.len().to_string()).on_hover_text(
+                                format_team_member_references(&data.release_staff),
+                            );
+                            ui.end_row();
+
+                            ui.label(self.localization.tr("team_workspace.scout_dispatch"));
+                            ui.label(value_or_dash(&data.scout_dispatch));
+                            ui.end_row();
+
+                            ui.label(self.localization.tr("team_workspace.pending_installments"));
+                            ui.label(data.pending_installments.to_string());
+                            ui.end_row();
+
+                            ui.label(self.localization.tr("team_workspace.resale_clauses"));
+                            ui.label(data.resale_clauses.to_string());
+                            ui.end_row();
+
+                            ui.label(self.localization.tr("team_workspace.merchandise_products"));
+                            ui.label(data.merchandise_product_count.to_string());
+                            ui.end_row();
+
+                            ui.label(self.localization.tr("team_workspace.champion_tiers"));
+                            ui.label(data.champion_tier_count.to_string());
+                            ui.end_row();
+
+                            ui.label(self.localization.tr("team_workspace.personal_tactics"));
+                            ui.label(data.personal_tactic_count.to_string());
+                            ui.end_row();
+                        });
+                } else {
+                    ui.weak(self.localization.tr("team_workspace.management_loading"));
+                }
+            });
+        };
+
+        if ui.available_width() >= 900.0 {
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                ui.vertical(|ui| {
+                    render_overview(ui);
+                    ui.add_space(12.0);
+                    render_management(ui);
+                    ui.add_space(12.0);
+                    render_stadium(ui);
+                });
+                ui.add_space(16.0);
+                ui.vertical(|ui| {
+                    render_finance(ui);
+                    ui.add_space(12.0);
+                    render_fans(ui);
+                    ui.add_space(12.0);
+                    render_facilities(ui);
+                });
+            });
+        } else {
+            render_overview(ui);
+            ui.add_space(12.0);
+            render_management(ui);
+            ui.add_space(12.0);
+            render_finance(ui);
+            ui.add_space(12.0);
+            render_stadium(ui);
+            ui.add_space(12.0);
+            render_fans(ui);
+            ui.add_space(12.0);
+            render_facilities(ui);
+        }
+        }
+
+        ui.add_space(10.0);
+        ui.weak(self.localization.tr("team_workspace.current_scope"));
+
+        if condition_probe_requested {
+            self.refresh_team_condition_probe();
+        }
+        if team_data_probe_requested {
+            self.refresh_team_data_probe();
+        }
+
+        if refresh_requested {
+            let selected_team_id = self.team_workspace_team_id;
+            self.refresh_players();
+            self.refresh_staff();
+            self.refresh_teams();
+            if selected_team_id.is_some_and(|team_id| {
+                self.teams.iter().any(|candidate| candidate.id == team_id)
+            }) {
+                self.team_workspace_team_id = selected_team_id;
+            }
+            if let Some(selected_team) = self
+                .team_workspace_team_id
+                .and_then(|team_id| self.teams.iter().find(|candidate| candidate.id == team_id))
+            {
+                self.status = format!("Team data loaded: {}", selected_team.display_name);
+            }
+        }
+
+        if refresh_requested
+            || selection_changed
+            || management_auto_request
+            || team_management_requested
+        {
+            self.refresh_team_management_data();
+        }
+        if team_history_requested || history_auto_request {
+            self.refresh_team_history_data();
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn render_team_roster_window(&mut self, ctx: &egui::Context) {
+        if !self.team_roster_window_open {
+            return;
+        }
+
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.team_roster_window_open = false;
+            self.team_roster_selected_player_id = None;
+            return;
+        };
+
+        let mut roster = self
+            .players
+            .iter()
+            .filter(|player| summary_belongs_to_team(&player.team, &team))
+            .cloned()
+            .collect::<Vec<_>>();
+        roster.sort_by_key(|player| player.name.to_lowercase());
+
+        let valid_player_ids = roster.iter().map(|player| player.id).collect::<BTreeSet<_>>();
+        let mut selected_player_id = self
+            .team_roster_selected_player_id
+            .filter(|player_id| valid_player_ids.contains(player_id));
+        let mut open_player_id = None;
+        let mut open = self.team_roster_window_open;
+        let title = self.localization.tr_with(
+            "team_workspace.roster_window_title",
+            &[("team", team.display_name.as_str())],
+        );
+        let window_id = egui::Id::new("team_workspace_roster_window_v051e");
+        let default_window_size = egui::vec2(1080.0, 520.0);
+
+        egui::Window::new(title)
+            .id(window_id)
+            .open(&mut open)
+            .resizable(true)
+            .default_size(default_window_size)
+            .min_size(egui::vec2(680.0, 320.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                let loaded = roster.len().to_string();
+                let reported = team.roster_size.to_string();
+                ui.label(self.localization.tr_with(
+                    "team_workspace.members_loaded",
+                    &[("loaded", loaded.as_str()), ("reported", reported.as_str())],
+                ));
+                ui.weak(self.localization.tr("team_workspace.roster_source"));
+                ui.separator();
+
+                // The shared viewport owns all remaining window space. Data changes
+                // update only the rows inside it and cannot resize the outer window.
+                let widths = [190.0, 70.0, 70.0, 105.0, 145.0, 110.0, 115.0, 120.0];
+                let table_min_width = widths.iter().copied().sum::<f32>() + 48.0;
+
+                render_team_member_table_viewport(
+                    ui,
+                    "team_workspace_roster_horizontal_v051e",
+                    table_min_width,
+                    |ui, table_height| {
+                        if roster.is_empty() {
+                            ui.weak(self.localization.tr("team_workspace.no_roster_members"));
+                            return;
+                        }
+
+                        let mut table = TableBuilder::new(ui)
+                            .id_salt("team_workspace_roster_table")
+                            .striped(true)
+                            .resizable(true)
+                            .sense(egui::Sense::click())
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .min_scrolled_height(0.0)
+                            .max_scroll_height(table_height)
+                            .auto_shrink([false, false]);
+                        for width in widths {
+                            table = table.column(
+                                Column::initial(width)
+                                    .at_least(58.0)
+                                    .clip(true)
+                                    .resizable(true),
+                            );
+                        }
+
+                        table
+                            .header(24.0, |mut header| {
+                                header.col(|ui| {
+                                    ui.strong(self.localization.tr("common.name"));
+                                });
+                                header.col(|ui| {
+                                    ui.strong(self.localization.tr("common.id"));
+                                });
+                                header.col(|ui| {
+                                    ui.strong(self.localization.tr("common.age"));
+                                });
+                                header.col(|ui| {
+                                    ui.strong(self.localization.tr("search.columns.salary"));
+                                });
+                                header.col(|ui| {
+                                    ui.strong(self.localization.tr("search.players.position"));
+                                });
+                                header.col(|ui| {
+                                    ui.strong(self.localization.tr("search.columns.actual_rating"));
+                                });
+                                header.col(|ui| {
+                                    ui.strong(self.localization.tr("search.players.actual_potential"));
+                                });
+                                header.col(|ui| {
+                                    ui.strong(self.localization.tr("contract.end"));
+                                });
+                            })
+                            .body(|body| {
+                                body.rows(24.0, roster.len(), |mut row| {
+                                    let player = &roster[row.index()];
+                                    row.set_selected(selected_player_id == Some(player.id));
+                                    row.col(|ui| {
+                                        ui.label(&player.name);
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(player.id.to_string());
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(value_or_dash(&player.age));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(pretty_or_dash(&player.salary));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(localized_position_summary(
+                                            &self.localization,
+                                            &player.position,
+                                        ));
+                                    });
+                                    row.col(|ui| {
+                                        render_actual_rating(ui, player, &self.localization);
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(pretty_or_dash(&player.actual_potential));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(value_or_dash(&display_contract_date(
+                                            &player.contract_end,
+                                        )));
+                                    });
+
+                                    let row_response = row.response();
+                                    if row_response.double_clicked() {
+                                        selected_player_id = Some(player.id);
+                                        open_player_id = Some(player.id);
+                                    } else if row_response.clicked() {
+                                        selected_player_id = Some(player.id);
+                                    }
+                                    row_response.context_menu(|ui| {
+                                        if ui
+                                            .button(
+                                                self.localization
+                                                    .tr("search.open_in_player_editor"),
+                                            )
+                                            .clicked()
+                                        {
+                                            selected_player_id = Some(player.id);
+                                            open_player_id = Some(player.id);
+                                            ui.close_menu();
+                                        }
+                                    });
+                                });
+                            });
+                    },
+                );
+            });
+
+        self.team_roster_selected_player_id = selected_player_id;
+        self.team_roster_window_open = open;
+        if let Some(player_id) = open_player_id {
+            self.team_roster_window_open = false;
+            self.open_player_in_editor(player_id);
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn render_team_staff_window(&mut self, ctx: &egui::Context) {
+        if !self.team_staff_window_open {
+            return;
+        }
+
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.team_staff_window_open = false;
+            self.team_staff_selected_staff_id = None;
+            return;
+        };
+
+        let mut staff_members = self
+            .staffs
+            .iter()
+            .filter(|staff| summary_belongs_to_team(&staff.team, &team))
+            .cloned()
+            .collect::<Vec<_>>();
+        staff_members.sort_by_key(|staff| staff.name.to_lowercase());
+
+        let valid_staff_ids = staff_members
+            .iter()
+            .map(|staff| staff.id)
+            .collect::<BTreeSet<_>>();
+        let mut selected_staff_id = self
+            .team_staff_selected_staff_id
+            .filter(|staff_id| valid_staff_ids.contains(staff_id));
+        let mut open_staff_id = None;
+        let mut open = self.team_staff_window_open;
+        let title = self.localization.tr_with(
+            "team_workspace.staff_window_title",
+            &[("team", team.display_name.as_str())],
+        );
+        let window_id = egui::Id::new("team_workspace_staff_window_v051e");
+        let default_window_size = egui::vec2(820.0, 480.0);
+
+        egui::Window::new(title)
+            .id(window_id)
+            .open(&mut open)
+            .resizable(true)
+            .default_size(default_window_size)
+            .min_size(egui::vec2(560.0, 300.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                let loaded = staff_members.len().to_string();
+                let reported = team.staff_count.to_string();
+                ui.label(self.localization.tr_with(
+                    "team_workspace.members_loaded",
+                    &[("loaded", loaded.as_str()), ("reported", reported.as_str())],
+                ));
+                ui.weak(self.localization.tr("team_workspace.staff_source"));
+                ui.separator();
+
+                // Roster and Staff use the same fixed viewport helper, so member count,
+                // refreshes, and team changes cannot alter the user-controlled window size.
+                let widths = [210.0, 70.0, 70.0, 120.0, 170.0, 130.0];
+                let table_min_width = widths.iter().copied().sum::<f32>() + 40.0;
+
+                render_team_member_table_viewport(
+                    ui,
+                    "team_workspace_staff_horizontal_v051e",
+                    table_min_width,
+                    |ui, table_height| {
+                        if staff_members.is_empty() {
+                            ui.weak(self.localization.tr("team_workspace.no_staff_members"));
+                            return;
+                        }
+
+                        let mut table = TableBuilder::new(ui)
+                            .id_salt("team_workspace_staff_table")
+                            .striped(true)
+                            .resizable(true)
+                            .sense(egui::Sense::click())
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .min_scrolled_height(0.0)
+                            .max_scroll_height(table_height)
+                            .auto_shrink([false, false]);
+                        for width in widths {
+                            table = table.column(
+                                Column::initial(width)
+                                    .at_least(58.0)
+                                    .clip(true)
+                                    .resizable(true),
+                            );
+                        }
+
+                        table
+                            .header(24.0, |mut header| {
+                                header.col(|ui| {
+                                    ui.strong(self.localization.tr("common.name"));
+                                });
+                                header.col(|ui| {
+                                    ui.strong(self.localization.tr("common.id"));
+                                });
+                                header.col(|ui| {
+                                    ui.strong(self.localization.tr("common.age"));
+                                });
+                                header.col(|ui| {
+                                    ui.strong(self.localization.tr("search.columns.salary"));
+                                });
+                                header.col(|ui| {
+                                    ui.strong(self.localization.tr("common.role"));
+                                });
+                                header.col(|ui| {
+                                    ui.strong(self.localization.tr("contract.end"));
+                                });
+                            })
+                            .body(|body| {
+                                body.rows(24.0, staff_members.len(), |mut row| {
+                                    let staff = &staff_members[row.index()];
+                                    row.set_selected(selected_staff_id == Some(staff.id));
+                                    row.col(|ui| {
+                                        ui.label(&staff.name);
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(staff.id.to_string());
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(value_or_dash(&staff.age));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(pretty_or_dash(&staff.annual_salary));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(localized_staff_role(
+                                            &self.localization,
+                                            &staff.role,
+                                        ));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(value_or_dash(&display_contract_date(
+                                            &staff.contract_end,
+                                        )));
+                                    });
+
+                                    let row_response = row.response();
+                                    if row_response.double_clicked() {
+                                        selected_staff_id = Some(staff.id);
+                                        open_staff_id = Some(staff.id);
+                                    } else if row_response.clicked() {
+                                        selected_staff_id = Some(staff.id);
+                                    }
+                                    row_response.context_menu(|ui| {
+                                        if ui
+                                            .button(
+                                                self.localization
+                                                    .tr("search.open_in_staff_editor"),
+                                            )
+                                            .clicked()
+                                        {
+                                            selected_staff_id = Some(staff.id);
+                                            open_staff_id = Some(staff.id);
+                                            ui.close_menu();
+                                        }
+                                    });
+                                });
+                            });
+                    },
+                );
+            });
+
+        self.team_staff_selected_staff_id = selected_staff_id;
+        self.team_staff_window_open = open;
+        if let Some(staff_id) = open_staff_id {
+            self.team_staff_window_open = false;
+            self.open_staff_in_editor(staff_id);
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn current_team_management_context(&self) -> Option<(TeamSummary, TeamManagementData)> {
+        let team = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()?;
+        let data = self
+            .team_management_data
+            .as_ref()
+            .filter(|data| data.team_id == team.id)
+            .cloned()?;
+        Some((team, data))
+    }
+
+    #[cfg(feature = "dev")]
+    fn current_team_history_context(&self) -> Option<(TeamSummary, Option<TeamHistoryData>)> {
+        let team = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()?;
+        let data = self
+            .team_history_data
+            .as_ref()
+            .filter(|data| data.team_id == team.id)
+            .cloned();
+        Some((team, data))
+    }
+
+    #[cfg(feature = "dev")]
+    fn render_team_match_history_window(&mut self, ctx: &egui::Context) {
+        if !self.team_match_history_window_open {
+            return;
+        }
+
+        let Some((team, data)) = self.current_team_history_context() else {
+            self.team_match_history_window_open = false;
+            return;
+        };
+
+        let mut open = self.team_match_history_window_open;
+        let mut refresh_requested = false;
+        let title = self.localization.tr_with(
+            "team_match_history.window_title",
+            &[("team", team.display_name.as_str())],
+        );
+
+        egui::Window::new(title)
+            .id(egui::Id::new("team_match_history_window_v057"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size(egui::vec2(1080.0, 640.0))
+            .min_size(egui::vec2(720.0, 400.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(self.localization.tr("common.refresh")).clicked() {
+                        refresh_requested = true;
+                    }
+                    ui.weak(self.localization.tr("team_match_history.help"));
+                });
+                ui.separator();
+
+                let Some(data) = data.as_ref() else {
+                    ui.weak(self.localization.tr("team_history.loading"));
+                    return;
+                };
+
+                ui.horizontal_wrapped(|ui| {
+                    let match_count = data.matches.len().to_string();
+                    let match_wins = data.wins().to_string();
+                    let match_losses = data.losses().to_string();
+                    let set_wins = data.set_wins().to_string();
+                    let set_losses = data.set_losses().to_string();
+                    ui.label(self.localization.tr_with(
+                        "team_match_history.matches_count",
+                        &[("count", match_count.as_str())],
+                    ));
+                    ui.separator();
+                    ui.label(self.localization.tr_with(
+                        "team_match_history.record_value",
+                        &[
+                            ("wins", match_wins.as_str()),
+                            ("losses", match_losses.as_str()),
+                        ],
+                    ));
+                    ui.separator();
+                    ui.label(self.localization.tr_with(
+                        "team_match_history.set_record_value",
+                        &[
+                            ("wins", set_wins.as_str()),
+                            ("losses", set_losses.as_str()),
+                        ],
+                    ));
+                });
+                ui.add_space(6.0);
+
+                if data.matches.is_empty() {
+                    ui.weak(self.localization.tr("team_match_history.empty"));
+                    return;
+                }
+
+                egui::ScrollArea::vertical()
+                    .id_salt("team_match_history_scroll_v057")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for entry in data.matches.iter().rev() {
+                            let result = if entry.is_win {
+                                self.localization.tr("team_history.win")
+                            } else {
+                                self.localization.tr("team_history.loss")
+                            };
+                            let header = format!(
+                                "{} · {} {}-{} · {} · {}",
+                                entry.date,
+                                result,
+                                entry.my_score,
+                                entry.enemy_score,
+                                entry.opponent_name,
+                                entry.article_pattern
+                            );
+                            egui::CollapsingHeader::new(header)
+                                .id_salt(("team_match_history_entry_v057", entry.match_id))
+                                .default_open(false)
+                                .show(ui, |ui| {
+                                    egui::Grid::new((
+                                        "team_match_history_details_grid_v057",
+                                        entry.match_id,
+                                    ))
+                                    .num_columns(2)
+                                    .spacing(egui::vec2(24.0, 6.0))
+                                    .show(ui, |ui| {
+                                        ui.label(self.localization.tr("team_history.match_id"));
+                                        ui.label(entry.match_id.to_string());
+                                        ui.end_row();
+
+                                        ui.label(self.localization.tr("team_history.opponent"));
+                                        ui.label(format!(
+                                            "{} (ID {})",
+                                            entry.opponent_name, entry.opponent_id
+                                        ));
+                                        ui.end_row();
+
+                                        ui.label(self.localization.tr("team_history.match_type"));
+                                        ui.label(if entry.is_practice {
+                                            self.localization.tr("team_history.practice")
+                                        } else {
+                                            self.localization.tr("team_history.official")
+                                        });
+                                        ui.end_row();
+
+                                        ui.label(self.localization.tr("team_history.match_pattern"));
+                                        ui.label(value_or_dash(&entry.article_pattern));
+                                        ui.end_row();
+                                    });
+
+                                    ui.add_space(8.0);
+                                    ui.strong(self.localization.tr("team_match_history.set_details"));
+                                    egui::Grid::new((
+                                        "team_match_history_sets_grid_v057",
+                                        entry.match_id,
+                                    ))
+                                    .striped(true)
+                                    .num_columns(8)
+                                    .spacing(egui::vec2(16.0, 5.0))
+                                    .show(ui, |ui| {
+                                        for key in [
+                                            "team_match_history.set",
+                                            "team_match_history.pattern",
+                                            "team_match_history.kills",
+                                            "team_match_history.gold",
+                                            "team_match_history.mvp",
+                                            "team_match_history.champion",
+                                            "team_match_history.kda",
+                                            "team_match_history.side",
+                                        ] {
+                                            ui.strong(self.localization.tr(key));
+                                        }
+                                        ui.end_row();
+
+                                        for set in &entry.sets {
+                                            ui.label(set.set_number.to_string());
+                                            ui.label(value_or_dash(&set.pattern));
+                                            ui.label(format!(
+                                                "{}-{}",
+                                                set.team1_kills, set.team2_kills
+                                            ));
+                                            ui.label(format!(
+                                                "{}-{}",
+                                                set.team1_gold, set.team2_gold
+                                            ));
+                                            ui.label(format!(
+                                                "{} ({})",
+                                                set.mvp_player_name, set.mvp_player_id
+                                            ));
+                                            ui.label(champion_display_name(&set.mvp_champion_id))
+                                                .on_hover_text(set.mvp_champion_id.clone());
+                                            ui.label(format!(
+                                                "{}/{}/{}",
+                                                set.mvp_kills,
+                                                set.mvp_deaths,
+                                                set.mvp_assists
+                                            ));
+                                            let mut side = if set.was_blue_side {
+                                                self.localization.tr("team_match_history.blue")
+                                            } else {
+                                                self.localization.tr("team_match_history.red")
+                                            };
+                                            if set.was_comeback {
+                                                side.push_str(" · ");
+                                                side.push_str(
+                                                    &self.localization.tr(
+                                                        "team_match_history.comeback",
+                                                    ),
+                                                );
+                                            }
+                                            ui.label(side);
+                                            ui.end_row();
+                                        }
+                                    });
+                                });
+                            ui.add_space(4.0);
+                        }
+                    });
+            });
+
+        self.team_match_history_window_open = open;
+        if refresh_requested {
+            self.refresh_team_history_data();
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn render_team_pre_match_analysis_window(&mut self, ctx: &egui::Context) {
+        if !self.team_pre_match_analysis_window_open {
+            return;
+        }
+
+        let Some((team, data)) = self.current_team_history_context() else {
+            self.team_pre_match_analysis_window_open = false;
+            return;
+        };
+
+        let mut open = self.team_pre_match_analysis_window_open;
+        let mut refresh_requested = false;
+        let title = self.localization.tr_with(
+            "team_pre_match.window_title",
+            &[("team", team.display_name.as_str())],
+        );
+
+        egui::Window::new(title)
+            .id(egui::Id::new("team_pre_match_analysis_window_v057"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size(egui::vec2(1040.0, 660.0))
+            .min_size(egui::vec2(700.0, 420.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(self.localization.tr("common.refresh")).clicked() {
+                        refresh_requested = true;
+                    }
+                    ui.weak(self.localization.tr("team_pre_match.help"));
+                });
+                ui.separator();
+
+                let Some(data) = data.as_ref() else {
+                    ui.weak(self.localization.tr("team_history.loading"));
+                    return;
+                };
+                if data.analyses.is_empty() {
+                    ui.weak(self.localization.tr("team_pre_match.empty"));
+                    return;
+                }
+
+                egui::ScrollArea::vertical()
+                    .id_salt("team_pre_match_analysis_scroll_v057")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for entry in data.analyses.iter().rev() {
+                            let header = format!(
+                                "{} · {} · Match {}",
+                                entry.date, entry.opponent_name, entry.match_id
+                            );
+                            egui::CollapsingHeader::new(header)
+                                .id_salt(("team_pre_match_entry_v057", entry.match_id))
+                                .default_open(false)
+                                .show(ui, |ui| {
+                                    egui::Grid::new((
+                                        "team_pre_match_summary_grid_v057",
+                                        entry.match_id,
+                                    ))
+                                    .num_columns(2)
+                                    .spacing(egui::vec2(24.0, 6.0))
+                                    .show(ui, |ui| {
+                                        ui.label(self.localization.tr("team_history.opponent"));
+                                        ui.label(format!(
+                                            "{} (ID {})",
+                                            entry.opponent_name, entry.opponent_id
+                                        ));
+                                        ui.end_row();
+
+                                        ui.label(self.localization.tr("team_pre_match.analysis_level"));
+                                        ui.label(value_or_dash(&entry.analysis_level));
+                                        ui.end_row();
+
+                                        ui.label(self.localization.tr("team_pre_match.has_history"));
+                                        ui.label(if entry.has_match_history {
+                                            self.localization.tr("common.yes")
+                                        } else {
+                                            self.localization.tr("common.no")
+                                        });
+                                        ui.end_row();
+
+                                        ui.label(self.localization.tr("team_pre_match.star_player"));
+                                        ui.label(format!(
+                                            "{} (ID {})",
+                                            entry.star_player_name, entry.star_player_id
+                                        ));
+                                        ui.end_row();
+                                    });
+
+                                    ui.add_space(10.0);
+                                    ui.strong(self.localization.tr("team_pre_match.tactics"));
+                                    if entry.tactics.is_empty() {
+                                        ui.weak(self.localization.tr("team_pre_match.no_tactics"));
+                                    } else {
+                                        egui::Grid::new((
+                                            "team_pre_match_tactics_grid_v057",
+                                            entry.match_id,
+                                        ))
+                                        .striped(true)
+                                        .num_columns(2)
+                                        .spacing(egui::vec2(24.0, 5.0))
+                                        .show(ui, |ui| {
+                                            ui.strong(self.localization.tr("team_pre_match.category"));
+                                            ui.strong(self.localization.tr("team_pre_match.value"));
+                                            ui.end_row();
+                                            for tactic in &entry.tactics {
+                                                ui.label(value_or_dash(&tactic.category));
+                                                ui.label(value_or_dash(&tactic.value));
+                                                ui.end_row();
+                                            }
+                                        });
+                                    }
+
+                                    ui.add_space(10.0);
+                                    ui.strong(self.localization.tr("team_pre_match.champion_picks"));
+                                    if entry.champion_picks.is_empty() {
+                                        ui.weak(self.localization.tr("team_pre_match.no_champions"));
+                                    } else {
+                                        egui::Grid::new((
+                                            "team_pre_match_champions_grid_v057",
+                                            entry.match_id,
+                                        ))
+                                        .striped(true)
+                                        .num_columns(4)
+                                        .spacing(egui::vec2(24.0, 5.0))
+                                        .show(ui, |ui| {
+                                            ui.strong(self.localization.tr("team_pre_match.champion"));
+                                            ui.strong(self.localization.tr("team_pre_match.position"));
+                                            ui.strong(self.localization.tr("team_pre_match.wins"));
+                                            ui.strong(self.localization.tr("team_pre_match.losses"));
+                                            ui.end_row();
+                                            for champion in &entry.champion_picks {
+                                                ui.label(champion_display_name(&champion.champion_id))
+                                                    .on_hover_text(champion.champion_id.clone());
+                                                ui.label(value_or_dash(&champion.position));
+                                                ui.label(champion.wins.to_string());
+                                                ui.label(champion.losses.to_string());
+                                                ui.end_row();
+                                            }
+                                        });
+                                    }
+
+                                    ui.add_space(10.0);
+                                    ui.strong(self.localization.tr("team_pre_match.insights"));
+                                    if entry.insights.is_empty() {
+                                        ui.weak(self.localization.tr("team_pre_match.no_insights"));
+                                    } else {
+                                        for insight in &entry.insights {
+                                            ui.group(|ui| {
+                                                ui.horizontal_wrapped(|ui| {
+                                                    ui.strong(&insight.section);
+                                                    ui.label("·");
+                                                    ui.label(&insight.label)
+                                                        .on_hover_text(&insight.source_key);
+                                                });
+                                                if !insight.details.trim().is_empty() {
+                                                    ui.weak(&insight.details);
+                                                }
+                                            });
+                                        }
+                                    }
+                                });
+                            ui.add_space(4.0);
+                        }
+                    });
+            });
+
+        self.team_pre_match_analysis_window_open = open;
+        if refresh_requested {
+            self.refresh_team_history_data();
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn render_team_history_summary_window(&mut self, ctx: &egui::Context) {
+        if !self.team_history_summary_window_open {
+            return;
+        }
+
+        let Some((team, data)) = self.current_team_history_context() else {
+            self.team_history_summary_window_open = false;
+            return;
+        };
+
+        let mut open = self.team_history_summary_window_open;
+        let mut refresh_requested = false;
+        let title = self.localization.tr_with(
+            "team_history_summary.window_title",
+            &[("team", team.display_name.as_str())],
+        );
+
+        egui::Window::new(title)
+            .id(egui::Id::new("team_history_summary_window_v057"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size(egui::vec2(680.0, 500.0))
+            .min_size(egui::vec2(500.0, 340.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(self.localization.tr("common.refresh")).clicked() {
+                        refresh_requested = true;
+                    }
+                    ui.weak(self.localization.tr("team_history_summary.help"));
+                });
+                ui.separator();
+
+                let Some(data) = data.as_ref() else {
+                    ui.weak(self.localization.tr("team_history.loading"));
+                    return;
+                };
+
+                egui::ScrollArea::vertical()
+                    .id_salt("team_history_summary_scroll_v057")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        egui::Grid::new("team_history_summary_grid_v057")
+                            .num_columns(2)
+                            .spacing(egui::vec2(30.0, 8.0))
+                            .show(ui, |ui| {
+                                let rows = [
+                                    (
+                                        "team_history_summary.registered_matches",
+                                        data.matches.len().to_string(),
+                                    ),
+                                    (
+                                        "team_history_summary.official_matches",
+                                        data.official_matches().to_string(),
+                                    ),
+                                    (
+                                        "team_history_summary.practice_matches",
+                                        data.practice_matches().to_string(),
+                                    ),
+                                    (
+                                        "team_history_summary.match_record",
+                                        format!("{}-{}", data.wins(), data.losses()),
+                                    ),
+                                    (
+                                        "team_history_summary.set_record",
+                                        format!("{}-{}", data.set_wins(), data.set_losses()),
+                                    ),
+                                    (
+                                        "team_history_summary.recent_form",
+                                        data.recent_form(),
+                                    ),
+                                    (
+                                        "team_history_summary.pre_match_analyses",
+                                        data.analyses.len().to_string(),
+                                    ),
+                                    (
+                                        "team_history_summary.latest_rating",
+                                        data.latest_rating
+                                            .map(|value| value.to_string())
+                                            .unwrap_or_else(|| "—".to_string()),
+                                    ),
+                                    (
+                                        "team_history_summary.latest_rank",
+                                        data.latest_rank
+                                            .map(|value| value.to_string())
+                                            .unwrap_or_else(|| "—".to_string()),
+                                    ),
+                                    (
+                                        "team_history_summary.rating_date",
+                                        value_or_dash(&data.latest_rating_date),
+                                    ),
+                                ];
+                                for (key, value) in rows {
+                                    ui.label(self.localization.tr(key));
+                                    ui.label(value);
+                                    ui.end_row();
+                                }
+                            });
+
+                        if data.matches.is_empty() {
+                            ui.add_space(12.0);
+                            ui.weak(self.localization.tr("team_match_history.empty"));
+                        }
+                    });
+            });
+
+        self.team_history_summary_window_open = open;
+        if refresh_requested {
+            self.refresh_team_history_data();
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn render_team_data_probe_window(&mut self, ctx: &egui::Context) {
+        if !self.team_data_probe_window_open {
+            return;
+        }
+
+        let Some(team) = self
+            .team_data_probe_team_id
+            .filter(|team_id| self.team_workspace_team_id == Some(*team_id))
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.team_data_probe_window_open = false;
+            self.team_data_probe_team_id = None;
+            self.team_data_probe_raw.clear();
+            return;
+        };
+
+        let mut open = self.team_data_probe_window_open;
+        let mut refresh_requested = false;
+        let title = self.localization.tr_with(
+            "team_data_probe.window_title",
+            &[("team", team.display_name.as_str())],
+        );
+        let help = self.localization.tr("team_data_probe.help");
+        let refresh_label = self.localization.tr("team_data_probe.refresh");
+        let empty_label = self.localization.tr("team_data_probe.empty");
+
+        egui::Window::new(title)
+            .id(egui::Id::new("team_data_probe_window_v054"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size(egui::vec2(900.0, 600.0))
+            .min_size(egui::vec2(620.0, 360.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(&refresh_label).clicked() {
+                        refresh_requested = true;
+                    }
+                    ui.weak(&help);
+                });
+                ui.separator();
+
+                StripBuilder::new(ui)
+                    .clip(true)
+                    .size(Size::remainder().at_least(220.0))
+                    .vertical(|mut strip| {
+                        strip.cell(|ui| {
+                            let viewport_height = ui.available_height().max(1.0);
+                            egui::ScrollArea::both()
+                                .id_salt("team_data_probe_scroll_v054")
+                                .auto_shrink([false, false])
+                                .max_height(viewport_height)
+                                .show(ui, |ui| {
+                                    ui.set_min_width(860.0);
+                                    if self.team_data_probe_raw.trim().is_empty() {
+                                        ui.weak(&empty_label);
+                                    } else {
+                                        ui.add(
+                                            egui::TextEdit::multiline(
+                                                &mut self.team_data_probe_raw,
+                                            )
+                                            .code_editor()
+                                            .desired_width(860.0)
+                                            .desired_rows(32),
+                                        );
+                                    }
+                                });
+                        });
+                    });
+            });
+
+        self.team_data_probe_window_open = open;
+        if refresh_requested {
+            self.refresh_team_data_probe();
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn render_team_strategy_window(&mut self, ctx: &egui::Context) {
+        if !self.team_strategy_window_open {
+            return;
+        }
+
+        let Some((team, data)) = self.current_team_management_context() else {
+            self.team_strategy_window_open = false;
+            return;
+        };
+
+        let mut open = self.team_strategy_window_open;
+        let title = self.localization.tr_with(
+            "team_strategy.window_title",
+            &[("team", team.display_name.as_str())],
+        );
+
+        egui::Window::new(title)
+            .id(egui::Id::new("team_strategy_window_v056"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size(egui::vec2(900.0, 500.0))
+            .min_size(egui::vec2(680.0, 340.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                ui.weak(self.localization.tr("team_strategy.help"));
+                ui.separator();
+
+                let widths = [190.0, 210.0, 210.0, 210.0];
+                let table_min_width = widths.iter().copied().sum::<f32>() + 40.0;
+                render_team_member_table_viewport(
+                    ui,
+                    "team_strategy_horizontal_v056",
+                    table_min_width,
+                    |ui, table_height| {
+                        let mut table = TableBuilder::new(ui)
+                            .id_salt("team_strategy_table_v056")
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .min_scrolled_height(0.0)
+                            .max_scroll_height(table_height)
+                            .auto_shrink([false, false]);
+                        for width in widths {
+                            table = table.column(
+                                Column::initial(width)
+                                    .at_least(110.0)
+                                    .clip(true)
+                                    .resizable(true),
+                            );
+                        }
+
+                        table
+                            .header(26.0, |mut header| {
+                                header.col(|ui| {
+                                    ui.strong(self.localization.tr("team_strategy.area"));
+                                });
+                                header.col(|ui| {
+                                    ui.strong(self.localization.tr("team_strategy.current"));
+                                });
+                                header.col(|ui| {
+                                    ui.strong(self.localization.tr("team_strategy.last"));
+                                });
+                                header.col(|ui| {
+                                    ui.strong(self.localization.tr("team_strategy.team_color"));
+                                });
+                            })
+                            .body(|body| {
+                                body.rows(26.0, TEAM_STRATEGY_KEYS.len(), |mut row| {
+                                    let key = TEAM_STRATEGY_KEYS[row.index()];
+                                    let label_key = format!("team_strategy.{key}");
+                                    row.col(|ui| {
+                                        ui.label(self.localization.tr(&label_key));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(team_strategy_value(&data.current_strategy, key));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(team_strategy_value(&data.last_strategy, key));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(team_strategy_value(
+                                            &data.team_color_strategy,
+                                            key,
+                                        ));
+                                    });
+                                });
+                            });
+                    },
+                );
+            });
+
+        self.team_strategy_window_open = open;
+    }
+
+    #[cfg(feature = "dev")]
+    fn render_team_merchandise_window(&mut self, ctx: &egui::Context) {
+        if !self.team_merchandise_window_open {
+            return;
+        }
+
+        let Some((team, data)) = self.current_team_management_context() else {
+            self.team_merchandise_window_open = false;
+            return;
+        };
+
+        let total_stock = data
+            .merchandise
+            .iter()
+            .map(|entry| parse_usize_value(&entry.stock))
+            .sum::<usize>();
+        let yearly_sales = data
+            .merchandise
+            .iter()
+            .map(|entry| parse_usize_value(&entry.yearly_sales))
+            .sum::<usize>();
+        let yearly_revenue = data
+            .merchandise
+            .iter()
+            .map(|entry| parse_f64_value(&entry.yearly_revenue))
+            .sum::<f64>();
+        let total_sales = data
+            .merchandise
+            .iter()
+            .map(|entry| parse_usize_value(&entry.total_sales))
+            .sum::<usize>();
+        let total_revenue = data
+            .merchandise
+            .iter()
+            .map(|entry| parse_f64_value(&entry.total_revenue))
+            .sum::<f64>();
+        let product_count_text = data.merchandise.len().to_string();
+        let total_stock_text = total_stock.to_string();
+        let yearly_sales_text = yearly_sales.to_string();
+        let yearly_revenue_text = format_internal_amount(&yearly_revenue.to_string());
+        let total_sales_text = total_sales.to_string();
+        let total_revenue_text = format_internal_amount(&total_revenue.to_string());
+
+        let mut open = self.team_merchandise_window_open;
+        let title = self.localization.tr_with(
+            "team_merchandise.window_title",
+            &[("team", team.display_name.as_str())],
+        );
+
+        egui::Window::new(title)
+            .id(egui::Id::new("team_merchandise_window_v056"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size(egui::vec2(1120.0, 560.0))
+            .min_size(egui::vec2(720.0, 360.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(self.localization.tr_with(
+                        "team_merchandise.product_count",
+                        &[("count", product_count_text.as_str())],
+                    ));
+                    ui.separator();
+                    ui.label(self.localization.tr_with(
+                        "team_merchandise.total_stock",
+                        &[("count", total_stock_text.as_str())],
+                    ));
+                    ui.separator();
+                    ui.label(self.localization.tr_with(
+                        "team_merchandise.yearly_sales_summary",
+                        &[("count", yearly_sales_text.as_str())],
+                    ));
+                    ui.separator();
+                    ui.label(self.localization.tr_with(
+                        "team_merchandise.yearly_revenue_summary",
+                        &[("amount", yearly_revenue_text.as_str())],
+                    ));
+                    ui.separator();
+                    ui.label(self.localization.tr_with(
+                        "team_merchandise.total_sales_summary",
+                        &[("count", total_sales_text.as_str())],
+                    ));
+                    ui.separator();
+                    ui.label(self.localization.tr_with(
+                        "team_merchandise.total_revenue_summary",
+                        &[("amount", total_revenue_text.as_str())],
+                    ));
+                });
+                ui.weak(self.localization.tr("team_merchandise.help"));
+                ui.separator();
+
+                let widths = [90.0, 180.0, 70.0, 80.0, 105.0, 105.0, 125.0, 105.0, 125.0, 100.0];
+                let table_min_width = widths.iter().copied().sum::<f32>() + 60.0;
+                render_team_member_table_viewport(
+                    ui,
+                    "team_merchandise_horizontal_v056",
+                    table_min_width,
+                    |ui, table_height| {
+                        if data.merchandise.is_empty() {
+                            ui.weak(self.localization.tr("team_merchandise.empty"));
+                            return;
+                        }
+
+                        let mut table = TableBuilder::new(ui)
+                            .id_salt("team_merchandise_table_v056")
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .min_scrolled_height(0.0)
+                            .max_scroll_height(table_height)
+                            .auto_shrink([false, false]);
+                        for width in widths {
+                            table = table.column(
+                                Column::initial(width)
+                                    .at_least(58.0)
+                                    .clip(true)
+                                    .resizable(true),
+                            );
+                        }
+
+                        table
+                            .header(26.0, |mut header| {
+                                for key in [
+                                    "team_merchandise.product_type",
+                                    "common.player",
+                                    "common.id",
+                                    "team_merchandise.stock",
+                                    "team_merchandise.sell_price",
+                                    "team_merchandise.yearly_sales",
+                                    "team_merchandise.yearly_revenue",
+                                    "team_merchandise.total_sales",
+                                    "team_merchandise.total_revenue",
+                                    "team_merchandise.daily_rate",
+                                ] {
+                                    header.col(|ui| {
+                                        ui.strong(self.localization.tr(key));
+                                    });
+                                }
+                            })
+                            .body(|body| {
+                                body.rows(26.0, data.merchandise.len(), |mut row| {
+                                    let entry = &data.merchandise[row.index()];
+                                    row.col(|ui| {
+                                        ui.label(self.localization.tr_with(
+                                            "team_merchandise.type_value",
+                                            &[("type", entry.product_type.as_str())],
+                                        ));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(value_or_dash(&entry.athlete_name));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(entry.athlete_id.to_string());
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(value_or_dash(&entry.stock));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(format_internal_amount(&entry.sell_price));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(value_or_dash(&entry.yearly_sales));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(format_internal_amount(&entry.yearly_revenue));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(value_or_dash(&entry.total_sales));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(format_internal_amount(&entry.total_revenue));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(value_or_dash(&entry.daily_purchase_rate));
+                                    });
+                                });
+                            });
+                    },
+                );
+            });
+
+        self.team_merchandise_window_open = open;
+    }
+
+    #[cfg(feature = "dev")]
+    fn render_team_champion_setup_window(&mut self, ctx: &egui::Context) {
+        if !self.team_champion_setup_window_open {
+            return;
+        }
+
+        let Some((team, data)) = self.current_team_management_context() else {
+            self.team_champion_setup_window_open = false;
+            return;
+        };
+
+        let mut open = self.team_champion_setup_window_open;
+        let title = self.localization.tr_with(
+            "team_champion_setup.window_title",
+            &[("team", team.display_name.as_str())],
+        );
+
+        egui::Window::new(title)
+            .id(egui::Id::new("team_champion_setup_window_v056"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size(egui::vec2(900.0, 560.0))
+            .min_size(egui::vec2(620.0, 340.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                ui.weak(self.localization.tr("team_champion_setup.help"));
+                ui.separator();
+
+                let widths = [230.0, 90.0, 150.0, 150.0, 150.0];
+                let table_min_width = widths.iter().copied().sum::<f32>() + 40.0;
+                render_team_member_table_viewport(
+                    ui,
+                    "team_champion_setup_horizontal_v056",
+                    table_min_width,
+                    |ui, table_height| {
+                        if data.champion_setup.is_empty() {
+                            ui.weak(self.localization.tr("team_champion_setup.empty"));
+                            return;
+                        }
+
+                        let mut table = TableBuilder::new(ui)
+                            .id_salt("team_champion_setup_table_v056")
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .min_scrolled_height(0.0)
+                            .max_scroll_height(table_height)
+                            .auto_shrink([false, false]);
+                        for width in widths {
+                            table = table.column(
+                                Column::initial(width)
+                                    .at_least(70.0)
+                                    .clip(true)
+                                    .resizable(true),
+                            );
+                        }
+
+                        table
+                            .header(26.0, |mut header| {
+                                for key in [
+                                    "team_champion_setup.champion",
+                                    "team_champion_setup.tier",
+                                    "team_champion_setup.tactic_1",
+                                    "team_champion_setup.tactic_2",
+                                    "team_champion_setup.tactic_3",
+                                ] {
+                                    header.col(|ui| {
+                                        ui.strong(self.localization.tr(key));
+                                    });
+                                }
+                            })
+                            .body(|body| {
+                                body.rows(26.0, data.champion_setup.len(), |mut row| {
+                                    let entry = &data.champion_setup[row.index()];
+                                    row.col(|ui| {
+                                        ui.label(champion_display_name(&entry.champion_id))
+                                            .on_hover_text(entry.champion_id.clone());
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(value_or_dash(&entry.tier));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(value_or_dash(&entry.tactic_1));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(value_or_dash(&entry.tactic_2));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(value_or_dash(&entry.tactic_3));
+                                    });
+                                });
+                            });
+                    },
+                );
+            });
+
+        self.team_champion_setup_window_open = open;
+    }
+
+    #[cfg(feature = "dev")]
+    fn render_team_gaming_house_window(&mut self, ctx: &egui::Context) {
+        if !self.team_gaming_house_window_open {
+            return;
+        }
+
+        let Some((team, data)) = self.current_team_management_context() else {
+            self.team_gaming_house_window_open = false;
+            return;
+        };
+
+        let summary = data.gaming_house;
+        let mut open = self.team_gaming_house_window_open;
+        let title = self.localization.tr_with(
+            "team_gaming_house.window_title",
+            &[("team", team.display_name.as_str())],
+        );
+
+        egui::Window::new(title)
+            .id(egui::Id::new("team_gaming_house_window_v056"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size(egui::vec2(660.0, 500.0))
+            .min_size(egui::vec2(500.0, 340.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                ui.weak(self.localization.tr("team_gaming_house.help"));
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_salt("team_gaming_house_scroll_v056")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        egui::Grid::new("team_gaming_house_summary_grid_v056")
+                            .num_columns(2)
+                            .spacing(egui::vec2(28.0, 8.0))
+                            .show(ui, |ui| {
+                                let rows = [
+                                    ("team_workspace.gaming_house_level", value_or_dash(&summary.level)),
+                                    ("team_workspace.welfare", value_or_dash(&summary.welfare)),
+                                    ("team_gaming_house.owned_furniture_types", summary.owned_furniture_types.to_string()),
+                                    ("team_gaming_house.owned_furniture_total", summary.owned_furniture_total.to_string()),
+                                    ("team_gaming_house.owned_wallpaper_types", summary.owned_wallpaper_types.to_string()),
+                                    ("team_gaming_house.owned_wallpaper_total", summary.owned_wallpaper_total.to_string()),
+                                    ("team_gaming_house.owned_wall_types", summary.owned_wall_types.to_string()),
+                                    ("team_gaming_house.owned_wall_total", summary.owned_wall_total.to_string()),
+                                    ("team_gaming_house.owned_window_types", summary.owned_window_types.to_string()),
+                                    ("team_gaming_house.owned_window_total", summary.owned_window_total.to_string()),
+                                    ("team_gaming_house.placed_furniture", summary.placed_furniture.to_string()),
+                                    ("team_gaming_house.placed_wallpapers", summary.placed_wallpapers.to_string()),
+                                    ("team_gaming_house.placed_walls", summary.placed_walls.to_string()),
+                                    ("team_gaming_house.placed_windows", summary.placed_windows.to_string()),
+                                ];
+                                for (key, value) in rows {
+                                    ui.label(self.localization.tr(key));
+                                    ui.label(value);
+                                    ui.end_row();
+                                }
+                            });
+                    });
+            });
+
+        self.team_gaming_house_window_open = open;
+    }
+
+    #[cfg(feature = "dev")]
+    fn render_team_condition_window(&mut self, ctx: &egui::Context) {
+        if !self.team_condition_window_open {
+            return;
+        }
+
+        let Some(team) = self
+            .team_condition_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.team_condition_window_open = false;
+            self.team_condition_entries.clear();
+            self.team_condition_team_id = None;
+            self.team_condition_selected_player_ids.clear();
+            return;
+        };
+
+        let mut entries = self.team_condition_entries.clone();
+        let mut selected_ids = self.team_condition_selected_player_ids.clone();
+        let mut bulk_stamina = self.team_condition_bulk_stamina.clone();
+        let mut bulk_condition = self.team_condition_bulk_condition.clone();
+        let mut open = self.team_condition_window_open;
+        let mut refresh_requested = false;
+        let mut apply_requested = false;
+        let mut action_status: Option<String> = None;
+
+        let title = self.localization.tr_with(
+            "team_condition.window_title",
+            &[("team", team.display_name.as_str())],
+        );
+        let editor_help = self.localization.tr("team_condition.editor_help");
+        let selected_label = self.localization.tr("team_condition.selected");
+        let changed_label = self.localization.tr("team_condition.changed");
+        let select_all_label = self.localization.tr("lists.select_all_visible");
+        let clear_selection_label = self.localization.tr("lists.clear_selection");
+        let stamina_label = self.localization.tr("team_condition.stamina");
+        let condition_label = self.localization.tr("team_condition.condition");
+        let set_selected_label = self.localization.tr("team_condition.set_selected");
+        let set_selected_max_label = self.localization.tr("team_condition.set_selected_max");
+        let set_team_max_label = self.localization.tr("team_condition.set_team_max");
+        let apply_label = self.localization.tr("team_condition.apply_changes");
+        let refresh_label = self.localization.tr("common.refresh");
+        let no_members_label = self.localization.tr("team_condition.no_members");
+        let select_label = self.localization.tr("team_condition.select");
+        let name_label = self.localization.tr("common.name");
+        let id_label = self.localization.tr("common.id");
+        let status_label = self.localization.tr("team_condition.status");
+        let ready_label = self.localization.tr("team_condition.ready");
+        let bulk_hint = self.localization.tr("team_condition.bulk_hint");
+        let no_bulk_value_message = self.localization.tr("team_condition.no_bulk_value");
+
+        egui::Window::new(title)
+            .id(egui::Id::new("team_condition_editor_window_v053"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size(egui::vec2(920.0, 520.0))
+            .min_size(egui::vec2(650.0, 340.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                ui.weak(editor_help);
+                ui.add_space(4.0);
+
+                ui.horizontal_wrapped(|ui| {
+                    let selected_count = selected_ids.len();
+                    let changed_count = entries.iter().filter(|entry| entry.has_changes()).count();
+                    ui.label(format!("{selected_label}: {selected_count}"));
+                    ui.label(format!("{changed_label}: {changed_count}"));
+                    ui.separator();
+
+                    if ui.button(&select_all_label).clicked() {
+                        selected_ids.extend(entries.iter().map(|entry| entry.player_id));
+                    }
+                    if ui
+                        .add_enabled(!selected_ids.is_empty(), egui::Button::new(&clear_selection_label))
+                        .clicked()
+                    {
+                        selected_ids.clear();
+                    }
+                    ui.separator();
+
+                    ui.label(&stamina_label);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut bulk_stamina)
+                            .desired_width(58.0)
+                            .hint_text("0-100"),
+                    );
+                    ui.label(&condition_label);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut bulk_condition)
+                            .desired_width(58.0)
+                            .hint_text("0-100"),
+                    );
+
+                    if ui
+                        .add_enabled(!selected_ids.is_empty(), egui::Button::new(&set_selected_label))
+                        .on_hover_text(&bulk_hint)
+                        .clicked()
+                    {
+                        if bulk_stamina.trim().is_empty() && bulk_condition.trim().is_empty() {
+                            action_status = Some(no_bulk_value_message.clone());
+                        } else {
+                            let validation = if bulk_stamina.trim().is_empty() {
+                                Ok(())
+                            } else {
+                                validate_condition_editor_value(&bulk_stamina, "Stamina")
+                            }
+                            .and_then(|_| {
+                                if bulk_condition.trim().is_empty() {
+                                    Ok(())
+                                } else {
+                                    validate_condition_editor_value(&bulk_condition, "Condition")
+                                }
+                            });
+
+                            match validation {
+                                Ok(()) => {
+                                    for entry in &mut entries {
+                                        if selected_ids.contains(&entry.player_id) {
+                                            if !bulk_stamina.trim().is_empty() {
+                                                entry.stamina = bulk_stamina.trim().to_string();
+                                            }
+                                            if !bulk_condition.trim().is_empty() {
+                                                entry.condition = bulk_condition.trim().to_string();
+                                            }
+                                            entry.write_status = ready_label.clone();
+                                        }
+                                    }
+                                }
+                                Err(error) => action_status = Some(error),
+                            }
+                        }
+                    }
+
+                    if ui
+                        .add_enabled(
+                            !selected_ids.is_empty(),
+                            egui::Button::new(&set_selected_max_label),
+                        )
+                        .clicked()
+                    {
+                        for entry in &mut entries {
+                            if selected_ids.contains(&entry.player_id) {
+                                entry.stamina = "100".to_string();
+                                entry.condition = "100".to_string();
+                                entry.write_status = ready_label.clone();
+                            }
+                        }
+                    }
+
+                    if ui
+                        .add_enabled(!entries.is_empty(), egui::Button::new(&set_team_max_label))
+                        .clicked()
+                    {
+                        for entry in &mut entries {
+                            entry.stamina = "100".to_string();
+                            entry.condition = "100".to_string();
+                            entry.write_status = ready_label.clone();
+                        }
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    let changed = entries.iter().any(|entry| entry.has_changes());
+                    if ui
+                        .add_enabled(changed && self.connected, egui::Button::new(&apply_label))
+                        .clicked()
+                    {
+                        apply_requested = true;
+                    }
+                    if ui.button(&refresh_label).clicked() {
+                        refresh_requested = true;
+                    }
+                });
+                ui.separator();
+
+                let widths = [42.0, 210.0, 70.0, 120.0, 120.0, 210.0];
+                let table_min_width = widths.iter().copied().sum::<f32>() + 40.0;
+
+                render_team_member_table_viewport(
+                    ui,
+                    "team_condition_editor_horizontal_v053",
+                    table_min_width,
+                    |ui, table_height| {
+                        if entries.is_empty() {
+                            ui.weak(no_members_label);
+                            return;
+                        }
+
+                        let mut table = TableBuilder::new(ui)
+                            .id_salt("team_condition_editor_table_v053")
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .min_scrolled_height(0.0)
+                            .max_scroll_height(table_height)
+                            .auto_shrink([false, false]);
+                        for width in widths {
+                            table = table.column(
+                                Column::initial(width)
+                                    .at_least(42.0)
+                                    .clip(true)
+                                    .resizable(true),
+                            );
+                        }
+
+                        table
+                            .header(26.0, |mut header| {
+                                header.col(|ui| { ui.strong(&select_label); });
+                                header.col(|ui| { ui.strong(&name_label); });
+                                header.col(|ui| { ui.strong(&id_label); });
+                                header.col(|ui| { ui.strong(&stamina_label); });
+                                header.col(|ui| { ui.strong(&condition_label); });
+                                header.col(|ui| { ui.strong(&status_label); });
+                            })
+                            .body(|body| {
+                                body.rows(30.0, entries.len(), |mut row| {
+                                    let index = row.index();
+                                    let player_id = entries[index].player_id;
+                                    row.set_selected(selected_ids.contains(&player_id));
+
+                                    row.col(|ui| {
+                                        let mut selected = selected_ids.contains(&player_id);
+                                        if ui.checkbox(&mut selected, "").changed() {
+                                            if selected {
+                                                selected_ids.insert(player_id);
+                                            } else {
+                                                selected_ids.remove(&player_id);
+                                            }
+                                        }
+                                    });
+                                    row.col(|ui| { ui.label(&entries[index].player_name); });
+                                    row.col(|ui| { ui.label(player_id.to_string()); });
+                                    row.col(|ui| {
+                                        let response = ui.add(
+                                            egui::TextEdit::singleline(&mut entries[index].stamina)
+                                                .desired_width(76.0),
+                                        );
+                                        if response.changed() {
+                                            entries[index].write_status = ready_label.clone();
+                                        }
+                                    });
+                                    row.col(|ui| {
+                                        let response = ui.add(
+                                            egui::TextEdit::singleline(&mut entries[index].condition)
+                                                .desired_width(76.0),
+                                        );
+                                        if response.changed() {
+                                            entries[index].write_status = ready_label.clone();
+                                        }
+                                    });
+                                    row.col(|ui| { ui.label(&entries[index].write_status); });
+                                });
+                            });
+                    },
+                );
+            });
+
+        self.team_condition_entries = entries;
+        self.team_condition_selected_player_ids = selected_ids;
+        self.team_condition_bulk_stamina = bulk_stamina;
+        self.team_condition_bulk_condition = bulk_condition;
+        self.team_condition_window_open = open;
+
+        if let Some(status) = action_status {
+            self.status = status;
+        }
+        if apply_requested {
+            self.apply_team_condition_changes();
+        }
+        if refresh_requested {
+            self.refresh_team_condition_probe();
+        }
+    }
+
     fn render_team_search_page(&mut self, ui: &mut egui::Ui) {
         ui.group(|ui| {
             ui.set_min_width(ui.available_width());
@@ -8835,6 +12193,8 @@ Bridge TFM2 target: v{}",
         let mut refresh_requested = false;
         let mut reset_columns_requested = false;
         let mut select_all_visible_requested = false;
+        #[cfg(feature = "dev")]
+        let mut open_team_id: Option<usize> = None;
         let available_height = ui.available_height().max(180.0);
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), available_height),
@@ -9088,13 +12448,15 @@ Bridge TFM2 target: v{}",
 
                                         let shift_drag_active = team_shift_drag_start_id.is_some();
                                         if row_response.double_clicked() && !selection_checkbox_clicked {
-                                            // Teams Search remains selection-only until the dedicated
-                                            // Team workspace is implemented in a later release.
                                             selected_team_ids.insert(team.id);
                                             team_selection_anchor_id = None;
                                             team_shift_drag_start_id = None;
                                             team_shift_drag_target_selected = None;
                                             team_shift_drag_base_ids = None;
+                                            #[cfg(feature = "dev")]
+                                            {
+                                                open_team_id = Some(team.id);
+                                            }
                                         } else if row_response.clicked()
                                             && !selection_checkbox_clicked
                                             && !shift_drag_active
@@ -9122,6 +12484,16 @@ Bridge TFM2 target: v{}",
                                                 team_selection_anchor_id = Some(team.id);
                                             }
                                         }
+                                        #[cfg(feature = "dev")]
+                                        row_response.context_menu(|ui| {
+                                            if ui
+                                                .button(self.localization.tr("team_workspace.open_in_team"))
+                                                .clicked()
+                                            {
+                                                open_team_id = Some(team.id);
+                                                ui.close_menu();
+                                            }
+                                        });
                                     });
                                 });
                             if primary_released || !primary_down {
@@ -9147,6 +12519,10 @@ Bridge TFM2 target: v{}",
         self.team_sort_ascending = sort_ascending;
         if refresh_requested {
             self.refresh_teams();
+        }
+        #[cfg(feature = "dev")]
+        if let Some(team_id) = open_team_id {
+            self.open_team_workspace(team_id);
         }
     }
 
@@ -9331,10 +12707,10 @@ Bridge TFM2 target: v{}",
                 }
 
                 let age = staff.age.parse::<f64>().ok();
-                if age_min.is_some_and(|min| age.map_or(true, |value| value < min)) {
+                if age_min.is_some_and(|min| age.is_none_or(|value| value < min)) {
                     return false;
                 }
-                if age_max.is_some_and(|max| age.map_or(true, |value| value > max)) {
+                if age_max.is_some_and(|max| age.is_none_or(|value| value > max)) {
                     return false;
                 }
 
@@ -9922,18 +13298,18 @@ Bridge TFM2 target: v{}",
                 }
 
                 let age = player.age.parse::<f64>().ok();
-                if age_min.is_some_and(|min| age.map_or(true, |value| value < min)) {
+                if age_min.is_some_and(|min| age.is_none_or(|value| value < min)) {
                     return false;
                 }
-                if age_max.is_some_and(|max| age.map_or(true, |value| value > max)) {
+                if age_max.is_some_and(|max| age.is_none_or(|value| value > max)) {
                     return false;
                 }
 
                 let potential = player.actual_potential.parse::<f64>().ok();
-                if potential_min.is_some_and(|min| potential.map_or(true, |value| value < min)) {
+                if potential_min.is_some_and(|min| potential.is_none_or(|value| value < min)) {
                     return false;
                 }
-                if potential_max.is_some_and(|max| potential.map_or(true, |value| value > max)) {
+                if potential_max.is_some_and(|max| potential.is_none_or(|value| value > max)) {
                     return false;
                 }
 
@@ -11195,6 +14571,15 @@ impl eframe::App for ModifierApp {
                 self.refresh_staff();
                 self.restore_active_search_status();
             }
+            #[cfg(feature = "dev")]
+            if tab_before_click != self.active_tab && self.active_tab == AppTab::Team {
+                if let Some(team) = self
+                    .team_workspace_team_id
+                    .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+                {
+                    self.status = format!("Team data loaded: {}", team.display_name);
+                }
+            }
             ui.add_space(4.0);
         });
 
@@ -11214,6 +14599,8 @@ impl eframe::App for ModifierApp {
                         AppTab::Economy => self.render_economy_tab(ui),
                         AppTab::PlayerEditor => self.render_player_editor_tab(ui),
                         AppTab::StaffEditor => self.render_staff_editor_tab(ui),
+                        #[cfg(feature = "dev")]
+                        AppTab::Team => self.render_team_workspace_tab(ui),
                         AppTab::Recruitment => self.render_recruitment_tab(ui),
                         AppTab::Search => unreachable!(),
                     });
@@ -11224,6 +14611,29 @@ impl eframe::App for ModifierApp {
         self.render_advanced_staff_search_window(ctx);
 
         self.render_champion_mastery_window(ctx);
+
+        #[cfg(feature = "dev")]
+        self.render_team_roster_window(ctx);
+        #[cfg(feature = "dev")]
+        self.render_team_staff_window(ctx);
+        #[cfg(feature = "dev")]
+        self.render_team_condition_window(ctx);
+        #[cfg(feature = "dev")]
+        self.render_team_data_probe_window(ctx);
+        #[cfg(feature = "dev")]
+        self.render_team_strategy_window(ctx);
+        #[cfg(feature = "dev")]
+        self.render_team_merchandise_window(ctx);
+        #[cfg(feature = "dev")]
+        self.render_team_champion_setup_window(ctx);
+        #[cfg(feature = "dev")]
+        self.render_team_gaming_house_window(ctx);
+        #[cfg(feature = "dev")]
+        self.render_team_match_history_window(ctx);
+        #[cfg(feature = "dev")]
+        self.render_team_pre_match_analysis_window(ctx);
+        #[cfg(feature = "dev")]
+        self.render_team_history_summary_window(ctx);
 
         self.render_player_contract_window(ctx);
         #[cfg(feature = "dev")]
@@ -11275,7 +14685,7 @@ fn localized_staff_role(localization: &Localization, raw: &str) -> String {
         "TrainingCoach" => localization.tr("staff.roles.training_coach"),
         "Scouter" => localization.tr("staff.roles.scouter"),
         "Analyst" => localization.tr("staff.roles.analyst"),
-        other if other.is_empty() => localization.tr("common.unknown"),
+        "" => localization.tr("common.unknown"),
         other => other.to_string(),
     }
 }
@@ -11809,7 +15219,7 @@ fn star_level_label(raw: u16) -> String {
     } else {
         format!("{full}/5")
     };
-    if raw % 10 == 0 {
+    if raw.is_multiple_of(10) {
         stars
     } else {
         format!("{stars} (raw {raw})")
@@ -12180,6 +15590,752 @@ fn parse_contract_defaults_response(response: &str) -> Result<(String, String, S
     ))
 }
 
+#[cfg(feature = "dev")]
+fn extract_debug_blocks(source: &str, marker: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut offset = 0usize;
+
+    while offset < source.len() {
+        let Some(relative_start) = source[offset..].find(marker) else {
+            break;
+        };
+        let start = offset + relative_start;
+        let Some(relative_open) = source[start..].find('{') else {
+            break;
+        };
+        let open = start + relative_open;
+        let mut depth = 0usize;
+        let mut in_string = false;
+        let mut escaped = false;
+        let mut end = None;
+
+        for (relative_index, character) in source[open..].char_indices() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if character == '\\' {
+                    escaped = true;
+                } else if character == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+
+            match character {
+                '"' => in_string = true,
+                '{' => depth += 1,
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        end = Some(open + relative_index + character.len_utf8());
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let Some(end) = end else {
+            break;
+        };
+        blocks.push(source[start..end].to_string());
+        offset = end;
+    }
+
+    blocks
+}
+
+#[cfg(feature = "dev")]
+fn debug_field_expression(source: &str, field: &str) -> Option<String> {
+    let prefix = format!("{field}:");
+    let mut line_start = 0usize;
+
+    for line in source.split_inclusive('\n') {
+        let line_without_newline = line.strip_suffix('\n').unwrap_or(line);
+        let trimmed = line_without_newline.trim_start();
+        if trimmed.starts_with(&prefix) {
+            let indent = line_without_newline.len().saturating_sub(trimmed.len());
+            let mut value_start = line_start + indent + prefix.len();
+            while value_start < source.len()
+                && source.as_bytes()[value_start].is_ascii_whitespace()
+            {
+                value_start += 1;
+            }
+
+            let mut braces = 0usize;
+            let mut brackets = 0usize;
+            let mut parentheses = 0usize;
+            let mut in_string = false;
+            let mut escaped = false;
+            let mut value_end = source.len();
+
+            for (relative_index, character) in source[value_start..].char_indices() {
+                if in_string {
+                    if escaped {
+                        escaped = false;
+                    } else if character == '\\' {
+                        escaped = true;
+                    } else if character == '"' {
+                        in_string = false;
+                    }
+                    continue;
+                }
+
+                match character {
+                    '"' => in_string = true,
+                    '{' => braces += 1,
+                    '}' => braces = braces.saturating_sub(1),
+                    '[' => brackets += 1,
+                    ']' => brackets = brackets.saturating_sub(1),
+                    '(' => parentheses += 1,
+                    ')' => parentheses = parentheses.saturating_sub(1),
+                    ',' if braces == 0 && brackets == 0 && parentheses == 0 => {
+                        value_end = value_start + relative_index;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+
+            return Some(
+                source[value_start..value_end]
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+        }
+        line_start += line.len();
+    }
+
+    None
+}
+
+#[cfg(feature = "dev")]
+fn debug_unquote(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
+        trimmed[1..trimmed.len() - 1]
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\")
+    } else {
+        trimmed.to_string()
+    }
+}
+
+#[cfg(feature = "dev")]
+fn debug_parse_usize(source: &str, field: &str) -> Option<usize> {
+    debug_field_expression(source, field)?.parse::<usize>().ok()
+}
+
+#[cfg(feature = "dev")]
+fn debug_parse_i64(source: &str, field: &str) -> Option<i64> {
+    debug_field_expression(source, field)?.parse::<i64>().ok()
+}
+
+#[cfg(feature = "dev")]
+fn debug_parse_bool(source: &str, field: &str) -> Option<bool> {
+    match debug_field_expression(source, field)?.as_str() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "dev")]
+fn debug_quoted_values(source: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut current = String::new();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for character in source.chars() {
+        if in_string {
+            if escaped {
+                current.push(character);
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                values.push(current.clone());
+                current.clear();
+                in_string = false;
+            } else {
+                current.push(character);
+            }
+        } else if character == '"' {
+            in_string = true;
+        }
+    }
+
+    values
+}
+
+#[cfg(feature = "dev")]
+fn debug_bind_pairs(source: &str) -> Vec<(String, String)> {
+    let values = debug_quoted_values(source);
+    values
+        .chunks_exact(2)
+        .map(|pair| (pair[0].clone(), pair[1].clone()))
+        .collect()
+}
+
+#[cfg(feature = "dev")]
+fn humanize_debug_value(value: &str) -> String {
+    let mut text = debug_unquote(value);
+    if let Some(rest) = text.strip_prefix("Some(") {
+        text = rest.trim_end_matches(')').trim().to_string();
+    }
+    if let Some(index) = text.find("tactic_name.") {
+        text = text[index + "tactic_name.".len()..].replace('.', " / ");
+    } else if let Some(index) = text.find("insight.") {
+        text = text[index + "insight.".len()..].replace('.', " / ");
+    } else if text.starts_with("#asset/") {
+        text = text
+            .rsplit(['.', '?'])
+            .next()
+            .unwrap_or(text.as_str())
+            .to_string();
+    }
+
+    let mut spaced = String::new();
+    let mut previous_lowercase = false;
+    for character in text.chars() {
+        if character == '_' || character == '.' {
+            spaced.push(' ');
+            previous_lowercase = false;
+        } else {
+            if character.is_ascii_uppercase() && previous_lowercase {
+                spaced.push(' ');
+            }
+            spaced.push(character);
+            previous_lowercase = character.is_ascii_lowercase() || character.is_ascii_digit();
+        }
+    }
+
+    spaced
+        .split_whitespace()
+        .map(|word| {
+            let mut characters = word.chars();
+            match characters.next() {
+                Some(first) => format!("{}{}", first.to_ascii_uppercase(), characters.as_str()),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace("( ", "(")
+        .replace(", )", ")")
+        .replace(" )", ")")
+}
+
+#[cfg(feature = "dev")]
+fn debug_position_name(position: usize) -> String {
+    match position {
+        0 => "Top",
+        1 => "Jungle",
+        2 => "Mid",
+        3 => "Bottom",
+        4 => "Support",
+        _ => "Unknown",
+    }
+    .to_string()
+}
+
+#[cfg(feature = "dev")]
+fn debug_list_identifiers(expression: &str) -> Vec<String> {
+    expression
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(humanize_debug_value)
+        .collect()
+}
+
+#[cfg(feature = "dev")]
+fn team_name_from_lookup(teams: &[TeamSummary], team_id: usize) -> String {
+    teams
+        .iter()
+        .find(|team| team.id == team_id)
+        .map(|team| team.display_name.clone())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| format!("Team {team_id}"))
+}
+
+#[cfg(feature = "dev")]
+fn player_name_from_lookup(players: &[PlayerSummary], player_id: usize) -> String {
+    players
+        .iter()
+        .find(|player| player.id == player_id)
+        .map(|player| player.name.clone())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| format!("Player {player_id}"))
+}
+
+#[cfg(feature = "dev")]
+fn parse_team_history_probe(
+    raw: &str,
+    team_id: usize,
+    teams: &[TeamSummary],
+    players: &[PlayerSummary],
+) -> Result<TeamHistoryData, String> {
+    if !raw.contains("=== SELECTED TEAM RECORD ===") {
+        return Err("Unexpected Team probe payload".to_string());
+    }
+
+    let mut matches = Vec::new();
+    let mut analyses = Vec::new();
+    let mut latest_rating = None;
+    let mut latest_rank = None;
+    let mut latest_rating_date = String::new();
+    let news_blocks = extract_debug_blocks(raw, "News {");
+
+    for news in &news_blocks {
+        let date = debug_field_expression(news, "date").unwrap_or_default();
+
+        if let Some(report) = extract_debug_blocks(news, "ty: MatchReport {")
+            .into_iter()
+            .next()
+        {
+            let match_id = debug_parse_usize(&report, "match_id").unwrap_or_default();
+            let opponent_id = debug_parse_usize(&report, "enemy_team_id").unwrap_or_default();
+            let is_practice = debug_parse_bool(&report, "is_practice").unwrap_or(false);
+            let is_win = debug_parse_bool(&report, "is_win").unwrap_or(false);
+            let my_score = debug_parse_usize(&report, "my_team_score").unwrap_or_default();
+            let enemy_score = debug_parse_usize(&report, "enemy_team_score").unwrap_or_default();
+            let article_pattern = debug_field_expression(&report, "article_pattern")
+                .map(|value| humanize_debug_value(&value))
+                .unwrap_or_else(|| "—".to_string());
+            let set_patterns = debug_field_expression(&report, "set_patterns")
+                .map(|value| debug_list_identifiers(&value))
+                .unwrap_or_default();
+            let mut sets = Vec::new();
+
+            for (index, set_block) in extract_debug_blocks(&report, "MatchSetArticleData {")
+                .into_iter()
+                .enumerate()
+            {
+                let mvp_player_id =
+                    debug_parse_usize(&set_block, "mvp_athlete_id").unwrap_or_default();
+                sets.push(TeamMatchSetEntry {
+                    set_number: index + 1,
+                    pattern: set_patterns
+                        .get(index)
+                        .cloned()
+                        .unwrap_or_else(|| "—".to_string()),
+                    team1_kills: debug_parse_usize(&set_block, "team1_total_kill")
+                        .unwrap_or_default(),
+                    team2_kills: debug_parse_usize(&set_block, "team2_total_kill")
+                        .unwrap_or_default(),
+                    team1_gold: debug_parse_usize(&set_block, "team1_total_gold")
+                        .unwrap_or_default(),
+                    team2_gold: debug_parse_usize(&set_block, "team2_total_gold")
+                        .unwrap_or_default(),
+                    mvp_player_id,
+                    mvp_player_name: player_name_from_lookup(players, mvp_player_id),
+                    mvp_champion_id: debug_field_expression(&set_block, "mvp_champion")
+                        .map(|value| debug_unquote(&value))
+                        .unwrap_or_default(),
+                    mvp_kills: debug_parse_usize(&set_block, "mvp_kills").unwrap_or_default(),
+                    mvp_deaths: debug_parse_usize(&set_block, "mvp_deaths")
+                        .unwrap_or_default(),
+                    mvp_assists: debug_parse_usize(&set_block, "mvp_assists")
+                        .unwrap_or_default(),
+                    was_comeback: debug_parse_bool(&set_block, "was_comeback")
+                        .unwrap_or(false),
+                    was_blue_side: debug_parse_bool(&set_block, "is_team1_blue")
+                        .unwrap_or(false),
+                });
+            }
+
+            matches.push(TeamMatchHistoryEntry {
+                date,
+                match_id,
+                opponent_id,
+                opponent_name: team_name_from_lookup(teams, opponent_id),
+                is_practice,
+                is_win,
+                my_score,
+                enemy_score,
+                article_pattern,
+                sets,
+            });
+            continue;
+        }
+
+        if let Some(analysis) = extract_debug_blocks(news, "ty: PreMatchAnalysis {")
+            .into_iter()
+            .next()
+        {
+            let match_id = debug_parse_usize(&analysis, "match_id").unwrap_or_default();
+            let opponent_id =
+                debug_parse_usize(&analysis, "enemy_team_id").unwrap_or_default();
+            let star_player_id =
+                debug_parse_usize(&analysis, "star_player_id").unwrap_or_default();
+            let tactics = extract_debug_blocks(&analysis, "PreMatchTacticEntry {")
+                .into_iter()
+                .map(|entry| TeamPreMatchTacticEntry {
+                    category: debug_field_expression(&entry, "category")
+                        .map(|value| humanize_debug_value(&value))
+                        .unwrap_or_default(),
+                    value: debug_field_expression(&entry, "value")
+                        .map(|value| humanize_debug_value(&value))
+                        .unwrap_or_default(),
+                })
+                .collect::<Vec<_>>();
+            let champion_picks = extract_debug_blocks(&analysis, "PreMatchChampionEntry {")
+                .into_iter()
+                .map(|entry| TeamPreMatchChampionEntry {
+                    champion_id: debug_field_expression(&entry, "champion")
+                        .map(|value| debug_unquote(&value))
+                        .unwrap_or_default(),
+                    position: debug_parse_usize(&entry, "position")
+                        .map(debug_position_name)
+                        .unwrap_or_else(|| "Unknown".to_string()),
+                    wins: debug_parse_usize(&entry, "wins").unwrap_or_default(),
+                    losses: debug_parse_usize(&entry, "losses").unwrap_or_default(),
+                })
+                .collect::<Vec<_>>();
+            let mut insights = Vec::new();
+
+            for insight in extract_debug_blocks(&analysis, "PreMatchInsight {") {
+                let section = debug_field_expression(&insight, "section")
+                    .map(|value| humanize_debug_value(&value))
+                    .unwrap_or_else(|| "Other".to_string());
+                for text in extract_debug_blocks(&insight, "PreMatchInsightText {") {
+                    let source_key = debug_field_expression(&text, "i18n_key")
+                        .map(|value| debug_unquote(&value))
+                        .unwrap_or_default();
+                    let label = source_key
+                        .rsplit('.')
+                        .next()
+                        .map(humanize_debug_value)
+                        .unwrap_or_else(|| "Insight".to_string());
+                    let binds = debug_field_expression(&text, "binds")
+                        .map(|value| debug_bind_pairs(&value))
+                        .unwrap_or_default();
+                    let champions = debug_field_expression(&text, "champion_keys")
+                        .map(|value| debug_quoted_values(&value))
+                        .unwrap_or_default();
+                    let mut detail_parts = binds
+                        .into_iter()
+                        .map(|(key, value)| {
+                            format!(
+                                "{}: {}",
+                                humanize_debug_value(&key),
+                                humanize_debug_value(&value)
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    if !champions.is_empty() {
+                        detail_parts.push(format!(
+                            "Champions: {}",
+                            champions
+                                .iter()
+                                .map(|champion| champion_display_name(champion))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                    }
+                    insights.push(TeamPreMatchInsightEntry {
+                        section: section.clone(),
+                        label,
+                        details: detail_parts.join(" · "),
+                        source_key,
+                    });
+                }
+            }
+
+            analyses.push(TeamPreMatchAnalysisEntry {
+                date,
+                match_id,
+                opponent_id,
+                opponent_name: team_name_from_lookup(teams, opponent_id),
+                analysis_level: debug_field_expression(&analysis, "analysis_level")
+                    .unwrap_or_else(|| "—".to_string()),
+                has_match_history: debug_parse_bool(&analysis, "has_match_history")
+                    .unwrap_or(false),
+                star_player_id,
+                star_player_name: player_name_from_lookup(players, star_player_id),
+                tactics,
+                champion_picks,
+                insights,
+            });
+            continue;
+        }
+
+        if let Some(report) = extract_debug_blocks(news, "ty: TeamRatingRankingReport {")
+            .into_iter()
+            .next()
+        {
+            for (index, entry) in extract_debug_blocks(&report, "TeamRatingRankEntry {")
+                .into_iter()
+                .enumerate()
+            {
+                if debug_parse_usize(&entry, "team_id") == Some(team_id) {
+                    latest_rating = debug_parse_i64(&entry, "rating");
+                    latest_rank = Some(index + 1);
+                    latest_rating_date = date.clone();
+                    break;
+                }
+            }
+        }
+
+        let rating_subject = format!("rating:team-delta:{team_id}");
+        if news.contains(&rating_subject) {
+            if let Some(title_bind) = debug_field_expression(news, "title_bind") {
+                let pairs = debug_bind_pairs(&title_bind);
+                for (key, value) in pairs {
+                    match key.as_str() {
+                        "Rating" => latest_rating = value.parse::<i64>().ok(),
+                        "Rank" => latest_rank = value.parse::<usize>().ok(),
+                        _ => {}
+                    }
+                }
+                latest_rating_date = date;
+            }
+        }
+    }
+
+    matches.sort_by(|left, right| left.date.cmp(&right.date));
+    analyses.sort_by(|left, right| left.date.cmp(&right.date));
+
+    Ok(TeamHistoryData {
+        team_id,
+        matches,
+        analyses,
+        latest_rating,
+        latest_rank,
+        latest_rating_date,
+    })
+}
+
+#[cfg(feature = "dev")]
+fn parse_team_strategy_section(section: &str) -> Result<Vec<TeamStrategyEntry>, String> {
+    let mut entries = Vec::new();
+    for line in section.lines().filter(|line| !line.trim().is_empty()) {
+        let fields = line.split('\t').collect::<Vec<_>>();
+        if fields.len() != 2 {
+            return Err("Invalid Team strategy section from bridge".to_string());
+        }
+        entries.push(TeamStrategyEntry {
+            key: fields[0].to_string(),
+            value: fields[1].to_string(),
+        });
+    }
+    Ok(entries)
+}
+
+#[cfg(feature = "dev")]
+fn parse_team_management_response(response: &str) -> Result<TeamManagementData, String> {
+    if let Some(error) = response.strip_prefix("ERR|") {
+        return Err(error.to_string());
+    }
+
+    let parts = response.split('|').collect::<Vec<_>>();
+    if parts.len() != 10 || parts[0] != "OK" || parts[1] != "TEAM_MANAGEMENT" {
+        return Err(format!("Unexpected Team management response: {response}"));
+    }
+
+    let team_id = parts[2]
+        .parse::<usize>()
+        .map_err(|_| "Invalid Team management team ID".to_string())?;
+    let management = hex_decode(parts[3])?;
+    let current_strategy_raw = hex_decode(parts[4])?;
+    let last_strategy_raw = hex_decode(parts[5])?;
+    let team_color_strategy_raw = hex_decode(parts[6])?;
+    let merchandise_raw = hex_decode(parts[7])?;
+    let champion_setup_raw = hex_decode(parts[8])?;
+    let gaming_house_raw = hex_decode(parts[9])?;
+
+    let mut lineup = Vec::new();
+    let mut watched_players = Vec::new();
+    let mut no_transfer_players = Vec::new();
+    let mut release_players = Vec::new();
+    let mut watched_staff = Vec::new();
+    let mut release_staff = Vec::new();
+    let mut pending_installments = 0;
+    let mut resale_clauses = 0;
+    let mut scout_dispatch = String::new();
+    let mut merchandise_product_count = 0;
+    let mut champion_tier_count = 0;
+    let mut personal_tactic_count = 0;
+
+    for line in management.lines().filter(|line| !line.trim().is_empty()) {
+        let fields = line.split('\t').collect::<Vec<_>>();
+        match fields.first().copied().unwrap_or_default() {
+            "lineup" if fields.len() == 4 => {
+                let member = if fields[2].trim().is_empty() {
+                    None
+                } else {
+                    Some(TeamMemberReference {
+                        id: fields[2]
+                            .parse::<usize>()
+                            .map_err(|_| "Invalid lineup member ID".to_string())?,
+                        name: fields[3].to_string(),
+                    })
+                };
+                lineup.push(TeamLineupEntry {
+                    slot: fields[1].to_string(),
+                    member,
+                });
+            }
+            "watched_player" | "no_transfer_player" | "release_player"
+                if fields.len() == 3 =>
+            {
+                let entry = TeamMemberReference {
+                    id: fields[1]
+                        .parse::<usize>()
+                        .map_err(|_| "Invalid Team player reference ID".to_string())?,
+                    name: fields[2].to_string(),
+                };
+                match fields[0] {
+                    "watched_player" => watched_players.push(entry),
+                    "no_transfer_player" => no_transfer_players.push(entry),
+                    _ => release_players.push(entry),
+                }
+            }
+            "watched_staff" | "release_staff" if fields.len() == 3 => {
+                let entry = TeamMemberReference {
+                    id: fields[1]
+                        .parse::<usize>()
+                        .map_err(|_| "Invalid Team staff reference ID".to_string())?,
+                    name: fields[2].to_string(),
+                };
+                if fields[0] == "watched_staff" {
+                    watched_staff.push(entry);
+                } else {
+                    release_staff.push(entry);
+                }
+            }
+            "metric" if fields.len() == 3 => match fields[1] {
+                "pending_installments" => {
+                    pending_installments = fields[2]
+                        .parse::<usize>()
+                        .map_err(|_| "Invalid pending installment count".to_string())?;
+                }
+                "resale_clauses" => {
+                    resale_clauses = fields[2]
+                        .parse::<usize>()
+                        .map_err(|_| "Invalid resale clause count".to_string())?;
+                }
+                "scout_dispatch" => scout_dispatch = fields[2].to_string(),
+                "merchandise_products" => {
+                    merchandise_product_count = fields[2]
+                        .parse::<usize>()
+                        .map_err(|_| "Invalid merchandise product count".to_string())?;
+                }
+                "champion_tiers" => {
+                    champion_tier_count = fields[2]
+                        .parse::<usize>()
+                        .map_err(|_| "Invalid champion tier count".to_string())?;
+                }
+                "personal_tactics" => {
+                    personal_tactic_count = fields[2]
+                        .parse::<usize>()
+                        .map_err(|_| "Invalid personal tactic count".to_string())?;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    let mut merchandise = Vec::new();
+    for line in merchandise_raw.lines().filter(|line| !line.trim().is_empty()) {
+        let fields = line.split('\t').collect::<Vec<_>>();
+        if fields.len() != 10 {
+            return Err("Invalid Team merchandise row from bridge".to_string());
+        }
+        merchandise.push(TeamMerchandiseEntry {
+            product_type: fields[0].to_string(),
+            athlete_id: fields[1]
+                .parse::<usize>()
+                .map_err(|_| "Invalid merchandise athlete ID".to_string())?,
+            athlete_name: fields[2].to_string(),
+            stock: fields[3].to_string(),
+            sell_price: fields[4].to_string(),
+            yearly_sales: fields[5].to_string(),
+            yearly_revenue: fields[6].to_string(),
+            total_sales: fields[7].to_string(),
+            total_revenue: fields[8].to_string(),
+            daily_purchase_rate: fields[9].to_string(),
+        });
+    }
+
+    let mut champion_setup = Vec::new();
+    for line in champion_setup_raw
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+    {
+        let fields = line.split('\t').collect::<Vec<_>>();
+        if fields.len() != 5 {
+            return Err("Invalid Team champion setup row from bridge".to_string());
+        }
+        champion_setup.push(TeamChampionSetupEntry {
+            champion_id: fields[0].to_string(),
+            tier: fields[1].to_string(),
+            tactic_1: fields[2].to_string(),
+            tactic_2: fields[3].to_string(),
+            tactic_3: fields[4].to_string(),
+        });
+    }
+
+    let mut gaming_house = TeamGamingHouseSummary::default();
+    for line in gaming_house_raw.lines().filter(|line| !line.trim().is_empty()) {
+        let fields = line.split('\t').collect::<Vec<_>>();
+        if fields.len() != 2 {
+            return Err("Invalid Gaming House summary row from bridge".to_string());
+        }
+        let parse_count = || {
+            fields[1]
+                .parse::<usize>()
+                .map_err(|_| "Invalid Gaming House count".to_string())
+        };
+        match fields[0] {
+            "level" => gaming_house.level = fields[1].to_string(),
+            "welfare" => gaming_house.welfare = fields[1].to_string(),
+            "owned_furniture_types" => gaming_house.owned_furniture_types = parse_count()?,
+            "owned_furniture_total" => gaming_house.owned_furniture_total = parse_count()?,
+            "owned_wallpaper_types" => gaming_house.owned_wallpaper_types = parse_count()?,
+            "owned_wallpaper_total" => gaming_house.owned_wallpaper_total = parse_count()?,
+            "owned_wall_types" => gaming_house.owned_wall_types = parse_count()?,
+            "owned_wall_total" => gaming_house.owned_wall_total = parse_count()?,
+            "owned_window_types" => gaming_house.owned_window_types = parse_count()?,
+            "owned_window_total" => gaming_house.owned_window_total = parse_count()?,
+            "placed_furniture" => gaming_house.placed_furniture = parse_count()?,
+            "placed_wallpapers" => gaming_house.placed_wallpapers = parse_count()?,
+            "placed_walls" => gaming_house.placed_walls = parse_count()?,
+            "placed_windows" => gaming_house.placed_windows = parse_count()?,
+            _ => {}
+        }
+    }
+
+    Ok(TeamManagementData {
+        team_id,
+        lineup,
+        watched_players,
+        no_transfer_players,
+        release_players,
+        watched_staff,
+        release_staff,
+        pending_installments,
+        resale_clauses,
+        scout_dispatch,
+        merchandise_product_count,
+        champion_tier_count,
+        personal_tactic_count,
+        current_strategy: parse_team_strategy_section(&current_strategy_raw)?,
+        last_strategy: parse_team_strategy_section(&last_strategy_raw)?,
+        team_color_strategy: parse_team_strategy_section(&team_color_strategy_raw)?,
+        merchandise,
+        champion_setup,
+        gaming_house,
+    })
+}
+
 fn parse_teams_response(response: &str) -> Result<Vec<TeamSummary>, String> {
     if let Some(error) = response.strip_prefix("ERR|") {
         return Err(error.to_string());
@@ -12204,7 +16360,7 @@ fn parse_teams_response(response: &str) -> Result<Vec<TeamSummary>, String> {
     let mut teams = Vec::with_capacity(expected_count);
     for entry in payload.split(';') {
         let fields = entry.split(':').collect::<Vec<_>>();
-        if fields.len() != 14 {
+        if fields.len() != 14 && fields.len() != 26 {
             return Err("Invalid team entry from bridge".to_string());
         }
         let id = fields[0]
@@ -12247,6 +16403,52 @@ fn parse_teams_response(response: &str) -> Result<Vec<TeamSummary>, String> {
         let salary_budget = fields[13]
             .parse::<f64>()
             .map_err(|_| "Invalid team salary budget from bridge".to_string())?;
+        let (
+            stadium_name,
+            stadium_capacity,
+            total_home_attendance,
+            home_match_count,
+            total_entrance_income,
+            popularity,
+            fan_expectation,
+            fan_satisfaction,
+            fan_count,
+            fan_momentum,
+            gaming_house_level,
+            welfare,
+        ) = if fields.len() == 26 {
+            (
+                hex_decode(fields[14])?,
+                fields[15].to_string(),
+                fields[16].to_string(),
+                fields[17].to_string(),
+                fields[18]
+                    .parse::<f64>()
+                    .map_err(|_| "Invalid team entrance income from bridge".to_string())?,
+                fields[19].to_string(),
+                hex_decode(fields[20])?,
+                hex_decode(fields[21])?,
+                fields[22].to_string(),
+                fields[23].to_string(),
+                hex_decode(fields[24])?,
+                fields[25].to_string(),
+            )
+        } else {
+            (
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                0.0,
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+            )
+        };
         teams.push(TeamSummary {
             id,
             display_name,
@@ -12259,6 +16461,18 @@ fn parse_teams_response(response: &str) -> Result<Vec<TeamSummary>, String> {
             merchandise_facility_grade,
             stadium_grade,
             training_facility_grade,
+            stadium_name,
+            stadium_capacity,
+            total_home_attendance,
+            home_match_count,
+            total_entrance_income,
+            popularity,
+            fan_expectation,
+            fan_satisfaction,
+            fan_count,
+            fan_momentum,
+            gaming_house_level,
+            welfare,
             total_balance,
             transfer_budget,
             salary_budget,
@@ -12611,8 +16825,32 @@ fn contract_probe_export_text(
     )
 }
 
+fn hex_encode(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(value.len() * 2);
+    for byte in value.as_bytes() {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+fn validate_editor_name(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("Name cannot be empty".to_string());
+    }
+    if trimmed.chars().count() > 100 {
+        return Err("Name cannot contain more than 100 characters".to_string());
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err("Name cannot contain line breaks or control characters".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
 fn hex_decode(encoded: &str) -> Result<String, String> {
-    if encoded.len() % 2 != 0 {
+    if !encoded.len().is_multiple_of(2) {
         return Err("Invalid text encoding from bridge".to_string());
     }
 
@@ -12767,6 +17005,10 @@ fn human_error(error: &str) -> String {
         "PLAYER_NOT_FOUND" => "Could not find the selected player in the active career".to_string(),
         "STAFF_NOT_FOUND" => "Could not find the selected staff member in the active career".to_string(),
         "INVALID_ID" => "Bridge received an invalid ID".to_string(),
+        "INVALID_NAME_ENCODING" => "Bridge received an invalid encoded name".to_string(),
+        "NAME_EMPTY" => "Name cannot be empty".to_string(),
+        "NAME_TOO_LONG" => "Name cannot contain more than 100 characters".to_string(),
+        "NAME_CONTROL_CHARACTER" => "Name cannot contain line breaks or control characters".to_string(),
         "INVALID_STAT" => "Bridge received an invalid attribute value".to_string(),
         "STAT_OUT_OF_RANGE" => "Attributes must be integers between 1 and 100".to_string(),
         "INVALID_POSITION" => "Bridge received an invalid position value".to_string(),
@@ -12799,6 +17041,9 @@ fn human_error(error: &str) -> String {
         "INVALID_BOOLEAN" => "Bridge received an invalid toggle value".to_string(),
         "INVALID_COMMUNICATION" => "Bridge received an invalid communication value".to_string(),
         "COMMUNICATION_OUT_OF_RANGE" => "Communication must be between 0 and 100".to_string(),
+        "INVALID_STAMINA" => "Stamina must be a number from 0 to 100".to_string(),
+        "INVALID_CONDITION" => "Condition must be a number from 0 to 100".to_string(),
+        "CONDITION_OUT_OF_RANGE" => "Stamina and Condition must be between 0 and 100".to_string(),
         "NO_REGIONS_DETECTED" => "No region IDs could be detected in the current save".to_string(),
         "INVALID_REGION" => "The selected Communication region is not available in the current save".to_string(),
         "SERVER_COMMAND_FAILED" => "Could not send the change to TFM2 management/server state".to_string(),
@@ -12808,8 +17053,19 @@ fn human_error(error: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod compatibility_tests {
     use super::*;
+
+    #[cfg(feature = "dev")]
+    fn test_hex_encode(value: &str) -> String {
+        value
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect::<Vec<_>>()
+            .join("")
+    }
 
     fn test_player(age: u8, actual_potential: u8) -> PlayerSummary {
         PlayerSummary {
@@ -12838,6 +17094,27 @@ mod compatibility_tests {
             aggressive: "50".to_string(),
             ego: "50".to_string(),
         }
+    }
+
+    #[test]
+    fn editor_name_validation_trims_and_preserves_unicode() {
+        assert_eq!(
+            validate_editor_name("  René | 홍길동  ").unwrap(),
+            "René | 홍길동"
+        );
+    }
+
+    #[test]
+    fn editor_name_validation_rejects_invalid_values() {
+        assert!(validate_editor_name("   ").is_err());
+        assert!(validate_editor_name("line\nbreak").is_err());
+        assert!(validate_editor_name(&"x".repeat(101)).is_err());
+    }
+
+    #[test]
+    fn editor_name_hex_payload_round_trips_unicode_and_separator() {
+        let name = "René | 홍길동";
+        assert_eq!(hex_decode(&hex_encode(name)).unwrap(), name);
     }
 
     fn range_mut<'a>(
@@ -12983,6 +17260,241 @@ mod compatibility_tests {
     }
 
     #[test]
+    fn teams_parser_preserves_legacy_payload_and_reads_expanded_team_information() {
+        let legacy = parse_teams_response(
+            "OK|TEAMS|1|1:5465616d:4d616e61676572:2:1:5:3:80.5:53:42:41:1000:500:300",
+        )
+        .unwrap();
+        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy[0].display_name, "Team");
+        assert!(legacy[0].stadium_name.is_empty());
+
+        let expanded = parse_teams_response(
+            "OK|TEAMS|1|1:5465616d:4d616e61676572:2:1:5:3:80.5:53:42:41:1000:500:300:4172656e61:15000:30000:3:250000:2:546f70:4e6f726d616c:12000:1:4c7633:52",
+        )
+        .unwrap();
+        assert_eq!(expanded.len(), 1);
+        assert_eq!(expanded[0].stadium_name, "Arena");
+        assert_eq!(expanded[0].stadium_capacity, "15000");
+        assert_eq!(expanded[0].fan_expectation, "Top");
+        assert_eq!(expanded[0].fan_satisfaction, "Normal");
+        assert_eq!(expanded[0].gaming_house_level, "Lv3");
+        assert_eq!(expanded[0].welfare, "52");
+        assert_eq!(expanded[0].average_home_attendance(), Some(10000.0));
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_workspace_member_matching_uses_loaded_team_name_or_fallback_id() {
+        let team = TeamSummary {
+            id: 42,
+            display_name: "GO Team Astrals".to_string(),
+            manager_name: String::new(),
+            league_id: 1,
+            is_player_team: true,
+            roster_size: 6,
+            staff_count: 7,
+            roster_rating: None,
+            merchandise_facility_grade: String::new(),
+            stadium_grade: String::new(),
+            training_facility_grade: String::new(),
+            stadium_name: String::new(),
+            stadium_capacity: String::new(),
+            total_home_attendance: String::new(),
+            home_match_count: String::new(),
+            total_entrance_income: 0.0,
+            popularity: String::new(),
+            fan_expectation: String::new(),
+            fan_satisfaction: String::new(),
+            fan_count: String::new(),
+            fan_momentum: String::new(),
+            gaming_house_level: String::new(),
+            welfare: String::new(),
+            total_balance: 0.0,
+            transfer_budget: 0.0,
+            salary_budget: 0.0,
+        };
+
+        assert!(summary_belongs_to_team("GO Team Astrals", &team));
+        assert!(summary_belongs_to_team("go team astrals", &team));
+        assert!(summary_belongs_to_team("Team 42", &team));
+        assert!(!summary_belongs_to_team("Free Agent", &team));
+        assert!(!summary_belongs_to_team("Another Team", &team));
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_condition_probe_parses_management_fields() {
+        let raw = r#"Athlete {
+    name: "Test",
+    management: AthleteManagementStat {
+        stamina: 87,
+        condition: 63.5,
+        stress: 0,
+    },
+}"#;
+
+        let (stamina, condition) = parse_team_condition_from_player_probe(raw).unwrap();
+        assert_eq!(stamina, "87");
+        assert_eq!(condition, "63.5");
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_condition_probe_rejects_missing_management_fields() {
+        let raw = "Athlete { management: AthleteManagementStat { stress: 4, } }";
+        assert!(parse_team_condition_from_player_probe(raw).is_err());
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_condition_editor_accepts_inclusive_zero_to_one_hundred() {
+        assert!(validate_condition_editor_value("0", "Stamina").is_ok());
+        assert!(validate_condition_editor_value("63.5", "Condition").is_ok());
+        assert!(validate_condition_editor_value("100", "Condition").is_ok());
+        assert!(validate_condition_editor_value("-1", "Stamina").is_err());
+        assert!(validate_condition_editor_value("100.1", "Condition").is_err());
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_condition_entry_tracks_pending_changes() {
+        let mut entry = TeamConditionEntry {
+            player_id: 1,
+            player_name: "Test".to_string(),
+            stamina: "87".to_string(),
+            condition: "63.5".to_string(),
+            original_stamina: "87".to_string(),
+            original_condition: "63.5".to_string(),
+            write_status: "Ready".to_string(),
+        };
+        assert!(!entry.has_changes());
+        entry.condition = "100".to_string();
+        assert!(entry.has_changes());
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_management_parser_reads_all_read_only_sections() {
+        let management = [
+            "lineup\tTop\t43\tSiwoo",
+            "lineup\tJungle\t486\tHizto",
+            "watched_player\t43\tSiwoo",
+            "no_transfer_player\t43\tSiwoo",
+            "release_player\t99\tReserve",
+            "watched_staff\t4\tCyanidefi",
+            "release_staff\t5\tCoach",
+            "metric\tpending_installments\t2",
+            "metric\tresale_clauses\t1",
+            "metric\tscout_dispatch\tActive",
+            "metric\tmerchandise_products\t1",
+            "metric\tchampion_tiers\t1",
+            "metric\tpersonal_tactics\t1",
+        ]
+        .join("\n");
+        let current_strategy = "focused\tBottom\nearly_jungle\tCounterJungle";
+        let last_strategy = "focused\tAll\nearly_jungle\tGanking";
+        let color_strategy = "focused\tAuto\nearly_jungle\tGanking";
+        let merchandise = "3\t43\tSiwoo\t49\t66000\t151\t9966000\t151\t9966000\t15";
+        let champion_setup = "soldier\tS\tAuto\tAuto\tAuto";
+        let gaming_house = [
+            "level\tLv3",
+            "welfare\t30",
+            "owned_furniture_types\t9",
+            "owned_furniture_total\t12",
+            "owned_wallpaper_types\t1",
+            "owned_wallpaper_total\t18",
+            "owned_wall_types\t0",
+            "owned_wall_total\t0",
+            "owned_window_types\t1",
+            "owned_window_total\t1",
+            "placed_furniture\t0",
+            "placed_wallpapers\t0",
+            "placed_walls\t0",
+            "placed_windows\t0",
+        ]
+        .join("\n");
+        let response = format!(
+            "OK|TEAM_MANAGEMENT|85|{}|{}|{}|{}|{}|{}|{}",
+            test_hex_encode(&management),
+            test_hex_encode(current_strategy),
+            test_hex_encode(last_strategy),
+            test_hex_encode(color_strategy),
+            test_hex_encode(merchandise),
+            test_hex_encode(champion_setup),
+            test_hex_encode(&gaming_house),
+        );
+
+        let parsed = parse_team_management_response(&response).unwrap();
+        assert_eq!(parsed.team_id, 85);
+        assert_eq!(parsed.lineup.len(), 2);
+        assert_eq!(parsed.watched_players[0].name, "Siwoo");
+        assert_eq!(parsed.pending_installments, 2);
+        assert_eq!(parsed.resale_clauses, 1);
+        assert_eq!(parsed.scout_dispatch, "Active");
+        assert_eq!(parsed.current_strategy[0].value, "Bottom");
+        assert_eq!(parsed.merchandise[0].stock, "49");
+        assert_eq!(parsed.champion_setup[0].tier, "S");
+        assert_eq!(parsed.gaming_house.owned_furniture_total, 12);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_management_parser_accepts_empty_ai_team_collections() {
+        let response = format!(
+            "OK|TEAM_MANAGEMENT|92|{}|{}|{}|{}|{}|{}|{}",
+            test_hex_encode("lineup\tTop\t873\tPlayer A\nmetric\tpending_installments\t0\nmetric\tresale_clauses\t0\nmetric\tscout_dispatch\tNone\nmetric\tmerchandise_products\t0\nmetric\tchampion_tiers\t0\nmetric\tpersonal_tactics\t0"),
+            test_hex_encode("focused\tTop"),
+            test_hex_encode("focused\tBottom"),
+            test_hex_encode("focused\tAuto"),
+            test_hex_encode(""),
+            test_hex_encode(""),
+            test_hex_encode("level\tLv3\nwelfare\t52"),
+        );
+
+        let parsed = parse_team_management_response(&response).unwrap();
+        assert!(parsed.merchandise.is_empty());
+        assert!(parsed.champion_setup.is_empty());
+        assert_eq!(parsed.scout_dispatch, "None");
+        assert_eq!(parsed.gaming_house.level, "Lv3");
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn champion_mastery_name_uses_at_most_two_lines() {
+        let display = champion_mastery_card_display_name("Poison Dart Hunter");
+        assert!(display.lines().count() <= 2);
+        assert!(!display.is_empty());
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn champion_mastery_unbroken_long_name_is_ellipsized() {
+        let display = champion_mastery_card_display_name(
+            "AnExtremelyLongModChampionNameWithoutSpaces",
+        );
+        assert_eq!(display.lines().count(), 2);
+        assert!(display.ends_with('…'));
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn champion_mastery_columns_follow_only_the_supplied_width() {
+        assert_eq!(champion_mastery_columns_for_width(560.0), 2);
+        assert_eq!(champion_mastery_columns_for_width(800.0), 4);
+        assert_eq!(champion_mastery_columns_for_width(1080.0), 5);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn champion_mastery_card_geometry_is_fixed_and_compact() {
+        assert_eq!(CHAMPION_MASTERY_CARD_INNER_WIDTH, 172.0);
+        assert_eq!(CHAMPION_MASTERY_CARD_INNER_HEIGHT, 38.0);
+        assert_eq!(CHAMPION_MASTERY_CARD_OUTER_WIDTH, 184.0);
+        assert_eq!(CHAMPION_MASTERY_CARD_HORIZONTAL_GAP, 8.0);
+    }
+
+    #[test]
     fn range_selection_selects_a_contiguous_range_in_both_directions() {
         let ordered_ids = [1, 2, 3, 4, 5, 6];
         let mut selected_ids = BTreeSet::from([1, 6]);
@@ -13042,37 +17554,37 @@ mod compatibility_tests {
     }
 
     #[test]
-    fn legacy_bridge_is_unverified_warning() {
-        let issue = ModifierApp::compatibility_issue_for("0.2.39", None, None).unwrap();
+    fn unknown_future_bridge_without_protocol_is_unverified_warning() {
+        let issue = ModifierApp::compatibility_issue_for("0.2.50", None, None).unwrap();
         assert_eq!(issue.severity, CompatibilitySeverity::Warning);
-        assert_eq!(issue.action, CompatibilityAction::BridgeUpdate);
+        assert_eq!(issue.action, CompatibilityAction::EditorUpdate);
         assert_eq!(issue.reason, CompatibilityReason::UnverifiedLegacyBridge);
     }
 
     #[test]
-    fn older_bridge_requires_bridge_update_warning() {
+    fn older_pre_migration_bridge_is_not_supported() {
         let issue = ModifierApp::compatibility_issue_for(
             "0.2.38",
             Some(BRIDGE_PROTOCOL_VERSION),
             Some(SUPPORTED_TFM2_VERSION),
         )
         .unwrap();
-        assert_eq!(issue.severity, CompatibilitySeverity::Warning);
+        assert_eq!(issue.severity, CompatibilitySeverity::NotSupported);
         assert_eq!(issue.action, CompatibilityAction::BridgeUpdate);
-        assert_eq!(issue.reason, CompatibilityReason::VersionMismatch);
+        assert_eq!(issue.reason, CompatibilityReason::KnownUnsupportedCombination);
     }
 
     #[test]
-    fn newer_bridge_requires_editor_update_warning() {
+    fn previous_bridge_without_name_commands_is_hard_blocked() {
         let issue = ModifierApp::compatibility_issue_for(
-            "0.2.44",
+            "0.2.48",
             Some(BRIDGE_PROTOCOL_VERSION),
             Some(SUPPORTED_TFM2_VERSION),
         )
         .unwrap();
-        assert_eq!(issue.severity, CompatibilitySeverity::Warning);
-        assert_eq!(issue.action, CompatibilityAction::EditorUpdate);
-        assert_eq!(issue.reason, CompatibilityReason::VersionMismatch);
+        assert_eq!(issue.severity, CompatibilitySeverity::NotSupported);
+        assert_eq!(issue.action, CompatibilityAction::BridgeUpdate);
+        assert_eq!(issue.reason, CompatibilityReason::KnownUnsupportedCombination);
     }
 
     #[test]
@@ -13086,17 +17598,42 @@ mod compatibility_tests {
         );
     }
 
+    #[cfg(not(feature = "dev"))]
     #[test]
-    fn known_new_bridge_is_not_supported_and_requires_newer_editor() {
+    fn community_required_bridge_is_not_caught_by_a_future_bridge_rule() {
+        assert!(unsupported_bridge_rule_for(REQUIRED_BRIDGE_VERSION).is_none());
+        assert!(ModifierApp::compatibility_issue_for(
+            REQUIRED_BRIDGE_VERSION,
+            Some(BRIDGE_PROTOCOL_VERSION),
+            Some(SUPPORTED_TFM2_VERSION),
+        )
+        .is_none());
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn development_required_bridge_is_not_caught_by_community_future_bridge_rule() {
+        assert!(unsupported_bridge_rule_for(REQUIRED_BRIDGE_VERSION).is_none());
+        assert!(ModifierApp::compatibility_issue_for(
+            REQUIRED_BRIDGE_VERSION,
+            Some(BRIDGE_PROTOCOL_VERSION),
+            Some(SUPPORTED_TFM2_VERSION),
+        )
+        .is_none());
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn future_development_bridge_with_current_protocol_is_warning_only() {
         let issue = ModifierApp::compatibility_issue_for(
-            "0.2.46",
+            "0.2.50",
             Some(BRIDGE_PROTOCOL_VERSION),
             Some(SUPPORTED_TFM2_VERSION),
         )
         .unwrap();
-        assert_eq!(issue.severity, CompatibilitySeverity::NotSupported);
+        assert_eq!(issue.severity, CompatibilitySeverity::Warning);
         assert_eq!(issue.action, CompatibilityAction::EditorUpdate);
-        assert_eq!(issue.required_editor_version.as_deref(), Some("0.4.2"));
+        assert_eq!(issue.reason, CompatibilityReason::VersionMismatch);
     }
 
     #[test]
@@ -13113,15 +17650,15 @@ mod compatibility_tests {
     }
 
     #[test]
-    fn unsupported_future_protocol_requires_editor_update() {
+    fn unsupported_future_protocol_requires_verification() {
         let issue = ModifierApp::compatibility_issue_for(
-            "0.2.44",
+            REQUIRED_BRIDGE_VERSION,
             Some(BRIDGE_PROTOCOL_VERSION + 1),
             Some(SUPPORTED_TFM2_VERSION),
         )
         .unwrap();
         assert_eq!(issue.severity, CompatibilitySeverity::NotSupported);
-        assert_eq!(issue.action, CompatibilityAction::EditorUpdate);
+        assert_eq!(issue.action, CompatibilityAction::VerifyInstallation);
         assert_eq!(issue.reason, CompatibilityReason::ProtocolMismatch);
     }
 
@@ -13130,12 +17667,147 @@ mod compatibility_tests {
         let issue = ModifierApp::compatibility_issue_for(
             REQUIRED_BRIDGE_VERSION,
             Some(BRIDGE_PROTOCOL_VERSION),
-            Some("0.5.2"),
+            Some("0.5.3"),
         )
         .unwrap();
         assert_eq!(issue.severity, CompatibilitySeverity::Warning);
         assert_eq!(issue.action, CompatibilityAction::GameVersionMismatch);
         assert_eq!(issue.reason, CompatibilityReason::GameTargetMismatch);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_history_parser_reads_match_analysis_and_rating() {
+        let raw = r##"=== SELECTED TEAM RECORD ===
+Team key: 85
+Team {
+    news: [
+        News {
+            ty: PreMatchAnalysis {
+                enemy_team_id: 89,
+                match_id: 787,
+                tactics: [
+                    PreMatchTacticEntry {
+                        category: "early_jungle",
+                        value: "counter_jungle",
+                    },
+                ],
+                champion_picks: [
+                    PreMatchChampionEntry {
+                        champion: "ninja",
+                        position: 1,
+                        wins: 2,
+                        losses: 1,
+                    },
+                ],
+                has_match_history: true,
+                star_player_id: 273,
+                analysis_level: 93,
+                insights: [
+                    PreMatchInsight {
+                        section: "strategy",
+                        texts: [
+                            PreMatchInsightText {
+                                i18n_key: "#asset/base/text/news?pre_match_analysis.insight.strategy.recommend_champion",
+                                binds: [],
+                                champion_keys: ["gunner", "ice_mage"],
+                            },
+                        ],
+                    },
+                ],
+            },
+            title: "analysis",
+            title_bind: [],
+            author: "staff",
+            date: 2026-02-07T15:30:00,
+            is_read: true,
+            is_sent: true,
+            is_favorite: false,
+        },
+        News {
+            ty: MatchReport {
+                match_id: 787,
+                is_practice: false,
+                my_team_id: 85,
+                enemy_team_id: 89,
+                is_win: true,
+                my_team_score: 2,
+                enemy_team_score: 0,
+                set_data: [
+                    MatchSetArticleData {
+                        game_tick: 33788,
+                        team1_total_kill: 24,
+                        team2_total_kill: 5,
+                        team1_total_gold: 49198,
+                        team2_total_gold: 37418,
+                        mvp_athlete_id: 43,
+                        mvp_champion: "cavalry_knight",
+                        mvp_kills: 7,
+                        mvp_deaths: 0,
+                        mvp_assists: 6,
+                        is_team1_win: true,
+                        was_comeback: false,
+                        is_team1_blue: false,
+                    },
+                ],
+                article_pattern: CleanSweep,
+                set_patterns: [DominantWin],
+            },
+            title: "match",
+            title_bind: [],
+            author: "report",
+            date: 2026-02-07T16:30:00,
+            is_read: true,
+            is_sent: true,
+            is_favorite: false,
+        },
+        News {
+            ty: TeamRatingRankingReport {
+                rankings: [
+                    TeamRatingRankEntry {
+                        team_id: 25,
+                        rating: 1644,
+                    },
+                    TeamRatingRankEntry {
+                        team_id: 85,
+                        rating: 1442,
+                    },
+                ],
+            },
+            title: "rating",
+            title_bind: [],
+            author: "system",
+            date: 2026-02-15T00:00:00,
+            is_read: true,
+            is_sent: true,
+            is_favorite: false,
+        },
+    ],
+}"##;
+
+        let parsed = parse_team_history_probe(raw, 85, &[], &[]).unwrap();
+        assert_eq!(parsed.matches.len(), 1);
+        assert_eq!(parsed.matches[0].match_id, 787);
+        assert_eq!(parsed.matches[0].my_score, 2);
+        assert_eq!(parsed.matches[0].sets.len(), 1);
+        assert_eq!(parsed.matches[0].sets[0].mvp_player_id, 43);
+        assert_eq!(parsed.analyses.len(), 1);
+        assert_eq!(parsed.analyses[0].tactics.len(), 1);
+        assert_eq!(parsed.analyses[0].champion_picks.len(), 1);
+        assert_eq!(parsed.analyses[0].insights.len(), 1);
+        assert_eq!(parsed.latest_rating, Some(1442));
+        assert_eq!(parsed.latest_rank, Some(2));
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_history_parser_accepts_team_without_history() {
+        let raw = "=== SELECTED TEAM RECORD ===\nTeam key: 61\nTeam { news: [] }";
+        let parsed = parse_team_history_probe(raw, 61, &[], &[]).unwrap();
+        assert!(parsed.matches.is_empty());
+        assert!(parsed.analyses.is_empty());
+        assert_eq!(parsed.latest_rating, None);
+        assert_eq!(parsed.latest_rank, None);
     }
 
 }

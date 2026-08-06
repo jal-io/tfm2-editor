@@ -1,10 +1,10 @@
 [package]
 name = "tfm2_modifier_bridge"
-version = "0.2.43"
+version = "0.2.49"
 edition = "2021"
 
 [package.metadata.tfm2]
-display_version = "0.2.43"
+display_version = "0.2.49"
 
 [lib]
 crate-type = ["cdylib"]
