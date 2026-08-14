@@ -6,9 +6,9 @@ It connects to the running game through **TFM2 Editor Bridge**, allowing you to 
 
 Created and maintained by **jal-io**.
 
-> **Current release:** v0.4.2
-> **Required Bridge:** v0.2.49
-> **Supported game version:** Teamfight Manager 2 v0.5.4
+> **Current release:** v0.5.0  
+> **Required Bridge:** v0.2.59  
+> **Supported game version:** Teamfight Manager 2 v0.5.5  
 > **Platform:** Windows
 
 [Download the latest release](https://github.com/jal-io/tfm2-editor/releases/latest) ·
@@ -20,6 +20,8 @@ Created and maintained by **jal-io**.
 **The Steam Workshop subscription installs TFM2 Editor Bridge only.**
 
 The desktop **TFM2 Editor application is not included** with the Workshop subscription and must be downloaded separately from GitHub Releases.
+
+Both the Editor and Bridge should be updated together.
 
 ## What is a live editor?
 
@@ -44,8 +46,6 @@ Start Teamfight Manager 2, load your career, then launch TFM2 Editor to inspect 
 - Full-row multi-selection
 - Click, Shift-click and Shift-drag selection
 - Direct Player and Staff Editor navigation
-
-Teams Search is included as a database and selection tool. Development-only Team editing and research tools are not included in the public Community release.
 
 ### Player Editor
 
@@ -73,18 +73,43 @@ Teams Search is included as a database and selection tool. Development-only Team
 - Staff Communication Level editing
 - Active staff contract and salary editing
 
+### Team
+
+The Community release now includes the expanded **Team** workspace.
+
+- Team overview and roster information
+- Team Condition
+- Contract Center
+- Finance Center
+- Recruitment Center
+- Competition Center
+- League Standings
+- Team Schedule
+- Match History
+- Team Stats
+- Strategy Presets
+- Strategy editing
+- Historical Performance
+- Historical Synergy
+- Full Historical Synergy Explorer
+- Gaming House information
+- Fan and facility information
+- Team Summary
+
+Historical analysis is based on completed career evidence and is intended to show what has worked historically. It does not guarantee an optimal future strategy.
+
 ### Player and Staff Management
 
 - Move contracted players between teams
 - Move contracted staff between teams
 - Set contracted players to Free Agent
 - Set contracted staff to Free Agent
-- Create a contract and move a free-agent player to any selected team
-- Create a contract and move a free-agent staff member to any selected team
+- Create a contract and move a free-agent player to a selected team
+- Create a contract and move a free-agent staff member to a selected team
 
 Free-agent contract forms are filled with valid starting values and can be reviewed before the move is applied.
 
-### Recruitment
+### Transfers
 
 - Transfer Always Success
 - Instant Retry
@@ -108,17 +133,7 @@ The Editor permanently displays the detected Bridge and compatibility state:
 
 Known unsupported combinations disconnect active game-data access and block reads and writes until a compatible Bridge is active.
 
-## Name editing
-
-Player and staff names can be edited directly in their respective editors.
-
-- Leading and trailing spaces are removed.
-- Empty names are rejected.
-- Control characters are rejected.
-- Names are limited to 100 characters.
-- Search and editor selection data refresh after a successful change.
-
-This is especially useful for free-agent players and staff whose names cannot always be changed through the normal in-game interface.
+The older **v0.4.2 generation is not compatible with v0.5.0**. Update both the Editor and Bridge together.
 
 ## Installation
 
@@ -127,15 +142,15 @@ This is especially useful for free-agent players and staff whose names cannot al
 1. Subscribe to [TFM2 Editor Bridge](https://steamcommunity.com/sharedfiles/filedetails/?id=3775240765) on Steam Workshop.
 2. Download the latest desktop Editor from [GitHub Releases](https://github.com/jal-io/tfm2-editor/releases/latest).
 3. Extract the release archive.
-4. Start Teamfight Manager 2.
+4. Start Teamfight Manager 2 v0.5.5.
 5. Enable **TFM2 Editor Bridge** in the Mods menu.
 6. Restart the game.
 7. Load your career.
-8. Start `tfm2_editor_0.4.2.exe`.
+8. Start `tfm2_editor_0.5.0.exe`.
 9. Confirm the Editor header shows:
 
 ```text
-Connected · Bridge v0.2.49 · Compatibility: OK
+Connected · Bridge v0.2.59 · Compatibility: OK
 ```
 
 If the Editor shows **Disconnected**, click **Reconnect**.
@@ -154,12 +169,6 @@ C:\Program Files (x86)\Steam\steamapps\common\Teamfight Manager2\mods
 
 Your Steam installation path may be different.
 
-## Contract editing note
-
-TFM2 Editor edits existing active player and staff contracts.
-
-Full contract renewal, where the game creates a separate future replacement contract, is not included yet.
-
 ## Mod compatibility
 
 TFM2 Editor has been validated successfully with:
@@ -171,16 +180,6 @@ TFM2 Editor has been validated successfully with:
 - **Riot Games Item Expansion Pack**
 
 Player, staff, team and champion data are loaded dynamically from the active database. Mods that add unrelated in-game functionality are outside the scope of Editor compatibility testing.
-
-## Known limitations
-
-- Champion Mastery can reopen too large after high mastery values.
-- Champion Mastery can auto-maximize near the right edge of the main window.
-- Development-only Team workspace and Team research tools are not included in Community.
-- History / Stats Over Time is not included.
-- Accepted Renewal is not included; contract editing affects the active contract.
-- CJK font fallback is not ready.
-- Community v0.4.2 ships with embedded English only.
 
 ## Important
 
