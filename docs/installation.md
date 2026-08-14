@@ -5,60 +5,90 @@ title: Installation
 
 # Installation
 
-This guide applies to **TFM2 Editor v0.4.0**, **TFM2 Editor Bridge v0.2.43**, and **Teamfight Manager 2 v0.5.3**.
+This guide applies to:
+
+- **TFM2 Editor v0.5.0**
+- **TFM2 Editor Bridge v0.2.59**
+- **Teamfight Manager 2 v0.5.5**
+- **Windows**
+
+The Editor and Bridge should be updated together.
 
 ## Recommended installation
 
-### 1. Install the Bridge from Steam Workshop
+### 1. Install TFM2 Editor Bridge from Steam Workshop
 
-Subscribe to **TFM2 Editor Bridge** on Steam Workshop.
+Subscribe to **TFM2 Editor Bridge** on Steam Workshop:
 
-> **Important:** the Workshop item installs the **Bridge only**.
-> It does **not** install the desktop TFM2 Editor application.
+[TFM2 Editor Bridge — Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=3775240765)
 
-### 2. Download the desktop Editor from GitHub
+> **Important:** the Workshop item installs the **Bridge only**.  
+> It does **not** install the Windows desktop TFM2 Editor application.
 
-Download the latest release from the repository's [Releases](https://github.com/jal-io/tfm2-editor/releases) page.
+Steam Workshop is the recommended way to install the Bridge because Steam can keep the Bridge files updated.
 
-Extract the downloaded ZIP file.
+### 2. Download TFM2 Editor from GitHub
+
+Download the latest release from:
+
+[TFM2 Editor — GitHub Releases](https://github.com/jal-io/tfm2-editor/releases/latest)
+
+For v0.5.0, download:
+
+```text
+TFM2.Editor.v0.5.0.Release.0.5.5.zip
+```
+
+Extract the archive.
 
 The release package contains:
 
 ```text
-TFM2.Editor.v0.4.0.Release.0.5.3.zip
+TFM2.Editor.v0.5.0.Release.0.5.5/
 ├── README.txt
-├── tfm2_editor_0.4.0.exe
+├── tfm2_editor_0.5.0.exe
 └── tfm2_modifier_bridge/
     ├── mod.mod_info
     └── tfm2_modifier_bridge.dll
 ```
 
-### 3. Enable the Bridge in-game
+The included Bridge folder is provided for manual installation. If you use Steam Workshop, use the Workshop-managed Bridge instead of keeping a second manual copy active.
 
-1. Start **Teamfight Manager 2**
-2. Open the **Mods** menu
-3. Enable **TFM2 Editor Bridge**
-4. Restart the game
+### 3. Enable the Bridge in Teamfight Manager 2
 
-The restart is required after enabling the Bridge.
+1. Start **Teamfight Manager 2 v0.5.5**.
+2. Open the **Mods** menu.
+3. Enable **TFM2 Editor Bridge**.
+4. Restart the game.
+
+Restart the game after enabling or updating the Bridge.
 
 ### 4. Start the Editor
 
-1. Load your career in Teamfight Manager 2
-2. Start **TFM2 Editor**
-3. If needed, click **Reconnect**
+1. Start Teamfight Manager 2.
+2. Load your career.
+3. Start `tfm2_editor_0.5.0.exe`.
+4. If needed, click **Reconnect**.
 
-When everything is correct, the header should show:
+When the installation is correct, the Editor header should show:
 
 ```text
-Connected · Bridge v0.2.43 · Compatibility: OK
+Connected · Bridge v0.2.59 · Compatibility: OK
 ```
+
+You can now use the supported Search, Player Editor, Staff Editor, Team, Transfers and Economy tools.
 
 ## Manual Bridge installation
 
-If you prefer not to use Steam Workshop, you can install the Bridge manually from the GitHub release package.
+If you do not want to use Steam Workshop, install the Bridge from the GitHub release archive.
 
-Move the entire `tfm2_modifier_bridge` folder into the Teamfight Manager 2 `mods` folder.
+Copy the complete:
+
+```text
+tfm2_modifier_bridge
+```
+
+folder into the Teamfight Manager 2 `mods` directory.
 
 Default Steam location:
 
@@ -68,7 +98,7 @@ C:\Program Files (x86)\Steam\steamapps\common\Teamfight Manager2\mods
 
 Your Steam installation path may be different.
 
-After copying the folder, it should look similar to:
+The result should look similar to:
 
 ```text
 Teamfight Manager2/
@@ -78,50 +108,66 @@ Teamfight Manager2/
         └── tfm2_modifier_bridge.dll
 ```
 
-Then enable **TFM2 Editor Bridge** in the in-game Mods menu and restart the game.
+Then:
 
-## Compatibility warnings
+1. Start Teamfight Manager 2.
+2. Enable **TFM2 Editor Bridge** in the Mods menu.
+3. Restart the game.
+4. Load your career.
+5. Start `tfm2_editor_0.5.0.exe`.
 
-TFM2 Editor includes a permanent compatibility check between the desktop Editor and the installed Bridge.
+## Updating from v0.4.2
+
+TFM2 Editor v0.5.0 introduces a new compatibility boundary for Teamfight Manager 2 v0.5.5.
+
+Do not mix the older v0.4.2 generation with the v0.5.0 release.
+
+Update:
+
+- the desktop Editor to **v0.5.0**
+- TFM2 Editor Bridge to **v0.2.59**
+- Teamfight Manager 2 to **v0.5.5**
+
+If you use Steam Workshop, allow Steam to update the Bridge before starting the new Editor.
+
+## Compatibility states
+
+TFM2 Editor continuously checks the active Editor / Bridge combination.
 
 ### Compatibility: OK
-Your Editor and Bridge match and the Editor can work normally.
+
+The Editor and Bridge match and active game-data access is available.
 
 ### Compatibility: Warning
-The installed Bridge is older or newer than the version expected by this Editor release.
 
-Some features may not work correctly. Update the Bridge or Editor as instructed by the warning window.
+The detected environment requires attention. Follow the information shown by the Editor before making changes.
 
 ### Compatibility: Not Supported
-This Editor / Bridge combination is blocked.
 
-In this state, the Bridge connection is closed and active game-data reads and writes are disabled until a compatible version is installed.
+The combination is blocked.
 
-## Updating
+Active game-data reads and writes remain unavailable until a supported Editor / Bridge combination is installed.
 
-When a new release becomes available:
+## Connection problems
 
-1. Download the new desktop Editor from GitHub
-2. Update the Bridge through Steam Workshop **or** replace the manual `tfm2_modifier_bridge` folder
-3. Start the new Editor
-4. Confirm the header shows the expected Bridge version and **Compatibility: OK**
+If the Editor cannot connect, check that:
 
-## Problems?
+- Teamfight Manager 2 v0.5.5 is running
+- a career is loaded
+- TFM2 Editor Bridge v0.2.59 is installed
+- the Bridge is enabled in the Mods menu
+- the game was restarted after enabling or updating the Bridge
+- only the intended Bridge installation is active
+- the Editor header does not report **Not Supported**
 
-If the Editor cannot connect to the game, first check that:
+If the problem remains, click **Reconnect**.
 
-- The correct **TFM2 Editor Bridge** version is installed
-- The Bridge is enabled in Teamfight Manager 2
-- The game was restarted after enabling the Bridge
-- Your Teamfight Manager 2 version is supported
-- The Editor header does not show **Not Supported**
-
-If the problem continues, report it through [GitHub Issues](https://github.com/jal-io/tfm2-editor/issues).
+For reproducible problems, report the issue through [GitHub Issues](https://github.com/jal-io/tfm2-editor/issues).
 
 ## Important
 
-> **Back up your save files before using TFM2 Editor.**
+> **Recommended: Save your career before making changes with the editor.**
 
 TFM2 Editor modifies data in the active running career. Unexpected behavior, data loss, or save corruption may still be possible.
 
-Use the editor at your own risk.
+Use TFM2 Editor at your own risk.
