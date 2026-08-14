@@ -2,6 +2,7 @@
 
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -11,7 +12,6 @@ use std::time::Duration;
 
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
-#[cfg(feature = "dev")]
 use egui_extras::{Size, StripBuilder};
 use serde::{Deserialize, Serialize};
 
@@ -25,20 +25,139 @@ use currency::{
 use localization::Localization;
 
 const BRIDGE_ADDR: &str = "127.0.0.1:28452";
-#[cfg(feature = "dev")]
-const REQUIRED_BRIDGE_VERSION: &str = "0.2.49";
-#[cfg(not(feature = "dev"))]
-const REQUIRED_BRIDGE_VERSION: &str = "0.2.49";
-#[cfg(feature = "dev")]
-const BRIDGE_PROTOCOL_VERSION: u32 = 9;
-#[cfg(not(feature = "dev"))]
-const BRIDGE_PROTOCOL_VERSION: u32 = 9;
-const MINIMUM_SAFE_BRIDGE_PROTOCOL: u32 = 1;
+const REQUIRED_BRIDGE_VERSION: &str = "0.2.59";
+const BRIDGE_PROTOCOL_VERSION: u32 = 19;
+const MINIMUM_SAFE_BRIDGE_PROTOCOL: u32 = 19;
 const MAXIMUM_SAFE_BRIDGE_PROTOCOL: u32 = BRIDGE_PROTOCOL_VERSION;
-const SUPPORTED_TFM2_VERSION: &str = "0.5.4";
+const SUPPORTED_TFM2_VERSION: &str = "0.5.5";
 const GITHUB_RELEASES_URL: &str = "https://github.com/jal-io/tfm2-editor/releases/latest";
 const STEAM_WORKSHOP_URL: &str =
     "https://steamcommunity.com/sharedfiles/filedetails/?id=3775240765";
+
+// Public v0.5.0 is released from the TFM2 0.5.5 migration/stabilization line
+// while Development remains v0.5.4-dev from the runtime-approved v0.5.37-dev
+// feature/UI baseline. Visual and functional behavior stays unchanged.
+const DEV_BG_PRIMARY: egui::Color32 = egui::Color32::from_rgb(0x0B, 0x0F, 0x14);
+const DEV_TEXT_PRIMARY: egui::Color32 = egui::Color32::from_rgb(0xDE, 0xDE, 0xDE);
+const DEV_ACCENT: egui::Color32 = egui::Color32::from_rgb(0x3D, 0xF3, 0xE0);
+const DEV_SELECTION_BG: egui::Color32 = egui::Color32::from_rgb(0x12, 0x3B, 0x3A);
+const POTENTIAL_STAR_COLOR: egui::Color32 = egui::Color32::from_rgb(0xF0, 0xBF, 0x15);
+const DEV_TABLE_ALT_ROW: egui::Color32 = egui::Color32::from_rgb(0x12, 0x19, 0x21);
+const DEV_CARD_BORDER: egui::Color32 = egui::Color32::from_rgb(0x24, 0x35, 0x3A);
+
+const TEAM_DASHBOARD_COLUMN_GAP: f32 = 12.0;
+const TEAM_DASHBOARD_COLUMN_1_MIN: f32 = 400.0;
+const TEAM_DASHBOARD_COLUMN_1_PREFERRED: f32 = 440.0;
+const TEAM_DASHBOARD_COLUMN_1_MAX: f32 = 460.0;
+const TEAM_DASHBOARD_COLUMN_2_MIN: f32 = 330.0;
+const TEAM_DASHBOARD_COLUMN_2_PREFERRED: f32 = 365.0;
+const TEAM_DASHBOARD_COLUMN_2_MAX: f32 = 390.0;
+const TEAM_DASHBOARD_COLUMN_3_MIN: f32 = 500.0;
+const TEAM_DASHBOARD_COLUMN_3_PREFERRED: f32 = 560.0;
+const TEAM_DASHBOARD_COLUMN_3_MAX: f32 = 620.0;
+const TEAM_DASHBOARD_THREE_COLUMN_MIN_WIDTH: f32 = TEAM_DASHBOARD_COLUMN_1_MIN
+    + TEAM_DASHBOARD_COLUMN_2_MIN
+    + TEAM_DASHBOARD_COLUMN_3_MIN
+    + TEAM_DASHBOARD_COLUMN_GAP * 2.0;
+const TEAM_DASHBOARD_TWO_COLUMN_MIN_WIDTH: f32 = 820.0;
+
+fn development_standard_border_stroke() -> egui::Stroke {
+    egui::Stroke::new(1.0_f32, DEV_CARD_BORDER)
+}
+
+fn apply_development_visual_test_theme(visuals: &mut egui::Visuals) {
+    visuals.dark_mode = true;
+    visuals.panel_fill = DEV_BG_PRIMARY;
+    visuals.window_fill = DEV_BG_PRIMARY;
+    visuals.window_stroke = development_standard_border_stroke();
+    // egui striped tables use faint_bg_color; keep the zebra effect subtle and
+    // data-table-specific rather than using a blue panel/window fill.
+    visuals.faint_bg_color = DEV_TABLE_ALT_ROW;
+    visuals.widgets.noninteractive.bg_fill = DEV_BG_PRIMARY;
+    visuals.widgets.noninteractive.weak_bg_fill = DEV_BG_PRIMARY;
+    // One shared noninteractive stroke feeds normal group frames, separators,
+    // table/header rules, and custom dividers that already follow egui visuals.
+    visuals.widgets.noninteractive.bg_stroke = development_standard_border_stroke();
+
+    // #DEDEDE is the comfortable normal-text baseline. egui's existing weak and
+    // disabled rendering continues to provide secondary hierarchy.
+    visuals.widgets.noninteractive.fg_stroke.color = DEV_TEXT_PRIMARY;
+    visuals.widgets.inactive.fg_stroke.color = DEV_TEXT_PRIMARY;
+    visuals.widgets.hovered.fg_stroke.color = DEV_TEXT_PRIMARY;
+    visuals.widgets.active.fg_stroke.color = DEV_TEXT_PRIMARY;
+    visuals.widgets.open.fg_stroke.color = DEV_TEXT_PRIMARY;
+
+    // Keep turquoise as an accent rather than a full bright selection fill.
+    visuals.selection.bg_fill = DEV_SELECTION_BG;
+    visuals.selection.stroke = egui::Stroke::new(1.5_f32, DEV_ACCENT);
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, DEV_ACCENT);
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, DEV_ACCENT);
+    visuals.hyperlink_color = DEV_ACCENT;
+}
+
+fn team_dashboard_column_count(available_width: f32) -> usize {
+    if available_width >= TEAM_DASHBOARD_THREE_COLUMN_MIN_WIDTH {
+        3
+    } else if available_width >= TEAM_DASHBOARD_TWO_COLUMN_MIN_WIDTH {
+        2
+    } else {
+        1
+    }
+}
+
+fn distribute_dashboard_width(
+    available_width: f32,
+    lower: [f32; 3],
+    upper: [f32; 3],
+) -> [f32; 3] {
+    let lower_total = lower.iter().sum::<f32>();
+    let upper_total = upper.iter().sum::<f32>();
+    let target_total = available_width.clamp(lower_total, upper_total);
+    if upper_total <= lower_total {
+        return lower;
+    }
+    let progress = (target_total - lower_total) / (upper_total - lower_total);
+    [
+        lower[0] + (upper[0] - lower[0]) * progress,
+        lower[1] + (upper[1] - lower[1]) * progress,
+        lower[2] + (upper[2] - lower[2]) * progress,
+    ]
+}
+
+fn team_dashboard_three_column_widths(available_width: f32) -> [f32; 3] {
+    let usable_width = (available_width - TEAM_DASHBOARD_COLUMN_GAP * 2.0).max(0.0);
+    let min = [
+        TEAM_DASHBOARD_COLUMN_1_MIN,
+        TEAM_DASHBOARD_COLUMN_2_MIN,
+        TEAM_DASHBOARD_COLUMN_3_MIN,
+    ];
+    let preferred = [
+        TEAM_DASHBOARD_COLUMN_1_PREFERRED,
+        TEAM_DASHBOARD_COLUMN_2_PREFERRED,
+        TEAM_DASHBOARD_COLUMN_3_PREFERRED,
+    ];
+    let maximum = [
+        TEAM_DASHBOARD_COLUMN_1_MAX,
+        TEAM_DASHBOARD_COLUMN_2_MAX,
+        TEAM_DASHBOARD_COLUMN_3_MAX,
+    ];
+    let preferred_total = preferred.iter().sum::<f32>();
+    if usable_width <= preferred_total {
+        distribute_dashboard_width(usable_width, min, preferred)
+    } else {
+        distribute_dashboard_width(usable_width, preferred, maximum)
+    }
+}
+
+fn show_team_dashboard_card<R>(
+    ui: &mut egui::Ui,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    egui::Frame::group(ui.style())
+        .fill(DEV_BG_PRIMARY)
+        .stroke(development_standard_border_stroke())
+        .show(ui, add_contents)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CompatibilitySeverity {
@@ -75,17 +194,9 @@ struct UnsupportedBridgeRule {
     requirement: UnsupportedRequirement,
 }
 
-#[cfg(feature = "dev")]
 const KNOWN_UNSUPPORTED_BRIDGE_RULES: &[UnsupportedBridgeRule] = &[UnsupportedBridgeRule {
     minimum_bridge_version: None,
-    maximum_bridge_version: Some("0.2.48"),
-    requirement: UnsupportedRequirement::Bridge(REQUIRED_BRIDGE_VERSION),
-}];
-
-#[cfg(not(feature = "dev"))]
-const KNOWN_UNSUPPORTED_BRIDGE_RULES: &[UnsupportedBridgeRule] = &[UnsupportedBridgeRule {
-    minimum_bridge_version: None,
-    maximum_bridge_version: Some("0.2.48"),
+    maximum_bridge_version: Some("0.2.58"),
     requirement: UnsupportedRequirement::Bridge(REQUIRED_BRIDGE_VERSION),
 }];
 
@@ -100,9 +211,11 @@ struct CompatibilityIssue {
     required_editor_version: Option<String>,
 }
 #[cfg(feature = "dev")]
-const APP_VERSION: &str = "0.5.10";
+const APP_VERSION: &str = "0.5.4";
 #[cfg(not(feature = "dev"))]
-const APP_VERSION: &str = "0.4.2";
+const APP_VERSION: &str = "0.5.0";
+
+const TEAM_CONTRACT_EXTENSION_DEFAULT_YEARS: &str = "2";
 
 #[cfg(feature = "dev")]
 fn display_version() -> String {
@@ -218,10 +331,7 @@ fn player_editor_intro_key() -> &'static str {
 }
 
 fn render_editor_safety_recommendation(ui: &mut egui::Ui, localization: &Localization) {
-    #[cfg(feature = "dev")]
-    ui.weak(localization.tr("editor.recommended_save"));
-
-    #[cfg(not(feature = "dev"))]
+    // Reuse the established Community v0.4.2 compact informational treatment.
     ui.horizontal_wrapped(|ui| {
         ui.label(
             egui::RichText::new(localization.tr("editor.recommended_save_prefix"))
@@ -304,28 +414,17 @@ fn champion_mastery_help_key() -> &'static str {
     "champion_mastery.help"
 }
 
-#[cfg(feature = "dev")]
 const CHAMPION_MASTERY_CARD_INNER_WIDTH: f32 = 172.0;
-#[cfg(feature = "dev")]
 const CHAMPION_MASTERY_CARD_INNER_HEIGHT: f32 = 38.0;
-#[cfg(feature = "dev")]
 const CHAMPION_MASTERY_CARD_NAME_WIDTH: f32 = 82.0;
-#[cfg(feature = "dev")]
 const CHAMPION_MASTERY_CARD_NAME_HEIGHT: f32 = 34.0;
-#[cfg(feature = "dev")]
 const CHAMPION_MASTERY_CARD_VALUE_WIDTH: f32 = 64.0;
-#[cfg(feature = "dev")]
 const CHAMPION_MASTERY_CARD_OUTER_WIDTH: f32 = 184.0;
-#[cfg(feature = "dev")]
 const CHAMPION_MASTERY_CARD_HORIZONTAL_GAP: f32 = 8.0;
-#[cfg(feature = "dev")]
 const CHAMPION_MASTERY_CARD_VERTICAL_GAP: f32 = 8.0;
-#[cfg(feature = "dev")]
 const CHAMPION_MASTERY_SCROLLBAR_RESERVE: f32 = 18.0;
-#[cfg(feature = "dev")]
 const CHAMPION_MASTERY_NAME_LINE_LIMIT: usize = 11;
 
-#[cfg(feature = "dev")]
 fn champion_mastery_card_display_name(name: &str) -> String {
     let name = name.trim();
     let chars = name.chars().collect::<Vec<_>>();
@@ -360,7 +459,6 @@ fn champion_mastery_card_display_name(name: &str) -> String {
     format!("{first_line}\n{second_line}…")
 }
 
-#[cfg(feature = "dev")]
 fn champion_mastery_columns_for_width(available_width: f32) -> usize {
     let usable_width = (available_width - CHAMPION_MASTERY_SCROLLBAR_RESERVE)
         .max(CHAMPION_MASTERY_CARD_OUTER_WIDTH);
@@ -466,14 +564,12 @@ enum AppTab {
     Economy,
     PlayerEditor,
     StaffEditor,
-    #[cfg(feature = "dev")]
     Team,
     Recruitment,
     Search,
 }
 
 impl AppTab {
-    #[cfg(feature = "dev")]
     const ALL: [Self; 6] = [
         Self::Search,
         Self::PlayerEditor,
@@ -483,21 +579,11 @@ impl AppTab {
         Self::Economy,
     ];
 
-    #[cfg(not(feature = "dev"))]
-    const ALL: [Self; 5] = [
-        Self::Search,
-        Self::PlayerEditor,
-        Self::StaffEditor,
-        Self::Recruitment,
-        Self::Economy,
-    ];
-
     fn label_key(self) -> &'static str {
         match self {
             Self::Economy => "tabs.economy",
             Self::PlayerEditor => "tabs.player_editor",
             Self::StaffEditor => "tabs.staff_editor",
-            #[cfg(feature = "dev")]
             Self::Team => "tabs.team",
             Self::Recruitment => "tabs.recruitment",
             Self::Search => "tabs.search",
@@ -523,26 +609,164 @@ impl RecruitmentManagementTab {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TeamNavigationAction {
+    Roster,
+    Staff,
+    Condition,
+    PreMatchAnalysis,
+    Strategy,
+    TacticsAnalysis,
+    TeamStats,
+    Transfers,
+    ContractCenter,
+    CompetitionCenter,
+    MatchHistory,
+    #[cfg(feature = "dev")]
+    TeamDataProbe,
+    #[cfg(feature = "dev")]
+    ChampionSetup,
+}
+
+const TEAM_MEMBERS_MENU_ACTIONS: [TeamNavigationAction; 3] = [
+    TeamNavigationAction::Roster,
+    TeamNavigationAction::Staff,
+    TeamNavigationAction::Condition,
+];
+
+const MATCH_STRATEGY_MENU_ACTIONS: [TeamNavigationAction; 4] = [
+    TeamNavigationAction::PreMatchAnalysis,
+    TeamNavigationAction::Strategy,
+    TeamNavigationAction::TacticsAnalysis,
+    TeamNavigationAction::TeamStats,
+];
+
+const RECRUITMENT_CENTER_MENU_ACTIONS: [TeamNavigationAction; 2] = [
+    TeamNavigationAction::Transfers,
+    TeamNavigationAction::ContractCenter,
+];
+
+const COMPETITION_MENU_ACTIONS: [TeamNavigationAction; 2] = [
+    TeamNavigationAction::CompetitionCenter,
+    TeamNavigationAction::MatchHistory,
+];
+
+#[cfg(feature = "dev")]
+const DEVELOPMENT_MENU_ACTIONS: [TeamNavigationAction; 2] = [
+    TeamNavigationAction::TeamDataProbe,
+    TeamNavigationAction::ChampionSetup,
+];
+
+fn team_navigation_action_label_key(action: TeamNavigationAction) -> &'static str {
+    match action {
+        TeamNavigationAction::Roster => "team_workspace.open_roster",
+        TeamNavigationAction::Staff => "team_workspace.open_staff",
+        TeamNavigationAction::Condition => "team_workspace.open_condition_probe",
+        TeamNavigationAction::PreMatchAnalysis => "team_workspace.open_pre_match_analysis",
+        TeamNavigationAction::Strategy => "team_workspace.open_strategy",
+        TeamNavigationAction::TacticsAnalysis => "team_workspace.open_tactics_analysis",
+        TeamNavigationAction::TeamStats => "team_workspace.open_performance_center",
+        TeamNavigationAction::Transfers => "team_workspace.transfers",
+        TeamNavigationAction::ContractCenter => "team_workspace.open_contract_center",
+        TeamNavigationAction::CompetitionCenter => "team_workspace.open_competition_center",
+        TeamNavigationAction::MatchHistory => "team_workspace.open_match_history",
+        #[cfg(feature = "dev")]
+        TeamNavigationAction::TeamDataProbe => "team_workspace.open_data_probe",
+        #[cfg(feature = "dev")]
+        TeamNavigationAction::ChampionSetup => "team_workspace.open_champion_setup",
+    }
+}
+
+fn team_navigation_action_available(action: TeamNavigationAction, is_player_team: bool) -> bool {
+    match action {
+        TeamNavigationAction::PreMatchAnalysis => is_player_team,
+        #[cfg(feature = "dev")]
+        TeamNavigationAction::ChampionSetup => is_player_team,
+        _ => true,
+    }
+}
+
+const TEAM_NAVIGATION_DROPDOWN_GAP: f32 = 3.0;
+
+fn team_navigation_dropdown_anchor(button_response: &egui::Response) -> egui::Response {
+    let mut anchor = button_response.clone();
+    anchor.rect.max.y += TEAM_NAVIGATION_DROPDOWN_GAP;
+    anchor
+}
+
+fn team_navigation_dropdown<R, I, S>(
+    ui: &mut egui::Ui,
+    id_source: &'static str,
+    title: String,
+    item_labels: I,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let popup_id = ui.make_persistent_id(("team_navigation_dropdown", id_source));
+    let is_open = ui.memory(|memory| memory.is_popup_open(popup_id));
+
+    // Match egui's normal menu-button open-state visuals while using a strict
+    // widget-relative popup anchor. This keeps the approved button appearance
+    // unchanged; only popup positioning differs from Ui::menu_button.
+    let mut button = egui::Button::new(title);
+    if is_open {
+        button = button
+            .fill(ui.visuals().widgets.open.weak_bg_fill)
+            .stroke(ui.visuals().widgets.open.bg_stroke);
+    }
+    let response = ui.add(button);
+
+    if response.clicked() {
+        ui.memory_mut(|memory| memory.toggle_popup(popup_id));
+    }
+
+    let button_font = egui::TextStyle::Button.resolve(ui.style());
+    let text_color = ui.visuals().text_color();
+    let longest_item_width = item_labels
+        .into_iter()
+        .map(|label| {
+            ui.painter()
+                .layout_no_wrap(label.as_ref().to_owned(), button_font.clone(), text_color)
+                .size()
+                .x
+        })
+        .fold(0.0_f32, f32::max);
+    let popup_frame_margin = egui::Frame::popup(ui.style()).total_margin().sum().x;
+    let parent_inner_width = (response.rect.width() - popup_frame_margin).max(0.0);
+    let menu_item_horizontal_padding = 2.0_f32 * 2.0_f32;
+    let popup_inner_width =
+        parent_inner_width.max(longest_item_width + menu_item_horizontal_padding);
+
+    let anchor = team_navigation_dropdown_anchor(&response);
+    let _ = egui::popup::popup_below_widget(
+        ui,
+        popup_id,
+        &anchor,
+        egui::popup::PopupCloseBehavior::CloseOnClickOutside,
+        |popup_ui| {
+            // Preserve the same compact top-level menu-item styling that
+            // Ui::menu_button applies internally in egui 0.31.1.
+            popup_ui.spacing_mut().button_padding = egui::vec2(2.0, 0.0);
+            popup_ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::NONE;
+            popup_ui.visuals_mut().widgets.hovered.bg_stroke = egui::Stroke::NONE;
+            popup_ui.visuals_mut().widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+            popup_ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::NONE;
+            popup_ui.set_min_width(popup_inner_width);
+            add_contents(popup_ui)
+        },
+    );
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SearchTab {
     Players,
     Staff,
     Lists,
     Teams,
-    #[cfg(feature = "dev")]
-    History,
 }
 
 impl SearchTab {
-    #[cfg(feature = "dev")]
-    const ALL: [Self; 5] = [
-        Self::Players,
-        Self::Staff,
-        Self::Lists,
-        Self::Teams,
-        Self::History,
-    ];
-
-    #[cfg(not(feature = "dev"))]
     const ALL: [Self; 4] = [Self::Players, Self::Staff, Self::Lists, Self::Teams];
 
     fn label_key(self) -> &'static str {
@@ -551,8 +775,6 @@ impl SearchTab {
             Self::Staff => "search.tabs.staff",
             Self::Lists => "search.tabs.lists",
             Self::Teams => "search.tabs.teams",
-            #[cfg(feature = "dev")]
-            Self::History => "search.tabs.history",
         }
     }
 }
@@ -1127,7 +1349,6 @@ impl StaffStats {
     }
 }
 
-#[cfg(feature = "dev")]
 #[derive(Debug, Clone)]
 struct TeamConditionEntry {
     player_id: usize,
@@ -1139,7 +1360,6 @@ struct TeamConditionEntry {
     write_status: String,
 }
 
-#[cfg(feature = "dev")]
 impl TeamConditionEntry {
     fn has_changes(&self) -> bool {
         self.stamina.trim() != self.original_stamina.trim()
@@ -1147,7 +1367,6 @@ impl TeamConditionEntry {
     }
 }
 
-#[cfg(feature = "dev")]
 const TEAM_STRATEGY_KEYS: [&str; 12] = [
     "focused",
     "early_jungle",
@@ -1163,28 +1382,58 @@ const TEAM_STRATEGY_KEYS: [&str; 12] = [
     "game_finish",
 ];
 
-#[cfg(feature = "dev")]
 #[derive(Debug, Clone)]
 struct TeamMemberReference {
     id: usize,
     name: String,
 }
 
-#[cfg(feature = "dev")]
 #[derive(Debug, Clone)]
 struct TeamLineupEntry {
     slot: String,
     member: Option<TeamMemberReference>,
 }
 
-#[cfg(feature = "dev")]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct TeamStrategyEntry {
     key: String,
     value: String,
 }
 
-#[cfg(feature = "dev")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TeamStrategyPreset {
+    format_version: u32,
+    name: String,
+    strategy: Vec<TeamStrategyEntry>,
+}
+
+impl TeamStrategyPreset {
+    fn new(name: String, strategy: Vec<TeamStrategyEntry>) -> Self {
+        Self {
+            format_version: 1,
+            name,
+            strategy,
+        }
+    }
+
+    fn is_supported(&self) -> bool {
+        self.format_version == 1
+            && !self.name.trim().is_empty()
+            && TEAM_STRATEGY_KEYS.iter().all(|key| {
+                self.strategy
+                    .iter()
+                    .any(|entry| entry.key == *key && !entry.value.trim().is_empty())
+            })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TeamStrategyProbeBackup {
+    team_id: usize,
+    current_strategy: Vec<TeamStrategyEntry>,
+    last_strategy: Vec<TeamStrategyEntry>,
+}
+
 #[derive(Debug, Clone)]
 struct TeamMerchandiseEntry {
     product_type: String,
@@ -1209,7 +1458,6 @@ struct TeamChampionSetupEntry {
     tactic_3: String,
 }
 
-#[cfg(feature = "dev")]
 #[derive(Debug, Clone, Default)]
 struct TeamGamingHouseSummary {
     level: String,
@@ -1228,7 +1476,6 @@ struct TeamGamingHouseSummary {
     placed_windows: usize,
 }
 
-#[cfg(feature = "dev")]
 #[derive(Debug, Clone)]
 struct TeamManagementData {
     team_id: usize,
@@ -1248,11 +1495,11 @@ struct TeamManagementData {
     last_strategy: Vec<TeamStrategyEntry>,
     team_color_strategy: Vec<TeamStrategyEntry>,
     merchandise: Vec<TeamMerchandiseEntry>,
+    #[cfg(feature = "dev")]
     champion_setup: Vec<TeamChampionSetupEntry>,
     gaming_house: TeamGamingHouseSummary,
 }
 
-#[cfg(feature = "dev")]
 #[derive(Debug, Clone)]
 struct TeamMatchSetEntry {
     set_number: usize,
@@ -1271,7 +1518,6 @@ struct TeamMatchSetEntry {
     was_blue_side: bool,
 }
 
-#[cfg(feature = "dev")]
 #[derive(Debug, Clone)]
 struct TeamMatchHistoryEntry {
     date: String,
@@ -1282,18 +1528,17 @@ struct TeamMatchHistoryEntry {
     is_win: bool,
     my_score: usize,
     enemy_score: usize,
+    replay_ids: Vec<usize>,
     article_pattern: String,
     sets: Vec<TeamMatchSetEntry>,
 }
 
-#[cfg(feature = "dev")]
 #[derive(Debug, Clone)]
 struct TeamPreMatchTacticEntry {
     category: String,
     value: String,
 }
 
-#[cfg(feature = "dev")]
 #[derive(Debug, Clone)]
 struct TeamPreMatchChampionEntry {
     champion_id: String,
@@ -1302,7 +1547,6 @@ struct TeamPreMatchChampionEntry {
     losses: usize,
 }
 
-#[cfg(feature = "dev")]
 #[derive(Debug, Clone)]
 struct TeamPreMatchInsightEntry {
     section: String,
@@ -1311,7 +1555,6 @@ struct TeamPreMatchInsightEntry {
     source_key: String,
 }
 
-#[cfg(feature = "dev")]
 #[derive(Debug, Clone)]
 struct TeamPreMatchAnalysisEntry {
     date: String,
@@ -1327,7 +1570,6 @@ struct TeamPreMatchAnalysisEntry {
     insights: Vec<TeamPreMatchInsightEntry>,
 }
 
-#[cfg(feature = "dev")]
 #[derive(Debug, Clone)]
 struct TeamHistoryData {
     team_id: usize,
@@ -1338,7 +1580,6 @@ struct TeamHistoryData {
     latest_rating_date: String,
 }
 
-#[cfg(feature = "dev")]
 impl TeamHistoryData {
     fn wins(&self) -> usize {
         self.matches.iter().filter(|entry| entry.is_win).count()
@@ -1380,6 +1621,1638 @@ impl TeamHistoryData {
     }
 }
 
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TeamTacticOutcomeSummary {
+    category: String,
+    value: String,
+    matches: usize,
+    wins: usize,
+    losses: usize,
+}
+
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TeamTacticsLinkedMatchEvidence {
+    match_id: usize,
+    date: String,
+    opponent_name: String,
+    result: String,
+    scouted_tactics: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TeamTacticsSetEvidence {
+    sets: usize,
+    wins: usize,
+    losses: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TeamTacticsHistoricalPerformanceEvidence {
+    key: String,
+    raw_value: String,
+    display_value: String,
+    official_matches: usize,
+    official_wins: usize,
+    official_losses: usize,
+    official_sets: usize,
+    official_set_wins: usize,
+    official_set_losses: usize,
+    official_mixed_matches: usize,
+    practice_matches: usize,
+    practice_wins: usize,
+    practice_losses: usize,
+    practice_sets: usize,
+    practice_set_wins: usize,
+    practice_set_losses: usize,
+    practice_mixed_matches: usize,
+}
+
+
+const TEAM_TACTICS_MAX_SYNERGY_DEPTH: usize = 4;
+const TEAM_TACTICS_MAX_SUPPORTED_SYNERGY_DEPTH: usize = TEAM_STRATEGY_KEYS.len();
+const TEAM_TACTICS_PROVISIONAL_SYNERGY_MIN_OFFICIAL_MATCHES: usize = 2;
+#[cfg(all(feature = "dev", test))]
+const TEAM_TACTICS_MAX_VISIBLE_SYNERGY_ROWS: usize = 24;
+const TEAM_TACTICS_MAX_VISIBLE_SYNERGIES_PER_STRATEGY: usize = 8;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TeamTacticsStrategyCombinationMember {
+    area_key: String,
+    raw_value: String,
+    display_value: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct TeamTacticsStrategyCombination {
+    key: String,
+    members: Vec<TeamTacticsStrategyCombinationMember>,
+    depth: usize,
+    official_matches: usize,
+    official_wins: usize,
+    official_losses: usize,
+    official_sets: usize,
+    official_set_wins: usize,
+    official_set_losses: usize,
+    official_mixed_matches: usize,
+    practice_matches: usize,
+    practice_wins: usize,
+    practice_losses: usize,
+    practice_sets: usize,
+    practice_set_wins: usize,
+    practice_set_losses: usize,
+    practice_mixed_matches: usize,
+    official_match_ids: Vec<usize>,
+    official_mixed_match_ids: Vec<usize>,
+    official_replay_ids: Vec<usize>,
+    practice_match_ids: Vec<usize>,
+    practice_mixed_match_ids: Vec<usize>,
+    practice_replay_ids: Vec<usize>,
+    raw_performance: f64,
+    adjusted_performance: f64,
+    support_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct TeamTacticsHistoricalSynergyPresentationRow {
+    performance: TeamTacticsHistoricalPerformanceEvidence,
+    supported_synergies: Vec<TeamTacticsStrategyCombination>,
+}
+
+#[derive(Debug, Clone)]
+struct TeamTacticsAnalysisCache {
+    team_id: usize,
+    official_matches: usize,
+    practice_matches: usize,
+    replay_sets: usize,
+    #[cfg(feature = "dev")]
+    historical_performance_evidence: Vec<TeamTacticsHistoricalPerformanceEvidence>,
+    historical_leader_rows: Vec<TeamTacticsHistoricalLeaderRow>,
+    strategy_combinations: Vec<TeamTacticsStrategyCombination>,
+    synergy_presentation_rows: Vec<TeamTacticsHistoricalSynergyPresentationRow>,
+    generated_counts: [usize; 5],
+    supported_counts: [usize; 5],
+    sorted_combination_indices: Vec<Vec<usize>>,
+}
+
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum TeamTacticsHistoryMatchTypeFilter {
+    #[default]
+    All,
+    Official,
+    Practice,
+}
+
+#[cfg(feature = "dev")]
+impl TeamTacticsHistoryMatchTypeFilter {
+    fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Official => "Official",
+            Self::Practice => "Practice",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TeamTacticsNormalizedStrategySet {
+    replay_id: usize,
+    set_number: usize,
+    set_is_win: Option<bool>,
+    members: Vec<TeamTacticsStrategyCombinationMember>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct TeamTacticsHistoricalLeaderRow {
+    key: String,
+    historical_value: Option<String>,
+    official_matches: usize,
+    official_wins: usize,
+    official_losses: usize,
+    official_sets: usize,
+    official_set_wins: usize,
+    official_set_losses: usize,
+    mixed_matches_excluded: usize,
+    practice_matches: usize,
+    practice_wins: usize,
+    practice_losses: usize,
+}
+
+#[derive(Debug, Clone)]
+struct TeamReplayStrategySnapshot {
+    status: String,
+    side: String,
+    blue_team_id: Option<usize>,
+    red_team_id: Option<usize>,
+    set_is_win: Option<bool>,
+    strategy: Vec<TeamStrategyEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TeamOwnStrategyProbeRow {
+    match_id: usize,
+    date: String,
+    opponent_name: String,
+    result: String,
+    is_practice: bool,
+    replay_id: usize,
+    set_number: usize,
+    side: String,
+    status: String,
+    blue_team_id: Option<usize>,
+    red_team_id: Option<usize>,
+    set_is_win: Option<bool>,
+    strategy: Vec<TeamStrategyEntry>,
+}
+
+#[cfg(feature = "dev")]
+#[derive(Debug, Clone)]
+struct TeamTacticsRosterContext {
+    position: String,
+    player_id: Option<usize>,
+    player_name: String,
+    actual_rating: Option<f32>,
+    stored_mvp_sets: usize,
+}
+
+#[cfg(feature = "dev")]
+fn team_tactics_linked_analysis_count(history: &TeamHistoryData) -> usize {
+    history
+        .analyses
+        .iter()
+        .filter(|analysis| {
+            history
+                .matches
+                .iter()
+                .any(|match_entry| match_entry.match_id == analysis.match_id)
+        })
+        .count()
+}
+
+#[cfg(feature = "dev")]
+fn team_tactics_linked_match_evidence(
+    history: &TeamHistoryData,
+) -> Vec<TeamTacticsLinkedMatchEvidence> {
+    let matches_by_id = history
+        .matches
+        .iter()
+        .map(|entry| (entry.match_id, entry))
+        .collect::<HashMap<_, _>>();
+    let mut evidence = history
+        .analyses
+        .iter()
+        .filter_map(|analysis| {
+            let match_entry = matches_by_id.get(&analysis.match_id)?;
+            let scouted_tactics = if analysis.tactics.is_empty() {
+                "—".to_string()
+            } else {
+                analysis
+                    .tactics
+                    .iter()
+                    .map(|tactic| format!("{}: {}", tactic.category, tactic.value))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            };
+            Some(TeamTacticsLinkedMatchEvidence {
+                match_id: analysis.match_id,
+                date: match_entry.date.clone(),
+                opponent_name: match_entry.opponent_name.clone(),
+                result: format!(
+                    "{} {}-{}",
+                    if match_entry.is_win { "W" } else { "L" },
+                    match_entry.my_score,
+                    match_entry.enemy_score
+                ),
+                scouted_tactics,
+            })
+        })
+        .collect::<Vec<_>>();
+    evidence.sort_by(|left, right| {
+        right
+            .date
+            .cmp(&left.date)
+            .then_with(|| right.match_id.cmp(&left.match_id))
+    });
+    evidence
+}
+
+#[cfg(feature = "dev")]
+fn team_tactics_outcome_summaries(history: &TeamHistoryData) -> Vec<TeamTacticOutcomeSummary> {
+    let result_by_match = history
+        .matches
+        .iter()
+        .map(|entry| (entry.match_id, entry.is_win))
+        .collect::<HashMap<_, _>>();
+    let mut aggregated = HashMap::<(String, String), TeamTacticOutcomeSummary>::new();
+
+    for analysis in &history.analyses {
+        let Some(is_win) = result_by_match.get(&analysis.match_id).copied() else {
+            continue;
+        };
+        for tactic in &analysis.tactics {
+            let key = (tactic.category.clone(), tactic.value.clone());
+            let entry = aggregated.entry(key.clone()).or_insert_with(|| TeamTacticOutcomeSummary {
+                category: key.0,
+                value: key.1,
+                matches: 0,
+                wins: 0,
+                losses: 0,
+            });
+            entry.matches = entry.matches.saturating_add(1);
+            if is_win {
+                entry.wins = entry.wins.saturating_add(1);
+            } else {
+                entry.losses = entry.losses.saturating_add(1);
+            }
+        }
+    }
+
+    let mut summaries = aggregated.into_values().collect::<Vec<_>>();
+    summaries.sort_by(|left, right| {
+        left.category
+            .cmp(&right.category)
+            .then_with(|| right.matches.cmp(&left.matches))
+            .then_with(|| left.value.cmp(&right.value))
+    });
+    summaries
+}
+
+#[cfg(feature = "dev")]
+fn team_tactics_strategy_display_rows(strategy: &[TeamStrategyEntry]) -> Vec<(String, String)> {
+    let mut seen = BTreeSet::new();
+    TEAM_STRATEGY_KEYS
+        .iter()
+        .copied()
+        .filter(|key| seen.insert(*key))
+        .map(|key| {
+            let raw = team_strategy_value(strategy, key);
+            (key.to_string(), historical_team_strategy_label(key, &raw))
+        })
+        .collect()
+}
+
+const TEAM_TACTICS_MIN_OFFICIAL_HISTORY_MATCHES: usize = 2;
+
+fn team_tactics_historical_performance_evidence(
+    history: &TeamHistoryData,
+    own_strategy_rows: &[TeamOwnStrategyProbeRow],
+) -> Vec<TeamTacticsHistoricalPerformanceEvidence> {
+    let matches_by_id = history
+        .matches
+        .iter()
+        .map(|entry| (entry.match_id, entry))
+        .collect::<HashMap<_, _>>();
+
+    // Collapse replay/set rows into one per-match Strategy exposure map while
+    // retaining exact set observations and set results. A best-of series therefore
+    // remains one parent Match for match-level W/L, but every replay remains useful
+    // set-level evidence.
+    let mut per_match_area =
+        HashMap::<(usize, String), HashMap<String, TeamTacticsSetEvidence>>::new();
+    for row in own_strategy_rows.iter().filter(|row| row.status == "OK") {
+        if !matches_by_id.contains_key(&row.match_id) {
+            continue;
+        }
+        for key in TEAM_STRATEGY_KEYS {
+            let raw = team_strategy_value(&row.strategy, key);
+            if raw.trim().is_empty() || raw == "—" {
+                continue;
+            }
+            let values = per_match_area
+                .entry((row.match_id, key.to_string()))
+                .or_default();
+            let set_evidence = values.entry(raw).or_default();
+            set_evidence.sets = set_evidence.sets.saturating_add(1);
+            match row.set_is_win {
+                Some(true) => set_evidence.wins = set_evidence.wins.saturating_add(1),
+                Some(false) => set_evidence.losses = set_evidence.losses.saturating_add(1),
+                None => {}
+            }
+        }
+    }
+
+    let mut aggregated =
+        HashMap::<(String, String), TeamTacticsHistoricalPerformanceEvidence>::new();
+    for ((match_id, key), values) in per_match_area {
+        let Some(match_entry) = matches_by_id.get(&match_id) else {
+            continue;
+        };
+        let mixed = values.len() > 1;
+        for (raw_value, set_evidence) in values {
+            let aggregate_key = (key.clone(), raw_value.clone());
+            let entry = aggregated.entry(aggregate_key).or_insert_with(|| {
+                TeamTacticsHistoricalPerformanceEvidence {
+                    key: key.clone(),
+                    raw_value: raw_value.clone(),
+                    display_value: historical_team_strategy_label(&key, &raw_value),
+                    official_matches: 0,
+                    official_wins: 0,
+                    official_losses: 0,
+                    official_sets: 0,
+                    official_set_wins: 0,
+                    official_set_losses: 0,
+                    official_mixed_matches: 0,
+                    practice_matches: 0,
+                    practice_wins: 0,
+                    practice_losses: 0,
+                    practice_sets: 0,
+                    practice_set_wins: 0,
+                    practice_set_losses: 0,
+                    practice_mixed_matches: 0,
+                }
+            });
+
+            if match_entry.is_practice {
+                entry.practice_sets = entry.practice_sets.saturating_add(set_evidence.sets);
+                entry.practice_set_wins =
+                    entry.practice_set_wins.saturating_add(set_evidence.wins);
+                entry.practice_set_losses =
+                    entry.practice_set_losses.saturating_add(set_evidence.losses);
+                if mixed {
+                    entry.practice_mixed_matches =
+                        entry.practice_mixed_matches.saturating_add(1);
+                    continue;
+                }
+                entry.practice_matches = entry.practice_matches.saturating_add(1);
+                if match_entry.is_win {
+                    entry.practice_wins = entry.practice_wins.saturating_add(1);
+                } else {
+                    entry.practice_losses = entry.practice_losses.saturating_add(1);
+                }
+                continue;
+            }
+
+            entry.official_sets = entry.official_sets.saturating_add(set_evidence.sets);
+            entry.official_set_wins = entry.official_set_wins.saturating_add(set_evidence.wins);
+            entry.official_set_losses =
+                entry.official_set_losses.saturating_add(set_evidence.losses);
+            if mixed {
+                // A Match that changed this Strategy area between replay sets cannot
+                // safely attribute the parent Match result to either value. Set-level
+                // observations/results remain valid and are preserved above.
+                entry.official_mixed_matches =
+                    entry.official_mixed_matches.saturating_add(1);
+                continue;
+            }
+
+            entry.official_matches = entry.official_matches.saturating_add(1);
+            if match_entry.is_win {
+                entry.official_wins = entry.official_wins.saturating_add(1);
+            } else {
+                entry.official_losses = entry.official_losses.saturating_add(1);
+            }
+        }
+    }
+
+    let key_rank = |key: &str| {
+        TEAM_STRATEGY_KEYS
+            .iter()
+            .position(|candidate| *candidate == key)
+            .unwrap_or(TEAM_STRATEGY_KEYS.len())
+    };
+    let mut evidence = aggregated.into_values().collect::<Vec<_>>();
+    evidence.sort_by(|left, right| {
+        key_rank(&left.key)
+            .cmp(&key_rank(&right.key))
+            .then_with(|| right.official_matches.cmp(&left.official_matches))
+            .then_with(|| right.official_wins.cmp(&left.official_wins))
+            .then_with(|| right.official_sets.cmp(&left.official_sets))
+            .then_with(|| left.display_value.cmp(&right.display_value))
+    });
+    evidence
+}
+
+fn team_tactics_strategy_area_rank(key: &str) -> usize {
+    TEAM_STRATEGY_KEYS
+        .iter()
+        .position(|candidate| *candidate == key)
+        .unwrap_or(TEAM_STRATEGY_KEYS.len())
+}
+
+fn team_tactics_normalized_strategy_members(
+    strategy: &[TeamStrategyEntry],
+) -> Vec<TeamTacticsStrategyCombinationMember> {
+    TEAM_STRATEGY_KEYS
+        .iter()
+        .filter_map(|key| {
+            let raw_value = team_strategy_value(strategy, key);
+            if raw_value.trim().is_empty() || raw_value == "—" {
+                return None;
+            }
+            Some(TeamTacticsStrategyCombinationMember {
+                area_key: (*key).to_string(),
+                display_value: historical_team_strategy_label(key, &raw_value),
+                raw_value,
+            })
+        })
+        .collect()
+}
+
+fn team_tactics_combination_indices(item_count: usize, depth: usize) -> Vec<Vec<usize>> {
+    fn build(
+        next_index: usize,
+        item_count: usize,
+        remaining: usize,
+        current: &mut Vec<usize>,
+        output: &mut Vec<Vec<usize>>,
+    ) {
+        if remaining == 0 {
+            output.push(current.clone());
+            return;
+        }
+        if item_count.saturating_sub(next_index) < remaining {
+            return;
+        }
+        let last_start = item_count.saturating_sub(remaining);
+        for index in next_index..=last_start {
+            current.push(index);
+            build(index + 1, item_count, remaining - 1, current, output);
+            current.pop();
+        }
+    }
+
+    if depth == 0 || depth > item_count {
+        return Vec::new();
+    }
+    let mut output = Vec::new();
+    build(0, item_count, depth, &mut Vec::new(), &mut output);
+    output
+}
+
+fn team_tactics_canonical_combination(
+    members: &[TeamTacticsStrategyCombinationMember],
+) -> (String, Vec<TeamTacticsStrategyCombinationMember>) {
+    let mut canonical = members.to_vec();
+    canonical.sort_by(|left, right| {
+        team_tactics_strategy_area_rank(&left.area_key)
+            .cmp(&team_tactics_strategy_area_rank(&right.area_key))
+            .then_with(|| left.area_key.cmp(&right.area_key))
+            .then_with(|| left.raw_value.cmp(&right.raw_value))
+    });
+    canonical.dedup_by(|left, right| left.area_key == right.area_key);
+    let key = canonical
+        .iter()
+        .map(|member| {
+            format!(
+                "{:02}:{}:{}:{}:{}",
+                team_tactics_strategy_area_rank(&member.area_key),
+                member.area_key.len(),
+                member.area_key,
+                member.raw_value.len(),
+                member.raw_value
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("|");
+    (key, canonical)
+}
+
+fn team_tactics_wilson_lower_bound(wins: usize, matches: usize) -> f64 {
+    if matches == 0 {
+        return 0.0;
+    }
+    // Standard 95% Wilson lower bound. This remains an internal, transparent
+    // sample-size correction; the UI shows the underlying W/L and support counts.
+    const Z: f64 = 1.959_963_984_540_054;
+    let n = matches as f64;
+    let p = wins as f64 / n;
+    let z2 = Z * Z;
+    let denominator = 1.0 + z2 / n;
+    let centre = p + z2 / (2.0 * n);
+    let margin = Z * ((p * (1.0 - p) + z2 / (4.0 * n)) / n).sqrt();
+    ((centre - margin) / denominator).clamp(0.0, 1.0)
+}
+
+fn team_tactics_strategy_combinations(
+    history: &TeamHistoryData,
+    own_strategy_rows: &[TeamOwnStrategyProbeRow],
+    max_depth: usize,
+) -> Vec<TeamTacticsStrategyCombination> {
+    let effective_depth = max_depth.min(TEAM_TACTICS_MAX_SUPPORTED_SYNERGY_DEPTH);
+    if effective_depth == 0 {
+        return Vec::new();
+    }
+
+    let matches_by_id = history
+        .matches
+        .iter()
+        .map(|entry| (entry.match_id, entry))
+        .collect::<HashMap<_, _>>();
+    let mut rows_by_match = HashMap::<usize, Vec<TeamTacticsNormalizedStrategySet>>::new();
+    let mut seen_sets = BTreeSet::<(usize, usize)>::new();
+
+    for row in own_strategy_rows.iter().filter(|row| row.status == "OK") {
+        if !matches_by_id.contains_key(&row.match_id)
+            || !seen_sets.insert((row.match_id, row.replay_id))
+        {
+            continue;
+        }
+        let members = team_tactics_normalized_strategy_members(&row.strategy);
+        if members.is_empty() {
+            continue;
+        }
+        rows_by_match
+            .entry(row.match_id)
+            .or_default()
+            .push(TeamTacticsNormalizedStrategySet {
+                replay_id: row.replay_id,
+                set_number: row.set_number,
+                set_is_win: row.set_is_win,
+                members,
+            });
+    }
+
+    let mut aggregated = HashMap::<String, TeamTacticsStrategyCombination>::new();
+    for (match_id, mut sets) in rows_by_match {
+        let Some(match_entry) = matches_by_id.get(&match_id) else {
+            continue;
+        };
+        sets.sort_by(|left, right| {
+            left.set_number
+                .cmp(&right.set_number)
+                .then_with(|| left.replay_id.cmp(&right.replay_id))
+        });
+        if sets.is_empty() {
+            continue;
+        }
+
+        let set_count = sets.len();
+        let mut match_occurrences = HashMap::<String, usize>::new();
+        for set in &sets {
+            let maximum_depth = effective_depth.min(set.members.len());
+            for depth in 1..=maximum_depth {
+                for indices in team_tactics_combination_indices(set.members.len(), depth) {
+                    let selected = indices
+                        .iter()
+                        .map(|index| set.members[*index].clone())
+                        .collect::<Vec<_>>();
+                    let (combination_key, canonical_members) =
+                        team_tactics_canonical_combination(&selected);
+                    if canonical_members.len() != depth {
+                        continue;
+                    }
+                    *match_occurrences.entry(combination_key.clone()).or_default() += 1;
+                    let entry = aggregated.entry(combination_key.clone()).or_insert_with(|| {
+                        TeamTacticsStrategyCombination {
+                            key: combination_key,
+                            members: canonical_members,
+                            depth,
+                            official_matches: 0,
+                            official_wins: 0,
+                            official_losses: 0,
+                            official_sets: 0,
+                            official_set_wins: 0,
+                            official_set_losses: 0,
+                            official_mixed_matches: 0,
+                            practice_matches: 0,
+                            practice_wins: 0,
+                            practice_losses: 0,
+                            practice_sets: 0,
+                            practice_set_wins: 0,
+                            practice_set_losses: 0,
+                            practice_mixed_matches: 0,
+                            official_match_ids: Vec::new(),
+                            official_mixed_match_ids: Vec::new(),
+                            official_replay_ids: Vec::new(),
+                            practice_match_ids: Vec::new(),
+                            practice_mixed_match_ids: Vec::new(),
+                            practice_replay_ids: Vec::new(),
+                            raw_performance: 0.0,
+                            adjusted_performance: 0.0,
+                            support_count: 0,
+                        }
+                    });
+
+                    if match_entry.is_practice {
+                        entry.practice_sets = entry.practice_sets.saturating_add(1);
+                        if !entry.practice_replay_ids.contains(&set.replay_id) {
+                            entry.practice_replay_ids.push(set.replay_id);
+                        }
+                        match set.set_is_win {
+                            Some(true) => {
+                                entry.practice_set_wins = entry.practice_set_wins.saturating_add(1)
+                            }
+                            Some(false) => {
+                                entry.practice_set_losses =
+                                    entry.practice_set_losses.saturating_add(1)
+                            }
+                            None => {}
+                        }
+                    } else {
+                        entry.official_sets = entry.official_sets.saturating_add(1);
+                        if !entry.official_replay_ids.contains(&set.replay_id) {
+                            entry.official_replay_ids.push(set.replay_id);
+                        }
+                        match set.set_is_win {
+                            Some(true) => {
+                                entry.official_set_wins = entry.official_set_wins.saturating_add(1)
+                            }
+                            Some(false) => {
+                                entry.official_set_losses =
+                                    entry.official_set_losses.saturating_add(1)
+                            }
+                            None => {}
+                        }
+                    }
+                }
+            }
+        }
+
+        for (combination_key, occurrences) in match_occurrences {
+            let Some(entry) = aggregated.get_mut(&combination_key) else {
+                continue;
+            };
+            let clean = occurrences == set_count;
+            if match_entry.is_practice {
+                if clean {
+                    entry.practice_matches = entry.practice_matches.saturating_add(1);
+                    if !entry.practice_match_ids.contains(&match_id) {
+                        entry.practice_match_ids.push(match_id);
+                    }
+                    if match_entry.is_win {
+                        entry.practice_wins = entry.practice_wins.saturating_add(1);
+                    } else {
+                        entry.practice_losses = entry.practice_losses.saturating_add(1);
+                    }
+                } else {
+                    entry.practice_mixed_matches =
+                        entry.practice_mixed_matches.saturating_add(1);
+                    if !entry.practice_mixed_match_ids.contains(&match_id) {
+                        entry.practice_mixed_match_ids.push(match_id);
+                    }
+                }
+            } else if clean {
+                entry.official_matches = entry.official_matches.saturating_add(1);
+                if !entry.official_match_ids.contains(&match_id) {
+                    entry.official_match_ids.push(match_id);
+                }
+                if match_entry.is_win {
+                    entry.official_wins = entry.official_wins.saturating_add(1);
+                } else {
+                    entry.official_losses = entry.official_losses.saturating_add(1);
+                }
+            } else {
+                entry.official_mixed_matches = entry.official_mixed_matches.saturating_add(1);
+                if !entry.official_mixed_match_ids.contains(&match_id) {
+                    entry.official_mixed_match_ids.push(match_id);
+                }
+            }
+        }
+    }
+
+    let mut combinations = aggregated.into_values().collect::<Vec<_>>();
+    for combination in &mut combinations {
+        combination.official_match_ids.sort_unstable();
+        combination.official_mixed_match_ids.sort_unstable();
+        combination.official_replay_ids.sort_unstable();
+        combination.practice_match_ids.sort_unstable();
+        combination.practice_mixed_match_ids.sort_unstable();
+        combination.practice_replay_ids.sort_unstable();
+        combination.support_count = combination.official_matches;
+        combination.raw_performance = if combination.official_matches == 0 {
+            0.0
+        } else {
+            combination.official_wins as f64 / combination.official_matches as f64
+        };
+        combination.adjusted_performance = team_tactics_wilson_lower_bound(
+            combination.official_wins,
+            combination.official_matches,
+        );
+    }
+    combinations.sort_by(|left, right| {
+        left.depth
+            .cmp(&right.depth)
+            .then_with(|| left.key.cmp(&right.key))
+    });
+    combinations
+}
+
+fn team_tactics_supported_synergy_count(
+    combinations: &[TeamTacticsStrategyCombination],
+    depth: usize,
+) -> usize {
+    combinations
+        .iter()
+        .filter(|combination| {
+            combination.depth == depth
+                && combination.support_count
+                    >= TEAM_TACTICS_PROVISIONAL_SYNERGY_MIN_OFFICIAL_MATCHES
+        })
+        .count()
+}
+
+#[cfg(all(feature = "dev", test))]
+fn team_tactics_visible_synergies(
+    combinations: &[TeamTacticsStrategyCombination],
+    depth: usize,
+) -> Vec<TeamTacticsStrategyCombination> {
+    let mut rows = combinations
+        .iter()
+        .filter(|combination| {
+            combination.depth == depth
+                && combination.support_count
+                    >= TEAM_TACTICS_PROVISIONAL_SYNERGY_MIN_OFFICIAL_MATCHES
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        right
+            .adjusted_performance
+            .total_cmp(&left.adjusted_performance)
+            .then_with(|| right.official_matches.cmp(&left.official_matches))
+            .then_with(|| right.official_sets.cmp(&left.official_sets))
+            .then_with(|| right.raw_performance.total_cmp(&left.raw_performance))
+            .then_with(|| left.key.cmp(&right.key))
+    });
+    rows.truncate(TEAM_TACTICS_MAX_VISIBLE_SYNERGY_ROWS);
+    rows
+}
+
+fn team_tactics_presentation_synergy_order(
+    left: &TeamTacticsStrategyCombination,
+    right: &TeamTacticsStrategyCombination,
+) -> Ordering {
+    right
+        .adjusted_performance
+        .total_cmp(&left.adjusted_performance)
+        .then_with(|| right.official_matches.cmp(&left.official_matches))
+        .then_with(|| right.official_sets.cmp(&left.official_sets))
+        .then_with(|| right.raw_performance.total_cmp(&left.raw_performance))
+        // When the historical evidence is otherwise identical, prefer the
+        // simpler supported combination so the presentation does not add
+        // unnecessary Strategy members merely because a deeper combination
+        // happens to share the same evidence.
+        .then_with(|| left.depth.cmp(&right.depth))
+        .then_with(|| left.key.cmp(&right.key))
+}
+
+#[cfg(all(feature = "dev", test))]
+fn team_tactics_combination_contains_strategy(
+    combination: &TeamTacticsStrategyCombination,
+    area_key: &str,
+    raw_value: &str,
+) -> bool {
+    combination.members.iter().any(|member| {
+        member.area_key == area_key && member.raw_value == raw_value
+    })
+}
+
+fn team_tactics_historical_synergy_presentation_rows(
+    performance_evidence: &[TeamTacticsHistoricalPerformanceEvidence],
+    combinations: &[TeamTacticsStrategyCombination],
+) -> Vec<TeamTacticsHistoricalSynergyPresentationRow> {
+    let mut supported_by_strategy = HashMap::<
+        (String, String),
+        Vec<TeamTacticsStrategyCombination>,
+    >::new();
+
+    for combination in combinations.iter().filter(|combination| {
+        (2..=TEAM_TACTICS_MAX_SYNERGY_DEPTH).contains(&combination.depth)
+            && combination.support_count
+                >= TEAM_TACTICS_PROVISIONAL_SYNERGY_MIN_OFFICIAL_MATCHES
+    }) {
+        for member in &combination.members {
+            supported_by_strategy
+                .entry((member.area_key.clone(), member.raw_value.clone()))
+                .or_default()
+                .push(combination.clone());
+        }
+    }
+
+    for synergies in supported_by_strategy.values_mut() {
+        synergies.sort_by(team_tactics_presentation_synergy_order);
+        synergies.dedup_by(|left, right| left.key == right.key);
+    }
+
+    performance_evidence
+        .iter()
+        .cloned()
+        .map(|performance| {
+            let supported_synergies = supported_by_strategy
+                .remove(&(performance.key.clone(), performance.raw_value.clone()))
+                .unwrap_or_default();
+            TeamTacticsHistoricalSynergyPresentationRow {
+                performance,
+                supported_synergies,
+            }
+        })
+        .collect()
+}
+
+fn team_tactics_associated_synergy_display(
+    combination: &TeamTacticsStrategyCombination,
+    base_area_key: &str,
+    base_raw_value: &str,
+    localization: &Localization,
+) -> String {
+    let associated = combination
+        .members
+        .iter()
+        .filter(|member| {
+            !(member.area_key == base_area_key && member.raw_value == base_raw_value)
+        })
+        .map(|member| {
+            format!(
+                "{} = {}",
+                localization.tr(&format!("team_strategy.{}", member.area_key)),
+                member.display_value
+            )
+        })
+        .collect::<Vec<_>>();
+    if associated.is_empty() {
+        "—".to_string()
+    } else {
+        associated.join(" + ")
+    }
+}
+
+fn team_tactics_build_analysis_cache(
+    team_id: usize,
+    history: &TeamHistoryData,
+    own_strategy_rows: &[TeamOwnStrategyProbeRow],
+) -> TeamTacticsAnalysisCache {
+    let historical_performance_evidence =
+        team_tactics_historical_performance_evidence(history, own_strategy_rows);
+    let historical_leader_rows =
+        team_tactics_historical_leader_rows(&historical_performance_evidence);
+    let strategy_combinations = team_tactics_strategy_combinations(
+        history,
+        own_strategy_rows,
+        TEAM_TACTICS_MAX_SYNERGY_DEPTH,
+    );
+    let synergy_presentation_rows = team_tactics_historical_synergy_presentation_rows(
+        &historical_performance_evidence,
+        &strategy_combinations,
+    );
+
+    let mut generated_counts = [0usize; 5];
+    let mut supported_counts = [0usize; 5];
+    for combination in &strategy_combinations {
+        if combination.depth < generated_counts.len() {
+            generated_counts[combination.depth] =
+                generated_counts[combination.depth].saturating_add(1);
+        }
+    }
+    for (depth, supported_count) in supported_counts
+        .iter_mut()
+        .enumerate()
+        .take(TEAM_TACTICS_MAX_SYNERGY_DEPTH + 1)
+        .skip(2)
+    {
+        *supported_count =
+            team_tactics_supported_synergy_count(&strategy_combinations, depth);
+    }
+
+    let mut sorted_combination_indices = vec![Vec::new(); 5];
+    for (depth, depth_indices) in sorted_combination_indices
+        .iter_mut()
+        .enumerate()
+        .take(TEAM_TACTICS_MAX_SYNERGY_DEPTH + 1)
+        .skip(2)
+    {
+        let mut indices = strategy_combinations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, combination)| {
+                (combination.depth == depth).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        indices.sort_by(|left, right| {
+            team_tactics_presentation_synergy_order(
+                &strategy_combinations[*left],
+                &strategy_combinations[*right],
+            )
+        });
+        *depth_indices = indices;
+    }
+
+    let complete_rows = own_strategy_rows
+        .iter()
+        .filter(|row| row.status == "OK")
+        .collect::<Vec<_>>();
+    let official_matches = complete_rows
+        .iter()
+        .filter(|row| !row.is_practice)
+        .map(|row| row.match_id)
+        .collect::<BTreeSet<_>>()
+        .len();
+    let practice_matches = complete_rows
+        .iter()
+        .filter(|row| row.is_practice)
+        .map(|row| row.match_id)
+        .collect::<BTreeSet<_>>()
+        .len();
+
+    TeamTacticsAnalysisCache {
+        team_id,
+        official_matches,
+        practice_matches,
+        replay_sets: complete_rows.len(),
+        #[cfg(feature = "dev")]
+        historical_performance_evidence,
+        historical_leader_rows,
+        strategy_combinations,
+        synergy_presentation_rows,
+        generated_counts,
+        supported_counts,
+        sorted_combination_indices,
+    }
+}
+
+#[cfg(feature = "dev")]
+fn team_tactics_numeric_filter_matches(raw: &str, actual: usize) -> bool {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        true
+    } else {
+        trimmed
+            .parse::<usize>()
+            .is_ok_and(|expected| expected == actual)
+    }
+}
+
+#[cfg(feature = "dev")]
+fn team_tactics_history_row_matches_filter(
+    row: &TeamOwnStrategyProbeRow,
+    match_id: &str,
+    set_number: &str,
+    replay_id: &str,
+    match_type: TeamTacticsHistoryMatchTypeFilter,
+    opponent: &str,
+) -> bool {
+    if row.status != "OK"
+        || !team_tactics_numeric_filter_matches(match_id, row.match_id)
+        || !team_tactics_numeric_filter_matches(set_number, row.set_number)
+        || !team_tactics_numeric_filter_matches(replay_id, row.replay_id)
+    {
+        return false;
+    }
+
+    match match_type {
+        TeamTacticsHistoryMatchTypeFilter::All => {}
+        TeamTacticsHistoryMatchTypeFilter::Official if row.is_practice => return false,
+        TeamTacticsHistoryMatchTypeFilter::Practice if !row.is_practice => return false,
+        TeamTacticsHistoryMatchTypeFilter::Official
+        | TeamTacticsHistoryMatchTypeFilter::Practice => {}
+    }
+
+    let opponent = opponent.trim().to_lowercase();
+    opponent.is_empty() || row.opponent_name.to_lowercase().contains(&opponent)
+}
+
+fn team_tactics_combination_matches_search(
+    combination: &TeamTacticsStrategyCombination,
+    search_lower: &str,
+) -> bool {
+    let search_lower = search_lower.trim();
+    if search_lower.is_empty() {
+        return true;
+    }
+
+    combination.key.to_lowercase().contains(search_lower)
+        || combination.members.iter().any(|member| {
+            member.area_key.to_lowercase().contains(search_lower)
+                || member.raw_value.to_lowercase().contains(search_lower)
+                || member.display_value.to_lowercase().contains(search_lower)
+        })
+}
+
+fn team_tactics_replay_contains_combination(
+    row: &TeamOwnStrategyProbeRow,
+    combination: &TeamTacticsStrategyCombination,
+) -> bool {
+    row.status == "OK"
+        && combination.members.iter().all(|member| {
+            team_strategy_value(&row.strategy, &member.area_key) == member.raw_value
+        })
+}
+
+fn team_tactics_match_evidence_class(
+    row: &TeamOwnStrategyProbeRow,
+    combination: &TeamTacticsStrategyCombination,
+) -> &'static str {
+    if row.is_practice {
+        if combination.practice_match_ids.contains(&row.match_id) {
+            "CLEAN"
+        } else if combination.practice_mixed_match_ids.contains(&row.match_id) {
+            "MIXED"
+        } else {
+            "SET ONLY"
+        }
+    } else if combination.official_match_ids.contains(&row.match_id) {
+        "CLEAN"
+    } else if combination.official_mixed_match_ids.contains(&row.match_id) {
+        "MIXED"
+    } else {
+        "SET ONLY"
+    }
+}
+
+fn team_tactics_render_historical_synergy_presentation(
+    ui: &mut egui::Ui,
+    localization: &Localization,
+    rows: &[TeamTacticsHistoricalSynergyPresentationRow],
+    selected_area: &mut Option<String>,
+) {
+    ui.add_space(14.0);
+    ui.strong("Historical Synergy by Strategy");
+    ui.weak(localization.tr("team_tactics.historical_synergy_help"));
+    ui.add_space(5.0);
+
+    for area_key in TEAM_STRATEGY_KEYS {
+        let area_count = rows
+            .iter()
+            .filter(|row| row.performance.key == area_key)
+            .count();
+        if area_count == 0 {
+            continue;
+        }
+
+        let is_selected = selected_area.as_deref() == Some(area_key);
+        let area_label = localization.tr(&format!("team_strategy.{area_key}"));
+        let arrow = if is_selected { "▼" } else { "▶" };
+        let response = ui.selectable_label(
+            is_selected,
+            format!("{arrow} {area_label} · {area_count} observed values"),
+        );
+        if response.clicked() {
+            if is_selected {
+                *selected_area = None;
+            } else {
+                *selected_area = Some(area_key.to_string());
+            }
+        }
+
+        if !is_selected {
+            continue;
+        }
+
+        ui.indent(
+            format!("team_tactics_selected_area_{area_key}_v0531"),
+            |ui| {
+                for row in rows.iter().filter(|row| row.performance.key == area_key) {
+                    let performance = &row.performance;
+                    ui.add_space(4.0);
+                    ui.separator();
+                    ui.strong(&performance.display_value);
+
+                    ui.label(egui::RichText::new("Historical Performance — Official").strong());
+                    ui.label(format!(
+                        "{} Matches · {} W · {} L · {} Sets · {} W · {} L",
+                        performance.official_matches,
+                        performance.official_wins,
+                        performance.official_losses,
+                        performance.official_sets,
+                        performance.official_set_wins,
+                        performance.official_set_losses,
+                    ));
+                    ui.label(egui::RichText::new("Historical Performance — Practice").strong());
+                    ui.label(format!(
+                        "{} Matches · {} W · {} L · {} Sets · {} W · {} L",
+                        performance.practice_matches,
+                        performance.practice_wins,
+                        performance.practice_losses,
+                        performance.practice_sets,
+                        performance.practice_set_wins,
+                        performance.practice_set_losses,
+                    ));
+                    ui.label(format!(
+                        "Supported Historical Combinations: {}",
+                        row.supported_synergies.len()
+                    ));
+
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("Best Historical Combination").strong());
+                    if let Some(best) = row.supported_synergies.first() {
+                        ui.label(team_tactics_associated_synergy_display(
+                            best,
+                            &performance.key,
+                            &performance.raw_value,
+                            localization,
+                        ));
+                        ui.weak(format!("Depth: {}-way", best.depth));
+                        ui.label(format!(
+                            "Official: {} Matches · {}-{} · {} Sets · Set W-L {}-{}",
+                            best.official_matches,
+                            best.official_wins,
+                            best.official_losses,
+                            best.official_sets,
+                            best.official_set_wins,
+                            best.official_set_losses,
+                        ));
+                        ui.label(format!(
+                            "Practice: {} Matches · {}-{} · {} Sets · Set W-L {}-{}",
+                            best.practice_matches,
+                            best.practice_wins,
+                            best.practice_losses,
+                            best.practice_sets,
+                            best.practice_set_wins,
+                            best.practice_set_losses,
+                        ));
+                    } else {
+                        ui.weak("No supported 2–4-way historical combination is available for this Strategy value.");
+                    }
+
+                    if !row.supported_synergies.is_empty() {
+                        let shown = row
+                            .supported_synergies
+                            .len()
+                            .min(TEAM_TACTICS_MAX_VISIBLE_SYNERGIES_PER_STRATEGY);
+                        egui::CollapsingHeader::new(format!(
+                            "Supported Historical Combinations — showing {shown} of {}",
+                            row.supported_synergies.len()
+                        ))
+                        .id_salt((
+                            "team_tactics_supported_strategy_synergies_v0531",
+                            &performance.key,
+                            &performance.raw_value,
+                        ))
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            egui::ScrollArea::horizontal()
+                                .id_salt((
+                                    "team_tactics_supported_strategy_synergy_scroll_v0531",
+                                    &performance.key,
+                                    &performance.raw_value,
+                                ))
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    ui.set_min_width(720.0);
+                                    egui::Grid::new((
+                                        "team_tactics_supported_strategy_synergy_grid_v0531",
+                                        &performance.key,
+                                        &performance.raw_value,
+                                    ))
+                                    .striped(true)
+                                    .num_columns(5)
+                                    .spacing(egui::vec2(14.0, 4.0))
+                                    .show(ui, |ui| {
+                                        ui.strong("Observed Synergy");
+                                        ui.strong("Depth");
+                                        ui.strong("Official M");
+                                        ui.strong("W-L");
+                                        ui.strong("Sets");
+                                        ui.end_row();
+
+                                        for combination in row
+                                            .supported_synergies
+                                            .iter()
+                                            .take(TEAM_TACTICS_MAX_VISIBLE_SYNERGIES_PER_STRATEGY)
+                                        {
+                                            ui.label(team_tactics_associated_synergy_display(
+                                                combination,
+                                                &performance.key,
+                                                &performance.raw_value,
+                                                localization,
+                                            ));
+                                            ui.label(format!("{}-way", combination.depth));
+                                            ui.label(combination.official_matches.to_string());
+                                            ui.label(format!(
+                                                "{}-{}",
+                                                combination.official_wins,
+                                                combination.official_losses
+                                            ));
+                                            ui.label(combination.official_sets.to_string());
+                                            ui.end_row();
+                                        }
+                                    });
+                                });
+
+                            if row.supported_synergies.len() > shown {
+                                ui.weak(format!(
+                                    "{} additional supported combinations are available in Full Historical Synergy Explorer.",
+                                    row.supported_synergies.len() - shown
+                                ));
+                            }
+                        });
+                    }
+                    ui.add_space(5.0);
+                }
+            },
+        );
+    }
+}
+
+fn team_tactics_combination_display(
+    combination: &TeamTacticsStrategyCombination,
+    localization: &Localization,
+) -> String {
+    combination
+        .members
+        .iter()
+        .map(|member| {
+            format!(
+                "{} = {}",
+                localization.tr(&format!("team_strategy.{}", member.area_key)),
+                member.display_value
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
+fn team_tactics_format_id_list(ids: &[usize]) -> String {
+    if ids.is_empty() {
+        "—".to_string()
+    } else {
+        ids.iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn team_tactics_historical_adjusted_rate(
+    evidence: &TeamTacticsHistoricalPerformanceEvidence,
+) -> f64 {
+    // Laplace smoothing is used only for internal ordering of the per-area
+    // historical leader. Raw Official/Practice Match and Set evidence remains
+    // visible and is never replaced by a confidence label.
+    (evidence.official_wins as f64 + 1.0) / (evidence.official_matches as f64 + 2.0)
+}
+
+fn team_tactics_historical_leader_rows(
+    evidence: &[TeamTacticsHistoricalPerformanceEvidence],
+) -> Vec<TeamTacticsHistoricalLeaderRow> {
+    TEAM_STRATEGY_KEYS
+        .iter()
+        .map(|key| {
+            let candidates = evidence
+                .iter()
+                .filter(|entry| {
+                    entry.key == *key
+                        && entry.official_matches >= TEAM_TACTICS_MIN_OFFICIAL_HISTORY_MATCHES
+                })
+                .collect::<Vec<_>>();
+            let fallback_mixed_matches_excluded = evidence
+                .iter()
+                .filter(|entry| entry.key == *key)
+                .map(|entry| entry.official_mixed_matches)
+                .max()
+                .unwrap_or(0);
+            let best = candidates.into_iter().max_by(|left, right| {
+                team_tactics_historical_adjusted_rate(left)
+                    .total_cmp(&team_tactics_historical_adjusted_rate(right))
+                    .then_with(|| left.official_matches.cmp(&right.official_matches))
+                    .then_with(|| left.official_sets.cmp(&right.official_sets))
+                    .then_with(|| right.display_value.cmp(&left.display_value))
+            });
+
+            if let Some(best) = best {
+                TeamTacticsHistoricalLeaderRow {
+                    key: (*key).to_string(),
+                    historical_value: Some(best.display_value.clone()),
+                    official_matches: best.official_matches,
+                    official_wins: best.official_wins,
+                    official_losses: best.official_losses,
+                    official_sets: best.official_sets,
+                    official_set_wins: best.official_set_wins,
+                    official_set_losses: best.official_set_losses,
+                    mixed_matches_excluded: best.official_mixed_matches,
+                    practice_matches: best.practice_matches,
+                    practice_wins: best.practice_wins,
+                    practice_losses: best.practice_losses,
+                }
+            } else {
+                TeamTacticsHistoricalLeaderRow {
+                    key: (*key).to_string(),
+                    historical_value: None,
+                    official_matches: 0,
+                    official_wins: 0,
+                    official_losses: 0,
+                    official_sets: 0,
+                    official_set_wins: 0,
+                    official_set_losses: 0,
+                    mixed_matches_excluded: fallback_mixed_matches_excluded,
+                    practice_matches: 0,
+                    practice_wins: 0,
+                    practice_losses: 0,
+                }
+            }
+        })
+        .collect()
+}
+
+#[cfg(feature = "dev")]
+fn player_has_strategy_position(player: &PlayerSummary, position: &str) -> bool {
+    player
+        .position
+        .split('/')
+        .map(str::trim)
+        .any(|candidate| candidate.eq_ignore_ascii_case(position))
+}
+
+#[cfg(feature = "dev")]
+fn team_tactics_roster_context(
+    team: &TeamSummary,
+    players: &[PlayerSummary],
+    history: &TeamHistoryData,
+) -> Vec<TeamTacticsRosterContext> {
+    const POSITIONS: [&str; 5] = ["Top", "Jungle", "Mid", "Bottom", "Support"];
+    let roster = players
+        .iter()
+        .filter(|player| summary_belongs_to_team(&player.team, team))
+        .collect::<Vec<_>>();
+
+    POSITIONS
+        .iter()
+        .map(|position| {
+            let best = roster
+                .iter()
+                .copied()
+                .filter(|player| player_has_strategy_position(player, position))
+                .filter_map(|player| effective_actual_rating(player).map(|(rating, _)| (player, rating)))
+                .max_by(|left, right| left.1.total_cmp(&right.1));
+            let (player_id, player_name, actual_rating, stored_mvp_sets) = if let Some((player, rating)) = best {
+                let mvp_sets = history
+                    .matches
+                    .iter()
+                    .flat_map(|entry| entry.sets.iter())
+                    .filter(|set| set.mvp_player_id == player.id)
+                    .count();
+                (Some(player.id), player.name.clone(), Some(rating), mvp_sets)
+            } else {
+                (None, "—".to_string(), None, 0)
+            };
+            TeamTacticsRosterContext {
+                position: (*position).to_string(),
+                player_id,
+                player_name,
+                actual_rating,
+                stored_mvp_sets,
+            }
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone)]
+struct LeagueSummary {
+    id: usize,
+    name: String,
+    region_id: usize,
+    division: usize,
+}
+
+#[derive(Debug, Clone)]
+struct TeamLeagueStandingEntry {
+    team_id: usize,
+    team_name: String,
+    wins: usize,
+    losses: usize,
+    set_wins: usize,
+    set_losses: usize,
+    kills: usize,
+    deaths: usize,
+    assists: usize,
+}
+
+#[derive(Debug, Clone)]
+struct TeamLeagueChampionPerformance {
+    champion_id: String,
+    matches: usize,
+    wins: usize,
+    rating: usize,
+    dealing: usize,
+    healing: usize,
+    tanking: usize,
+}
+
+#[derive(Debug, Clone)]
+struct TeamLeaguePlayerPerformance {
+    player_id: usize,
+    matches: usize,
+    wins: usize,
+    kills: usize,
+    deaths: usize,
+    assists: usize,
+    mvp: usize,
+    rating: usize,
+    gold: usize,
+    dealing: usize,
+    healing: usize,
+    tanking: usize,
+    solo_kill: usize,
+    solo_killed: usize,
+    champions: Vec<TeamLeagueChampionPerformance>,
+}
+
+#[derive(Debug, Clone)]
+struct TeamLeagueStandingsData {
+    league_id: usize,
+    league_type: String,
+    finalized: bool,
+    rows: Vec<TeamLeagueStandingEntry>,
+    player_performance: Vec<TeamLeaguePlayerPerformance>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TeamCompetitionMatchStatus {
+    Completed,
+    Running,
+    Upcoming,
+}
+
+#[derive(Debug, Clone)]
+struct TeamCompetitionMatchEntry {
+    date: String,
+    match_id: usize,
+    opponent_id: Option<usize>,
+    opponent_name: String,
+    is_practice: bool,
+    status: TeamCompetitionMatchStatus,
+    is_win: Option<bool>,
+    my_score: Option<usize>,
+    enemy_score: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct TeamHeadToHeadEntry {
+    opponent_id: usize,
+    opponent_name: String,
+    matches: usize,
+    wins: usize,
+    losses: usize,
+    set_wins: usize,
+    set_losses: usize,
+}
+
+#[derive(Debug, Clone)]
+struct TeamCompetitionData {
+    team_id: usize,
+    matches: Vec<TeamCompetitionMatchEntry>,
+}
+
+impl TeamCompetitionData {
+    fn record_for(&self, practice: bool) -> (usize, usize) {
+        self.matches
+            .iter()
+            .filter(|entry| {
+                entry.status == TeamCompetitionMatchStatus::Completed
+                    && entry.is_practice == practice
+            })
+            .fold((0usize, 0usize), |(wins, losses), entry| match entry.is_win {
+                Some(true) => (wins.saturating_add(1), losses),
+                Some(false) => (wins, losses.saturating_add(1)),
+                None => (wins, losses),
+            })
+    }
+
+    fn official_set_record(&self) -> (usize, usize) {
+        self.matches
+            .iter()
+            .filter(|entry| {
+                entry.status == TeamCompetitionMatchStatus::Completed && !entry.is_practice
+            })
+            .fold((0usize, 0usize), |(wins, losses), entry| {
+                (
+                    wins.saturating_add(entry.my_score.unwrap_or(0)),
+                    losses.saturating_add(entry.enemy_score.unwrap_or(0)),
+                )
+            })
+    }
+
+    fn upcoming_count(&self) -> usize {
+        self.matches
+            .iter()
+            .filter(|entry| entry.status != TeamCompetitionMatchStatus::Completed)
+            .count()
+    }
+
+    fn next_match(&self) -> Option<&TeamCompetitionMatchEntry> {
+        self.matches
+            .iter()
+            .find(|entry| entry.status != TeamCompetitionMatchStatus::Completed)
+    }
+
+    fn head_to_head(&self) -> Vec<TeamHeadToHeadEntry> {
+        let mut by_opponent = HashMap::<usize, TeamHeadToHeadEntry>::new();
+        for entry in self.matches.iter().filter(|entry| {
+            entry.status == TeamCompetitionMatchStatus::Completed && !entry.is_practice
+        }) {
+            let Some(opponent_id) = entry.opponent_id else {
+                continue;
+            };
+            let aggregate = by_opponent.entry(opponent_id).or_insert_with(|| {
+                TeamHeadToHeadEntry {
+                    opponent_id,
+                    opponent_name: entry.opponent_name.clone(),
+                    matches: 0,
+                    wins: 0,
+                    losses: 0,
+                    set_wins: 0,
+                    set_losses: 0,
+                }
+            });
+            aggregate.matches = aggregate.matches.saturating_add(1);
+            match entry.is_win {
+                Some(true) => aggregate.wins = aggregate.wins.saturating_add(1),
+                Some(false) => aggregate.losses = aggregate.losses.saturating_add(1),
+                None => {}
+            }
+            aggregate.set_wins = aggregate
+                .set_wins
+                .saturating_add(entry.my_score.unwrap_or(0));
+            aggregate.set_losses = aggregate
+                .set_losses
+                .saturating_add(entry.enemy_score.unwrap_or(0));
+        }
+        let mut rows = by_opponent.into_values().collect::<Vec<_>>();
+        rows.sort_by(|left, right| {
+            right
+                .matches
+                .cmp(&left.matches)
+                .then_with(|| right.wins.cmp(&left.wins))
+                .then_with(|| left.opponent_name.cmp(&right.opponent_name))
+                .then_with(|| left.opponent_id.cmp(&right.opponent_id))
+        });
+        rows
+    }
+}
+
+fn sort_team_league_ids_by_catalog(league_ids: &mut [usize], leagues: &[LeagueSummary]) {
+    let sort_keys = leagues
+        .iter()
+        .map(|league| (league.id, (league.region_id, league.division, league.id)))
+        .collect::<HashMap<_, _>>();
+    league_ids.sort_by_key(|league_id| {
+        sort_keys
+            .get(league_id)
+            .copied()
+            .map(|(region_id, division, id)| (0usize, region_id, division, id))
+            .unwrap_or((1usize, usize::MAX, usize::MAX, *league_id))
+    });
+}
+
+impl LeagueSummary {
+    fn localized_region_name(&self, localization: &Localization) -> String {
+        communication_region_label_key(self.region_id)
+            .map(|key| localization.tr(key))
+            .unwrap_or_else(|| format!("Region {}", self.region_id))
+    }
+
+    fn display_label(&self, localization: &Localization) -> String {
+        let region = self.localized_region_name(localization);
+        if self.name.trim().is_empty() {
+            format!("{region} · League {}", self.id)
+        } else {
+            format!("{} · {region}", self.name)
+        }
+    }
+
+    fn search_blob(&self, localization: &Localization) -> String {
+        format!(
+            "{} {} league {} division {}",
+            self.name,
+            self.localized_region_name(localization),
+            self.id,
+            self.division.saturating_add(1),
+        )
+        .to_lowercase()
+    }
+}
+
 #[derive(Debug, Clone)]
 struct TeamSummary {
     id: usize,
@@ -1415,9 +3288,9 @@ struct TeamSummary {
     fan_count: String,
     #[cfg_attr(not(feature = "dev"), allow(dead_code))]
     fan_momentum: String,
-    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
+    #[allow(dead_code)]
     gaming_house_level: String,
-    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
+    #[allow(dead_code)]
     welfare: String,
     total_balance: f64,
     transfer_budget: f64,
@@ -1791,7 +3664,7 @@ impl ChampionMasteryEntry {
 
     fn mastery_text(&self) -> String {
         let value = self.mastery();
-        if (value.fract()).abs() < f32::EPSILON {
+        if (value.fract()).abs() < 0.01 {
             format!("{value:.0}")
         } else {
             format!("{value:.1}")
@@ -2119,7 +3992,7 @@ fn potential_rating_stars(ui: &mut egui::Ui, actual_potential_raw: &str) {
         .fg_stroke
         .color
         .linear_multiply(0.35);
-    let filled_color = ui.visuals().selection.stroke.color;
+    let filled_color = POTENTIAL_STAR_COLOR;
     let font = egui::FontId::proportional(star_size);
 
     for index in 0..5 {
@@ -2164,7 +4037,9 @@ fn display_staff_role(raw: &str) -> String {
     }
 }
 
-#[cfg(feature = "dev")]
+const TEAM_MOVE_STAFF_ROLES: [&str; 4] = ["HeadCoach", "TrainingCoach", "Scouter", "Analyst"];
+
+
 fn summary_belongs_to_team(member_team: &str, team: &TeamSummary) -> bool {
     let member_team = member_team.trim();
     if member_team.is_empty() || member_team.eq_ignore_ascii_case("Free Agent") {
@@ -2176,7 +4051,27 @@ fn summary_belongs_to_team(member_team: &str, team: &TeamSummary) -> bool {
         || member_team.eq_ignore_ascii_case(&format!("Team {}", team.id))
 }
 
-#[cfg(feature = "dev")]
+fn contract_sort_key(raw: &str) -> (bool, String) {
+    let date = display_contract_date(raw);
+    (date.trim().is_empty(), date)
+}
+
+fn team_finance_percentage(value: f64, budget: f64) -> f64 {
+    if budget > 0.0 && value.is_finite() && budget.is_finite() {
+        (value / budget) * 100.0
+    } else {
+        0.0
+    }
+}
+
+fn team_finance_average(total: f64, count: usize) -> Option<f64> {
+    if count > 0 && total.is_finite() {
+        Some(total / count as f64)
+    } else {
+        None
+    }
+}
+
 fn validate_condition_editor_value(value: &str, label: &str) -> Result<(), String> {
     let parsed = value
         .trim()
@@ -2188,7 +4083,6 @@ fn validate_condition_editor_value(value: &str, label: &str) -> Result<(), Strin
     Ok(())
 }
 
-#[cfg(feature = "dev")]
 fn parse_team_condition_from_player_probe(raw: &str) -> Result<(String, String), String> {
     let marker = "management: AthleteManagementStat";
     let start = raw
@@ -2228,6 +4122,41 @@ fn parse_team_condition_from_player_probe(raw: &str) -> Result<(String, String),
     match (stamina, condition) {
         (Some(stamina), Some(condition)) => Ok((stamina, condition)),
         _ => Err("Stamina or condition field not found".to_string()),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TeamContractExtensionMemberKind {
+    Player,
+    Staff,
+}
+
+#[derive(Debug, Clone)]
+struct TeamContractExtensionConfirmation {
+    member_kind: TeamContractExtensionMemberKind,
+    apply_to_all: bool,
+    member_ids: Vec<usize>,
+    years: String,
+}
+
+fn team_contract_extension_confirmation_message(
+    confirmation: &TeamContractExtensionConfirmation,
+) -> String {
+    let years = confirmation.years.trim();
+    let years_label = if years == "1" { "year" } else { "years" };
+    match (confirmation.member_kind, confirmation.apply_to_all) {
+        (TeamContractExtensionMemberKind::Player, true) => format!(
+            "Are you sure you want to extend contracts for all eligible Players on this Team by {years} {years_label}?"
+        ),
+        (TeamContractExtensionMemberKind::Staff, true) => format!(
+            "Are you sure you want to extend contracts for all eligible Staff on this Team by {years} {years_label}?"
+        ),
+        (TeamContractExtensionMemberKind::Player, false) => format!(
+            "Are you sure you want to extend the selected Player contract(s) by {years} {years_label}?"
+        ),
+        (TeamContractExtensionMemberKind::Staff, false) => format!(
+            "Are you sure you want to extend the selected Staff contract(s) by {years} {years_label}?"
+        ),
     }
 }
 
@@ -2348,6 +4277,26 @@ struct ModifierApp {
     transfer_always_success: bool,
     recruitment_instant_retry: bool,
     teams: Vec<TeamSummary>,
+    team_leagues: Vec<LeagueSummary>,
+    team_league_standings: Option<TeamLeagueStandingsData>,
+    team_league_standings_last_request_league_id: Option<usize>,
+    team_league_standings_window_open: bool,
+    team_performance_window_open: bool,
+    team_recruitment_window_open: bool,
+    team_contract_center_window_open: bool,
+    team_finance_center_window_open: bool,
+    team_finance_last_team_id: Option<usize>,
+    team_move_player_window_open: bool,
+    team_move_player_id: Option<usize>,
+    team_move_player_team_id: Option<usize>,
+    team_move_staff_window_open: bool,
+    team_move_staff_id: Option<usize>,
+    team_move_staff_team_id: Option<usize>,
+    team_move_staff_role: Option<String>,
+    team_move_staff_pending_contract_role: Option<String>,
+    team_competition_data: Option<TeamCompetitionData>,
+    team_competition_last_request_team_id: Option<usize>,
+    team_competition_window_open: bool,
     team_database_search: String,
     team_search_league_filter: Option<usize>,
     team_search_player_team_only: bool,
@@ -2357,29 +4306,24 @@ struct ModifierApp {
     team_search_staff_max: String,
     team_sort_column: TeamSortColumn,
     team_sort_ascending: bool,
-    #[cfg(feature = "dev")]
     team_workspace_search: String,
-    #[cfg(feature = "dev")]
     team_workspace_team_id: Option<usize>,
-    #[cfg(feature = "dev")]
     team_roster_window_open: bool,
-    #[cfg(feature = "dev")]
     team_staff_window_open: bool,
-    #[cfg(feature = "dev")]
     team_roster_selected_player_id: Option<usize>,
-    #[cfg(feature = "dev")]
     team_staff_selected_staff_id: Option<usize>,
-    #[cfg(feature = "dev")]
+    team_roster_selected_player_ids: BTreeSet<usize>,
+    team_staff_selected_staff_ids: BTreeSet<usize>,
+    team_roster_contract_extension_years: String,
+    team_staff_contract_extension_years: String,
+    team_roster_contract_extension_status: String,
+    team_staff_contract_extension_status: String,
+    team_contract_extension_confirmation: Option<TeamContractExtensionConfirmation>,
     team_condition_window_open: bool,
-    #[cfg(feature = "dev")]
     team_condition_entries: Vec<TeamConditionEntry>,
-    #[cfg(feature = "dev")]
     team_condition_team_id: Option<usize>,
-    #[cfg(feature = "dev")]
     team_condition_selected_player_ids: BTreeSet<usize>,
-    #[cfg(feature = "dev")]
     team_condition_bulk_stamina: String,
-    #[cfg(feature = "dev")]
     team_condition_bulk_condition: String,
     #[cfg(feature = "dev")]
     team_data_probe_window_open: bool,
@@ -2387,28 +4331,73 @@ struct ModifierApp {
     team_data_probe_team_id: Option<usize>,
     #[cfg(feature = "dev")]
     team_data_probe_raw: String,
-    #[cfg(feature = "dev")]
     team_management_data: Option<TeamManagementData>,
-    #[cfg(feature = "dev")]
     team_management_last_request_team_id: Option<usize>,
-    #[cfg(feature = "dev")]
     team_strategy_window_open: bool,
-    #[cfg(feature = "dev")]
+    team_strategy_probe_backup: Option<TeamStrategyProbeBackup>,
+    team_strategy_probe_status: String,
+    team_strategy_presets: Vec<TeamStrategyPreset>,
+    team_strategy_selected_preset: Option<String>,
+    team_strategy_preset_name: String,
+    team_strategy_preset_status: String,
+    team_strategy_options: HashMap<String, Vec<String>>,
+    team_strategy_options_attempted: bool,
+    team_strategy_edit_team_id: Option<usize>,
+    team_strategy_edit_values: Vec<TeamStrategyEntry>,
+    team_strategy_split_player_ids: [Option<usize>; 2],
+    team_strategy_edit_status: String,
     team_merchandise_window_open: bool,
+    team_merchandise_edit_team_id: Option<usize>,
+    team_merchandise_edit_entries: Vec<TeamMerchandiseEntry>,
+    team_merchandise_edit_status: String,
+    team_fans_edit_team_id: Option<usize>,
+    team_fans_popularity: String,
+    team_fans_count: String,
+    team_fans_expectation: String,
+    team_fans_satisfaction: String,
+    team_fans_momentum: String,
+    team_fans_edit_status: String,
+    #[cfg(feature = "dev")]
+    team_fan_momentum_probe_raw: String,
+    #[cfg(feature = "dev")]
+    team_fan_momentum_probe_window_open: bool,
     #[cfg(feature = "dev")]
     team_champion_setup_window_open: bool,
-    #[cfg(feature = "dev")]
     team_gaming_house_window_open: bool,
-    #[cfg(feature = "dev")]
     team_history_data: Option<TeamHistoryData>,
-    #[cfg(feature = "dev")]
     team_history_last_request_team_id: Option<usize>,
-    #[cfg(feature = "dev")]
     team_match_history_window_open: bool,
-    #[cfg(feature = "dev")]
     team_pre_match_analysis_window_open: bool,
-    #[cfg(feature = "dev")]
     team_history_summary_window_open: bool,
+    team_tactics_window_open: bool,
+    team_tactics_analysis_cache: Option<TeamTacticsAnalysisCache>,
+    team_tactics_selected_area: Option<String>,
+    team_synergy_explorer_window_open: bool,
+    team_synergy_explorer_depth: usize,
+    team_synergy_explorer_search: String,
+    team_synergy_explorer_supported_only: bool,
+    team_synergy_explorer_selected_key: Option<String>,
+    #[cfg(feature = "dev")]
+    team_scouting_evidence_window_open: bool,
+    #[cfg(feature = "dev")]
+    team_performance_context_window_open: bool,
+    #[cfg(feature = "dev")]
+    team_own_strategy_probe_window_open: bool,
+    #[cfg(feature = "dev")]
+    team_own_strategy_filter_match_id: String,
+    #[cfg(feature = "dev")]
+    team_own_strategy_filter_set: String,
+    #[cfg(feature = "dev")]
+    team_own_strategy_filter_replay_id: String,
+    #[cfg(feature = "dev")]
+    team_own_strategy_filter_match_type: TeamTacticsHistoryMatchTypeFilter,
+    #[cfg(feature = "dev")]
+    team_own_strategy_filter_opponent: String,
+    #[cfg(feature = "dev")]
+    team_own_strategy_selected_replay_id: Option<usize>,
+    team_own_strategy_probe_team_id: Option<usize>,
+    team_own_strategy_probe_rows: Vec<TeamOwnStrategyProbeRow>,
+    team_own_strategy_probe_status: String,
     recruitment_management_tab: RecruitmentManagementTab,
     recruitment_player_search: String,
     recruitment_player_id: Option<usize>,
@@ -2552,6 +4541,26 @@ impl Default for ModifierApp {
             transfer_always_success: false,
             recruitment_instant_retry: false,
             teams: Vec::new(),
+                    team_leagues: Vec::new(),
+            team_league_standings: None,
+            team_league_standings_last_request_league_id: None,
+            team_league_standings_window_open: false,
+            team_performance_window_open: false,
+            team_recruitment_window_open: false,
+            team_contract_center_window_open: false,
+            team_finance_center_window_open: false,
+            team_finance_last_team_id: None,
+            team_move_player_window_open: false,
+            team_move_player_id: None,
+            team_move_player_team_id: None,
+            team_move_staff_window_open: false,
+            team_move_staff_id: None,
+            team_move_staff_team_id: None,
+            team_move_staff_role: None,
+            team_move_staff_pending_contract_role: None,
+            team_competition_data: None,
+            team_competition_last_request_team_id: None,
+            team_competition_window_open: false,
             team_database_search: String::new(),
             team_search_league_filter: None,
             team_search_player_team_only: false,
@@ -2561,29 +4570,26 @@ impl Default for ModifierApp {
             team_search_staff_max: String::new(),
             team_sort_column: TeamSortColumn::Name,
             team_sort_ascending: true,
-            #[cfg(feature = "dev")]
             team_workspace_search: String::new(),
-            #[cfg(feature = "dev")]
             team_workspace_team_id: None,
-            #[cfg(feature = "dev")]
             team_roster_window_open: false,
-            #[cfg(feature = "dev")]
             team_staff_window_open: false,
-            #[cfg(feature = "dev")]
             team_roster_selected_player_id: None,
-            #[cfg(feature = "dev")]
             team_staff_selected_staff_id: None,
-            #[cfg(feature = "dev")]
+            team_roster_selected_player_ids: BTreeSet::new(),
+            team_staff_selected_staff_ids: BTreeSet::new(),
+            team_roster_contract_extension_years:
+                TEAM_CONTRACT_EXTENSION_DEFAULT_YEARS.to_string(),
+            team_staff_contract_extension_years:
+                TEAM_CONTRACT_EXTENSION_DEFAULT_YEARS.to_string(),
+            team_roster_contract_extension_status: String::new(),
+            team_staff_contract_extension_status: String::new(),
+            team_contract_extension_confirmation: None,
             team_condition_window_open: false,
-            #[cfg(feature = "dev")]
             team_condition_entries: Vec::new(),
-            #[cfg(feature = "dev")]
             team_condition_team_id: None,
-            #[cfg(feature = "dev")]
             team_condition_selected_player_ids: BTreeSet::new(),
-            #[cfg(feature = "dev")]
             team_condition_bulk_stamina: String::new(),
-            #[cfg(feature = "dev")]
             team_condition_bulk_condition: String::new(),
             #[cfg(feature = "dev")]
             team_data_probe_window_open: false,
@@ -2591,28 +4597,73 @@ impl Default for ModifierApp {
             team_data_probe_team_id: None,
             #[cfg(feature = "dev")]
             team_data_probe_raw: String::new(),
-            #[cfg(feature = "dev")]
             team_management_data: None,
-            #[cfg(feature = "dev")]
             team_management_last_request_team_id: None,
-            #[cfg(feature = "dev")]
             team_strategy_window_open: false,
-            #[cfg(feature = "dev")]
+            team_strategy_probe_backup: None,
+            team_strategy_probe_status: String::new(),
+            team_strategy_presets: Vec::new(),
+            team_strategy_selected_preset: None,
+            team_strategy_preset_name: String::new(),
+            team_strategy_preset_status: String::new(),
+            team_strategy_options: HashMap::new(),
+            team_strategy_options_attempted: false,
+            team_strategy_edit_team_id: None,
+            team_strategy_edit_values: Vec::new(),
+            team_strategy_split_player_ids: [None, None],
+            team_strategy_edit_status: String::new(),
             team_merchandise_window_open: false,
+            team_merchandise_edit_team_id: None,
+            team_merchandise_edit_entries: Vec::new(),
+            team_merchandise_edit_status: String::new(),
+            team_fans_edit_team_id: None,
+            team_fans_popularity: String::new(),
+            team_fans_count: String::new(),
+            team_fans_expectation: String::new(),
+            team_fans_satisfaction: String::new(),
+            team_fans_momentum: String::new(),
+            team_fans_edit_status: String::new(),
+            #[cfg(feature = "dev")]
+            team_fan_momentum_probe_raw: String::new(),
+            #[cfg(feature = "dev")]
+            team_fan_momentum_probe_window_open: false,
             #[cfg(feature = "dev")]
             team_champion_setup_window_open: false,
-            #[cfg(feature = "dev")]
             team_gaming_house_window_open: false,
-            #[cfg(feature = "dev")]
             team_history_data: None,
-            #[cfg(feature = "dev")]
             team_history_last_request_team_id: None,
-            #[cfg(feature = "dev")]
             team_match_history_window_open: false,
-            #[cfg(feature = "dev")]
             team_pre_match_analysis_window_open: false,
-            #[cfg(feature = "dev")]
             team_history_summary_window_open: false,
+            team_tactics_window_open: false,
+            team_tactics_analysis_cache: None,
+            team_tactics_selected_area: None,
+            team_synergy_explorer_window_open: false,
+            team_synergy_explorer_depth: 2,
+            team_synergy_explorer_search: String::new(),
+            team_synergy_explorer_supported_only: true,
+            team_synergy_explorer_selected_key: None,
+            #[cfg(feature = "dev")]
+            team_scouting_evidence_window_open: false,
+            #[cfg(feature = "dev")]
+            team_performance_context_window_open: false,
+            #[cfg(feature = "dev")]
+            team_own_strategy_probe_window_open: false,
+            #[cfg(feature = "dev")]
+            team_own_strategy_filter_match_id: String::new(),
+            #[cfg(feature = "dev")]
+            team_own_strategy_filter_set: String::new(),
+            #[cfg(feature = "dev")]
+            team_own_strategy_filter_replay_id: String::new(),
+            #[cfg(feature = "dev")]
+            team_own_strategy_filter_match_type: TeamTacticsHistoryMatchTypeFilter::All,
+            #[cfg(feature = "dev")]
+            team_own_strategy_filter_opponent: String::new(),
+            #[cfg(feature = "dev")]
+            team_own_strategy_selected_replay_id: None,
+            team_own_strategy_probe_team_id: None,
+            team_own_strategy_probe_rows: Vec::new(),
+            team_own_strategy_probe_status: String::new(),
             recruitment_management_tab: RecruitmentManagementTab::Players,
             recruitment_player_search: String::new(),
             recruitment_player_id: None,
@@ -2637,6 +4688,7 @@ impl Default for ModifierApp {
         app.reload_saved_filters();
         app.reload_saved_staff_filters();
         app.reload_saved_player_lists();
+        app.reload_team_strategy_presets();
         app.refresh_connection();
         if app.connected {
             app.refresh_economy();
@@ -2649,7 +4701,156 @@ impl Default for ModifierApp {
     }
 }
 
+fn team_contract_extension_target_ids<'a, I>(
+    members: I,
+    selected_ids: &BTreeSet<usize>,
+    apply_to_all: bool,
+) -> Vec<usize>
+where
+    I: IntoIterator<Item = (usize, &'a str)>,
+{
+    members
+        .into_iter()
+        .filter_map(|(id, contract_end)| {
+            if apply_to_all {
+                (!contract_end.trim().is_empty()).then_some(id)
+            } else {
+                selected_ids.contains(&id).then_some(id)
+            }
+        })
+        .collect()
+}
+
+fn team_management_lineup_player_rows(
+    data: &TeamManagementData,
+) -> Vec<(String, usize, String)> {
+    data.lineup
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .member
+                .as_ref()
+                .map(|member| (entry.slot.clone(), member.id, member.name.clone()))
+        })
+        .collect()
+}
+
+fn team_merchandise_edit_rows(entries: &[TeamMerchandiseEntry]) -> Vec<TeamMerchandiseEntry> {
+    let mut rows = entries.to_vec();
+    for row in &mut rows {
+        row.sell_price = format_internal_amount(&row.sell_price);
+    }
+    rows
+}
+
+fn team_merchandise_write_command(team_id: usize, entry: &TeamMerchandiseEntry) -> String {
+    format!(
+        "SET_TEAM_MERCHANDISE|{}|{}|{}|{}|{}",
+        team_id,
+        hex_encode(&entry.product_type),
+        entry.athlete_id,
+        entry.stock.trim(),
+        entry.sell_price.trim(),
+    )
+}
+
 #[cfg(feature = "dev")]
+fn team_fan_momentum_probe_command(team_id: usize) -> String {
+    format!("GET_TEAM_FAN_MOMENTUM_PROBE|{team_id}")
+}
+
+const TEAM_POPULARITY_LEVELS: [u8; 5] = [0, 1, 2, 3, 4];
+
+fn parse_observed_team_popularity(raw: &str) -> Result<u8, String> {
+    match raw.trim().parse::<u8>() {
+        Ok(value) if TEAM_POPULARITY_LEVELS.contains(&value) => Ok(value),
+        Ok(_) => Err(
+            "Popularity Level must stay within the naturally observed Team values 0-4."
+                .to_string(),
+        ),
+        Err(_) => Err("Popularity Level must be a whole number from 0 to 4.".to_string()),
+    }
+}
+
+const TEAM_FAN_MOMENTUM_LEVELS: [i32; 11] = [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5];
+
+fn parse_team_fan_momentum(raw: &str) -> Result<i32, String> {
+    match raw.trim().parse::<i32>() {
+        Ok(value) if TEAM_FAN_MOMENTUM_LEVELS.contains(&value) => Ok(value),
+        Ok(_) => Err("Fan Momentum must be from -5 to 5.".to_string()),
+        Err(_) => Err("Fan Momentum must be a whole number from -5 to 5.".to_string()),
+    }
+}
+
+const TEAM_FAN_EXPECTATION_ORDER: [&str; 5] = ["Bottom", "Lower", "Mid", "Upper", "Top"];
+
+fn team_fan_expectation_display_label(raw: &str) -> String {
+    match raw {
+        "Bottom" => "Bottom Tier".to_string(),
+        "Lower" => "Lower Tier".to_string(),
+        "Mid" => "Mid Tier".to_string(),
+        "Upper" => "Upper Tier".to_string(),
+        "Top" => "Top Tier".to_string(),
+        _ => raw.to_string(),
+    }
+}
+
+fn order_observed_team_fan_expectations<I>(values: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let observed = values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<BTreeSet<_>>();
+    let mut ordered = TEAM_FAN_EXPECTATION_ORDER
+        .iter()
+        .filter(|value| observed.contains(**value))
+        .map(|value| (*value).to_string())
+        .collect::<Vec<_>>();
+    ordered.extend(
+        observed
+            .into_iter()
+            .filter(|value| !TEAM_FAN_EXPECTATION_ORDER.contains(&value.as_str())),
+    );
+    ordered
+}
+
+fn sync_team_fan_edit_values(
+    team: &TeamSummary,
+    popularity: &mut String,
+    fan_count: &mut String,
+    fan_expectation: &mut String,
+    fan_satisfaction: &mut String,
+    fan_momentum: &mut String,
+) {
+    *popularity = team.popularity.clone();
+    *fan_count = team.fan_count.clone();
+    *fan_expectation = team.fan_expectation.clone();
+    *fan_satisfaction = team.fan_satisfaction.clone();
+    *fan_momentum = team.fan_momentum.clone();
+}
+
+fn team_fans_write_command(
+    team_id: usize,
+    popularity: &str,
+    fan_count: &str,
+    fan_expectation: &str,
+    fan_satisfaction: &str,
+    fan_momentum: &str,
+) -> String {
+    format!(
+        "SET_TEAM_FANS|{}|{}|{}|{}|{}|{}",
+        team_id,
+        popularity.trim(),
+        fan_count.trim(),
+        hex_encode(fan_expectation.trim()),
+        hex_encode(fan_satisfaction.trim()),
+        fan_momentum.trim(),
+    )
+}
+
 fn format_team_member_references(entries: &[TeamMemberReference]) -> String {
     if entries.is_empty() {
         return "—".to_string();
@@ -2661,22 +4862,6 @@ fn format_team_member_references(entries: &[TeamMemberReference]) -> String {
         .join(", ")
 }
 
-#[cfg(feature = "dev")]
-fn format_team_lineup(entries: &[TeamLineupEntry]) -> String {
-    if entries.is_empty() {
-        return "—".to_string();
-    }
-    entries
-        .iter()
-        .map(|entry| match &entry.member {
-            Some(member) => format!("{}: {} [{}]", entry.slot, member.name, member.id),
-            None => format!("{}: —", entry.slot),
-        })
-        .collect::<Vec<_>>()
-        .join(" · ")
-}
-
-#[cfg(feature = "dev")]
 fn team_strategy_value(entries: &[TeamStrategyEntry], key: &str) -> String {
     entries
         .iter()
@@ -2685,17 +4870,642 @@ fn team_strategy_value(entries: &[TeamStrategyEntry], key: &str) -> String {
         .unwrap_or_else(|| "—".to_string())
 }
 
-#[cfg(feature = "dev")]
+fn team_strategy_entries_equal(left: &[TeamStrategyEntry], right: &[TeamStrategyEntry]) -> bool {
+    TEAM_STRATEGY_KEYS
+        .iter()
+        .all(|key| team_strategy_value(left, key) == team_strategy_value(right, key))
+}
+
+fn team_strategy_presets_visible(is_player_team: bool) -> bool {
+    is_player_team
+}
+
+const TEAM_STRATEGY_POSITION_ORDER: [&str; 5] = ["Top", "Jungle", "Mid", "Bottom", "Support"];
+
+fn team_strategy_option_label(key: &str, raw: &str, _lineup: &[TeamLineupEntry]) -> String {
+    if raw.starts_with("Split { position: ") {
+        return "Split Push".to_string();
+    }
+    if raw.starts_with("Split14 { position: ") {
+        return "1-4 Split".to_string();
+    }
+    if raw.starts_with("Split131 { position1: ") {
+        return "1-3-1 Split".to_string();
+    }
+
+    match (key, raw) {
+        ("focused", "Top") => "Focus on Top/Mid".to_string(),
+        ("focused", "Bottom") => "Focus on Mid/Bottom".to_string(),
+        ("focused", "Auto") | ("focused", "All") => "All Lanes".to_string(),
+        ("early_jungle", "GrowthAndCover") => "Farming/Cover".to_string(),
+        ("early_jungle", "Ganking") => "Ganking".to_string(),
+        ("early_jungle", "CounterJungle") => "Counter-Jungling".to_string(),
+        ("early_serpen", "Must") => "Always Attempt".to_string(),
+        ("early_serpen", "Flexible") => "Flexible".to_string(),
+        ("early_serpen", "Giveup") => "Concede".to_string(),
+        ("early_serpen_top", "Must") => "Always Join".to_string(),
+        ("early_serpen_top", "Flexible") => "Flexible".to_string(),
+        ("early_serpen_top", "Giveup") => "Do Not Join".to_string(),
+        ("object_buildup", "Gather") => "Group Up".to_string(),
+        ("object_buildup", "Flexible") => "Flexible".to_string(),
+        ("object_battle", "Poking") => "Poke / Maintain Distance".to_string(),
+        ("object_battle", "Initiating") => "Hard Engage".to_string(),
+        ("morgard_use", "Gather") => "Group as 5".to_string(),
+        ("tower_press", "Poking") => "Poke / Maintain Distance".to_string(),
+        ("tower_press", "Dive") => "Dive".to_string(),
+        ("morgard_defense", "Gather") => "Defend Pressured Lane".to_string(),
+        ("morgard_defense", "Battle") => "Force Fight".to_string(),
+        ("object_finish", "KillPriority") => "Kill Priority".to_string(),
+        ("object_finish", "BattlePriority") => "Fight Priority".to_string(),
+        ("minion_wave", "WavePriority") => "Wave Priority".to_string(),
+        ("minion_wave", "JoinPriority") => "Join Priority".to_string(),
+        ("game_finish", "Stable") => "Stable".to_string(),
+        ("game_finish", "Flexible") => "Flexible".to_string(),
+        ("game_finish", "Aggressive") => "Aggressive".to_string(),
+        _ => raw.to_string(),
+    }
+}
+
+fn historical_team_strategy_label(key: &str, raw: &str) -> String {
+    if let Some(position) = team_strategy_split14_position(raw) {
+        return format!("1-4 Split · {position}");
+    }
+    if let Some((position1, position2)) = team_strategy_split131_positions(raw) {
+        return format!("1-3-1 Split · {position1} + {position2}");
+    }
+    if raw.starts_with("Split { position: ") {
+        let position = raw
+            .strip_prefix("Split { position: ")
+            .and_then(|value| value.strip_suffix(" }"))
+            .unwrap_or("Unknown");
+        return format!("Split Push · {position}");
+    }
+    team_strategy_option_label(key, raw, &[])
+}
+
+fn team_strategy_option_rank(key: &str, raw: &str) -> usize {
+    match (key, raw) {
+        ("focused", "Top") => 0,
+        ("focused", "Bottom") => 1,
+        ("focused", "Auto") => 2,
+        ("early_jungle", "GrowthAndCover") => 0,
+        ("early_jungle", "Ganking") => 1,
+        ("early_jungle", "CounterJungle") => 2,
+        ("early_serpen", "Must") | ("early_serpen_top", "Must") => 0,
+        ("early_serpen", "Flexible") | ("early_serpen_top", "Flexible") => 1,
+        ("early_serpen", "Giveup") | ("early_serpen_top", "Giveup") => 2,
+        ("object_buildup", "Gather") => 2,
+        ("object_buildup", "Flexible") => 1,
+        ("object_battle", "Poking") => 0,
+        ("object_battle", "Initiating") => 1,
+        ("morgard_use", "Gather") => 0,
+        ("tower_press", "Poking") => 0,
+        ("tower_press", "Dive") => 1,
+        ("morgard_defense", "Gather") => 0,
+        ("morgard_defense", "Battle") => 1,
+        ("object_finish", "KillPriority") => 0,
+        ("object_finish", "BattlePriority") => 1,
+        ("minion_wave", "WavePriority") => 0,
+        ("minion_wave", "JoinPriority") => 1,
+        ("game_finish", "Stable") => 0,
+        ("game_finish", "Flexible") => 1,
+        ("game_finish", "Aggressive") => 2,
+        _ if raw.starts_with("Split { position: ") => 0,
+        _ if raw.starts_with("Split14 { position: ") => 1,
+        _ if raw.starts_with("Split131 { position1: ") => 2,
+        _ => 100,
+    }
+}
+
+fn team_strategy_current_choice_supported(key: &str, raw: &str) -> bool {
+    match key {
+        "focused" => matches!(raw, "Top" | "Bottom" | "Auto"),
+        "early_jungle" => matches!(raw, "GrowthAndCover" | "Ganking" | "CounterJungle"),
+        "early_serpen" | "early_serpen_top" => matches!(raw, "Must" | "Flexible" | "Giveup"),
+        "object_buildup" => {
+            matches!(raw, "Gather" | "Flexible") || raw.starts_with("Split { position: ")
+        }
+        "object_battle" => matches!(raw, "Poking" | "Initiating"),
+        "morgard_use" => {
+            raw == "Gather"
+                || raw.starts_with("Split14 { position: ")
+                || raw.starts_with("Split131 { position1: ")
+        }
+        "tower_press" => matches!(raw, "Poking" | "Dive"),
+        "morgard_defense" => matches!(raw, "Gather" | "Battle"),
+        "object_finish" => matches!(raw, "KillPriority" | "BattlePriority"),
+        "minion_wave" => matches!(raw, "WavePriority" | "JoinPriority"),
+        "game_finish" => matches!(raw, "Stable" | "Flexible" | "Aggressive"),
+        _ => false,
+    }
+}
+
+fn team_strategy_choice_token(key: &str, raw: &str) -> String {
+    if key == "object_buildup" && raw.starts_with("Split { position: ") {
+        "Split".to_string()
+    } else if key == "morgard_use" && raw.starts_with("Split14 { position: ") {
+        "Split14".to_string()
+    } else if key == "morgard_use" && raw.starts_with("Split131 { position1: ") {
+        "Split131".to_string()
+    } else {
+        raw.to_string()
+    }
+}
+
+fn team_strategy_editor_choices(key: &str, raw_options: &[String], current: &str) -> Vec<String> {
+    let mut candidates = raw_options
+        .iter()
+        .filter(|value| team_strategy_current_choice_supported(key, value))
+        .cloned()
+        .collect::<Vec<_>>();
+    if team_strategy_current_choice_supported(key, current)
+        && !candidates.iter().any(|value| value == current)
+    {
+        candidates.push(current.to_string());
+    }
+    candidates.sort_by(|left, right| {
+        team_strategy_option_rank(key, left)
+            .cmp(&team_strategy_option_rank(key, right))
+            .then_with(|| left.cmp(right))
+    });
+
+    let current_token = team_strategy_choice_token(key, current);
+    let mut seen_tokens = Vec::<String>::new();
+    let mut choices = Vec::<String>::new();
+    for candidate in candidates {
+        let token = team_strategy_choice_token(key, &candidate);
+        if seen_tokens.iter().any(|seen| seen == &token) {
+            continue;
+        }
+        let representative = if token == current_token {
+            current.to_string()
+        } else {
+            candidate
+        };
+        seen_tokens.push(token);
+        choices.push(representative);
+    }
+    choices
+}
+
+fn team_strategy_split14_position(raw: &str) -> Option<&str> {
+    raw.strip_prefix("Split14 { position: ")
+        .and_then(|value| value.strip_suffix(" }"))
+}
+
+fn team_strategy_split131_positions(raw: &str) -> Option<(&str, &str)> {
+    let inner = raw
+        .strip_prefix("Split131 { position1: ")?
+        .strip_suffix(" }")?;
+    inner.split_once(", position2: ")
+}
+
+fn team_strategy_position_rank(position: &str) -> usize {
+    TEAM_STRATEGY_POSITION_ORDER
+        .iter()
+        .position(|candidate| candidate.eq_ignore_ascii_case(position))
+        .unwrap_or(TEAM_STRATEGY_POSITION_ORDER.len())
+}
+
+fn team_strategy_sort_positions(values: &mut Vec<String>) {
+    values.sort_by(|left, right| {
+        team_strategy_position_rank(left)
+            .cmp(&team_strategy_position_rank(right))
+            .then_with(|| left.cmp(right))
+    });
+    values.dedup();
+}
+
+fn team_strategy_split14_positions(raw_options: &[String]) -> Vec<String> {
+    let mut positions = raw_options
+        .iter()
+        .filter_map(|raw| team_strategy_split14_position(raw).map(ToOwned::to_owned))
+        .collect::<Vec<_>>();
+    team_strategy_sort_positions(&mut positions);
+    positions
+}
+
+fn team_strategy_split131_position1_options(raw_options: &[String]) -> Vec<String> {
+    let mut positions = raw_options
+        .iter()
+        .filter_map(|raw| {
+            team_strategy_split131_positions(raw).map(|(position1, _)| position1.to_string())
+        })
+        .collect::<Vec<_>>();
+    team_strategy_sort_positions(&mut positions);
+    positions
+}
+
+fn team_strategy_split131_position2_options(
+    raw_options: &[String],
+    position1: &str,
+) -> Vec<String> {
+    let mut positions = raw_options
+        .iter()
+        .filter_map(|raw| {
+            let (candidate1, candidate2) = team_strategy_split131_positions(raw)?;
+            candidate1
+                .eq_ignore_ascii_case(position1)
+                .then(|| candidate2.to_string())
+        })
+        .collect::<Vec<_>>();
+    team_strategy_sort_positions(&mut positions);
+    positions
+}
+
+fn team_strategy_split14_raw_for_position(raw_options: &[String], position: &str) -> Option<String> {
+    raw_options.iter().find_map(|raw| {
+        team_strategy_split14_position(raw)
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(position))
+            .then(|| raw.clone())
+    })
+}
+
+fn team_strategy_split131_raw_for_positions(
+    raw_options: &[String],
+    position1: &str,
+    position2: &str,
+) -> Option<String> {
+    raw_options.iter().find_map(|raw| {
+        let (candidate1, candidate2) = team_strategy_split131_positions(raw)?;
+        (candidate1.eq_ignore_ascii_case(position1)
+            && candidate2.eq_ignore_ascii_case(position2))
+        .then(|| raw.clone())
+    })
+}
+
+fn team_strategy_player_positions(player: &PlayerSummary) -> Vec<String> {
+    player
+        .position
+        .split('/')
+        .map(str::trim)
+        .filter(|position| {
+            TEAM_STRATEGY_POSITION_ORDER
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(position))
+        })
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn team_strategy_player_can_fill(player: &PlayerSummary, position: &str) -> bool {
+    team_strategy_player_positions(player)
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(position))
+}
+
+fn team_strategy_player_matches_any_position(
+    player: &PlayerSummary,
+    positions: &[String],
+) -> bool {
+    positions
+        .iter()
+        .any(|position| team_strategy_player_can_fill(player, position))
+}
+
+fn team_strategy_default_split_player_id(
+    lineup: &[TeamLineupEntry],
+    roster: &[PlayerSummary],
+    position: &str,
+) -> Option<usize> {
+    if let Some(member_id) = lineup
+        .iter()
+        .find(|entry| entry.slot.eq_ignore_ascii_case(position))
+        .and_then(|entry| entry.member.as_ref())
+        .map(|member| member.id)
+    {
+        if roster.iter().any(|player| player.id == member_id) {
+            return Some(member_id);
+        }
+    }
+    roster
+        .iter()
+        .find(|player| team_strategy_player_can_fill(player, position))
+        .map(|player| player.id)
+}
+
+fn team_strategy_split_player_label(roster: &[PlayerSummary], player_id: Option<usize>) -> String {
+    player_id
+        .and_then(|player_id| roster.iter().find(|player| player.id == player_id))
+        .map(|player| player.name.clone())
+        .unwrap_or_else(|| "—".to_string())
+}
+
+const TEAM_STRATEGY_CONTROL_WIDTH: f32 = 240.0;
+
+fn render_team_strategy_current_editor_cell(
+    ui: &mut egui::Ui,
+    key: &str,
+    entry: &mut TeamStrategyEntry,
+    raw_options: &[String],
+    lineup: &[TeamLineupEntry],
+    roster: &[PlayerSummary],
+    split_player_ids: &mut [Option<usize>; 2],
+) {
+    let choices = team_strategy_editor_choices(key, raw_options, &entry.value);
+    let value_before_combo = entry.value.clone();
+    let selected_text = team_strategy_option_label(key, &entry.value, lineup);
+
+    if key != "morgard_use" {
+        egui::ComboBox::from_id_salt(format!("team_strategy_main_current_{key}_v0523"))
+            .selected_text(selected_text)
+            .width(TEAM_STRATEGY_CONTROL_WIDTH)
+            .show_ui(ui, |ui| {
+                for option in choices {
+                    let option_label = team_strategy_option_label(key, &option, lineup);
+                    ui.selectable_value(&mut entry.value, option, option_label);
+                }
+            });
+        return;
+    }
+
+    // Morgard intentionally grows vertically instead of widening the Current
+    // Strategy column. Every split child uses the same control width as the
+    // normal Strategy ComboBoxes above and below this row.
+    ui.vertical(|ui| {
+        ui.set_width(TEAM_STRATEGY_CONTROL_WIDTH);
+        egui::ComboBox::from_id_salt("team_strategy_main_current_morgard_use_v0523")
+            .selected_text(selected_text)
+            .width(TEAM_STRATEGY_CONTROL_WIDTH)
+            .show_ui(ui, |ui| {
+                for option in choices {
+                    let option_label = team_strategy_option_label(key, &option, lineup);
+                    ui.selectable_value(&mut entry.value, option, option_label);
+                }
+            });
+
+        if entry.value != value_before_combo {
+            *split_player_ids = [None, None];
+        }
+
+        if let Some(current_position) =
+            team_strategy_split14_position(&entry.value).map(str::to_string)
+        {
+            let allowed_positions = team_strategy_split14_positions(raw_options);
+            let mut position = current_position;
+
+            ui.add_space(4.0);
+            ui.small("Split Pusher 1");
+            ui.label("Position:");
+            egui::ComboBox::from_id_salt("team_strategy_split14_position_v0523")
+                .selected_text(&position)
+                .width(TEAM_STRATEGY_CONTROL_WIDTH)
+                .show_ui(ui, |ui| {
+                    for candidate in &allowed_positions {
+                        ui.selectable_value(&mut position, candidate.clone(), candidate);
+                    }
+                });
+
+            if let Some(raw) = team_strategy_split14_raw_for_position(raw_options, &position) {
+                entry.value = raw;
+            }
+
+            if split_player_ids[0]
+                .and_then(|player_id| roster.iter().find(|player| player.id == player_id))
+                .is_none_or(|player| !team_strategy_player_can_fill(player, &position))
+            {
+                split_player_ids[0] =
+                    team_strategy_default_split_player_id(lineup, roster, &position);
+            }
+
+            ui.label("Player:");
+            let selected_label = team_strategy_split_player_label(roster, split_player_ids[0]);
+            egui::ComboBox::from_id_salt("team_strategy_split14_player_v0523")
+                .selected_text(selected_label)
+                .width(TEAM_STRATEGY_CONTROL_WIDTH)
+                .show_ui(ui, |ui| {
+                    for player in roster.iter().filter(|player| {
+                        team_strategy_player_matches_any_position(player, &allowed_positions)
+                    }) {
+                        if ui
+                            .selectable_label(split_player_ids[0] == Some(player.id), &player.name)
+                            .clicked()
+                        {
+                            split_player_ids[0] = Some(player.id);
+                            if !team_strategy_player_can_fill(player, &position) {
+                                if let Some(new_position) = allowed_positions
+                                    .iter()
+                                    .find(|candidate| team_strategy_player_can_fill(player, candidate))
+                                {
+                                    position = new_position.clone();
+                                    if let Some(raw) =
+                                        team_strategy_split14_raw_for_position(raw_options, &position)
+                                    {
+                                        entry.value = raw;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            split_player_ids[1] = None;
+            return;
+        }
+
+        let Some((position1_raw, position2_raw)) = team_strategy_split131_positions(&entry.value)
+            .map(|(left, right)| (left.to_string(), right.to_string()))
+        else {
+            *split_player_ids = [None, None];
+            return;
+        };
+
+        let mut position1 = position1_raw;
+        let mut position2 = position2_raw;
+        let allowed_position1 = team_strategy_split131_position1_options(raw_options);
+
+        ui.add_space(4.0);
+        ui.small("Split Pusher 1");
+        ui.label("Position:");
+        let before = position1.clone();
+        egui::ComboBox::from_id_salt("team_strategy_split131_position1_v0523")
+            .selected_text(&position1)
+            .width(TEAM_STRATEGY_CONTROL_WIDTH)
+            .show_ui(ui, |ui| {
+                for candidate in &allowed_position1 {
+                    ui.selectable_value(&mut position1, candidate.clone(), candidate);
+                }
+            });
+        if position1 != before {
+            let position2_options =
+                team_strategy_split131_position2_options(raw_options, &position1);
+            if !position2_options
+                .iter()
+                .any(|candidate| candidate == &position2)
+            {
+                if let Some(first) = position2_options.first() {
+                    position2 = first.clone();
+                }
+            }
+            if let Some(raw) =
+                team_strategy_split131_raw_for_positions(raw_options, &position1, &position2)
+            {
+                entry.value = raw;
+            }
+            split_player_ids[0] = None;
+            split_player_ids[1] = None;
+        }
+
+        if split_player_ids[0]
+            .and_then(|player_id| roster.iter().find(|player| player.id == player_id))
+            .is_none_or(|player| !team_strategy_player_can_fill(player, &position1))
+        {
+            split_player_ids[0] =
+                team_strategy_default_split_player_id(lineup, roster, &position1);
+        }
+
+        ui.label("Player:");
+        let selected_label = team_strategy_split_player_label(roster, split_player_ids[0]);
+        egui::ComboBox::from_id_salt("team_strategy_split131_player1_v0523")
+            .selected_text(selected_label)
+            .width(TEAM_STRATEGY_CONTROL_WIDTH)
+            .show_ui(ui, |ui| {
+                for player in roster.iter().filter(|player| {
+                    team_strategy_player_matches_any_position(player, &allowed_position1)
+                }) {
+                    if ui
+                        .selectable_label(split_player_ids[0] == Some(player.id), &player.name)
+                        .clicked()
+                    {
+                        split_player_ids[0] = Some(player.id);
+                        if !team_strategy_player_can_fill(player, &position1) {
+                            if let Some(new_position1) = allowed_position1
+                                .iter()
+                                .find(|candidate| team_strategy_player_can_fill(player, candidate))
+                            {
+                                position1 = new_position1.clone();
+                                let position2_options =
+                                    team_strategy_split131_position2_options(raw_options, &position1);
+                                if !position2_options
+                                    .iter()
+                                    .any(|candidate| candidate == &position2)
+                                {
+                                    if let Some(first) = position2_options.first() {
+                                        position2 = first.clone();
+                                    }
+                                }
+                                if let Some(raw) = team_strategy_split131_raw_for_positions(
+                                    raw_options,
+                                    &position1,
+                                    &position2,
+                                ) {
+                                    entry.value = raw;
+                                }
+                                split_player_ids[1] = None;
+                            }
+                        }
+                    }
+                }
+            });
+
+        let allowed_position2 =
+            team_strategy_split131_position2_options(raw_options, &position1);
+        ui.add_space(4.0);
+        ui.small("Split Pusher 2");
+        ui.label("Position:");
+        let before = position2.clone();
+        egui::ComboBox::from_id_salt("team_strategy_split131_position2_v0523")
+            .selected_text(&position2)
+            .width(TEAM_STRATEGY_CONTROL_WIDTH)
+            .show_ui(ui, |ui| {
+                for candidate in &allowed_position2 {
+                    ui.selectable_value(&mut position2, candidate.clone(), candidate);
+                }
+            });
+        if position2 != before {
+            if let Some(raw) =
+                team_strategy_split131_raw_for_positions(raw_options, &position1, &position2)
+            {
+                entry.value = raw;
+            }
+            split_player_ids[1] = None;
+        }
+
+        if split_player_ids[1]
+            .and_then(|player_id| roster.iter().find(|player| player.id == player_id))
+            .is_none_or(|player| !team_strategy_player_can_fill(player, &position2))
+            || split_player_ids[1] == split_player_ids[0]
+        {
+            split_player_ids[1] = lineup
+                .iter()
+                .find(|entry| entry.slot.eq_ignore_ascii_case(&position2))
+                .and_then(|entry| entry.member.as_ref())
+                .map(|member| member.id)
+                .filter(|member_id| Some(*member_id) != split_player_ids[0])
+                .filter(|member_id| roster.iter().any(|player| player.id == *member_id))
+                .or_else(|| {
+                    roster
+                        .iter()
+                        .find(|player| {
+                            Some(player.id) != split_player_ids[0]
+                                && team_strategy_player_can_fill(player, &position2)
+                        })
+                        .map(|player| player.id)
+                });
+        }
+
+        ui.label("Player:");
+        let selected_label = team_strategy_split_player_label(roster, split_player_ids[1]);
+        let split_player1_id = split_player_ids[0];
+        egui::ComboBox::from_id_salt("team_strategy_split131_player2_v0523")
+            .selected_text(selected_label)
+            .width(TEAM_STRATEGY_CONTROL_WIDTH)
+            .show_ui(ui, |ui| {
+                for player in roster.iter().filter(|player| {
+                    Some(player.id) != split_player1_id
+                        && team_strategy_player_matches_any_position(player, &allowed_position2)
+                }) {
+                    if ui
+                        .selectable_label(split_player_ids[1] == Some(player.id), &player.name)
+                        .clicked()
+                    {
+                        split_player_ids[1] = Some(player.id);
+                        if !team_strategy_player_can_fill(player, &position2) {
+                            if let Some(new_position2) = allowed_position2
+                                .iter()
+                                .find(|candidate| team_strategy_player_can_fill(player, candidate))
+                            {
+                                position2 = new_position2.clone();
+                                if let Some(raw) = team_strategy_split131_raw_for_positions(
+                                    raw_options,
+                                    &position1,
+                                    &position2,
+                                ) {
+                                    entry.value = raw;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+    });
+}
+
+fn team_strategy_probe_is_swapped(
+    data: &TeamManagementData,
+    backup: &TeamStrategyProbeBackup,
+) -> bool {
+    data.team_id == backup.team_id
+        && team_strategy_entries_equal(&data.current_strategy, &backup.last_strategy)
+        && team_strategy_entries_equal(&data.last_strategy, &backup.current_strategy)
+}
+
+fn team_strategy_probe_is_restored(
+    data: &TeamManagementData,
+    backup: &TeamStrategyProbeBackup,
+) -> bool {
+    data.team_id == backup.team_id
+        && team_strategy_entries_equal(&data.current_strategy, &backup.current_strategy)
+        && team_strategy_entries_equal(&data.last_strategy, &backup.last_strategy)
+}
+
 fn parse_usize_value(value: &str) -> usize {
     value.trim().parse::<usize>().unwrap_or(0)
 }
 
-#[cfg(feature = "dev")]
 fn parse_f64_value(value: &str) -> f64 {
     value.trim().parse::<f64>().unwrap_or(0.0)
 }
 
-#[cfg(feature = "dev")]
 fn render_team_member_table_viewport(
     ui: &mut egui::Ui,
     horizontal_scroll_id: &'static str,
@@ -2762,8 +5572,6 @@ impl ModifierApp {
                 "Saved Lists loaded: {}",
                 self.saved_player_lists.len()
             )),
-            #[cfg(feature = "dev")]
-            SearchTab::History => Some("History is under development".to_string()),
         };
 
         if let Some(status) = search_status {
@@ -2899,7 +5707,7 @@ impl ModifierApp {
 
         if target != SUPPORTED_TFM2_VERSION {
             return Some(CompatibilityIssue {
-                severity: CompatibilitySeverity::Warning,
+                severity: CompatibilitySeverity::NotSupported,
                 action: CompatibilityAction::GameVersionMismatch,
                 reason: CompatibilityReason::GameTargetMismatch,
                 installed_bridge_version,
@@ -3084,7 +5892,13 @@ Bridge TFM2 target: v{}",
                         CompatibilitySeverity::NotSupported,
                         _,
                         CompatibilityReason::ProtocolMismatch,
-                    ) => "compatibility.not_supported.protocol_message",
+                    ) => {
+                        if cfg!(feature = "dev") {
+                            "compatibility.not_supported.protocol_message"
+                        } else {
+                            "compatibility.not_supported.generic_message"
+                        }
+                    },
                     (CompatibilitySeverity::NotSupported, _, _) => {
                         "compatibility.not_supported.generic_message"
                     }
@@ -3107,7 +5921,13 @@ Bridge TFM2 target: v{}",
                         CompatibilitySeverity::Warning,
                         CompatibilityAction::VerifyInstallation,
                         CompatibilityReason::ProtocolMismatch,
-                    ) => "compatibility.warning.protocol_message",
+                    ) => {
+                        if cfg!(feature = "dev") {
+                            "compatibility.warning.protocol_message"
+                        } else {
+                            "compatibility.warning.unverified_message"
+                        }
+                    },
                     (CompatibilitySeverity::Warning, CompatibilityAction::VerifyInstallation, _) => {
                         "compatibility.warning.unverified_message"
                     }
@@ -3378,6 +6198,41 @@ Bridge TFM2 target: v{}",
         Ok(response.trim().to_string())
     }
 
+
+    fn global_history_request(command: &str) -> Result<String, String> {
+        let address: SocketAddr = BRIDGE_ADDR
+            .parse()
+            .map_err(|_| "Invalid Bridge address".to_string())?;
+
+        let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(600))
+            .map_err(|_| "TFM2 Editor Bridge is not responding".to_string())?;
+
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .map_err(|error| format!("Could not set Bridge read timeout: {error}"))?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .map_err(|error| format!("Could not set Bridge write timeout: {error}"))?;
+
+        writeln!(stream, "{command}")
+            .map_err(|error| format!("Could not send Bridge history command: {error}"))?;
+        stream
+            .flush()
+            .map_err(|error| format!("Bridge history flush failed: {error}"))?;
+
+        let mut reader = BufReader::new(stream);
+        let mut response = String::new();
+        reader
+            .read_line(&mut response)
+            .map_err(|error| format!("Could not read Bridge history response: {error}"))?;
+
+        if response.is_empty() {
+            return Err("Bridge returned an empty history response".to_string());
+        }
+
+        Ok(response.trim().to_string())
+    }
+
     fn game_request(&self, command: &str) -> Result<String, String> {
         if matches!(
             self.compatibility_issue.as_ref(),
@@ -3462,7 +6317,7 @@ Bridge TFM2 target: v{}",
         }
     }
 
-    fn apply_economy(&mut self) {
+    fn apply_economy(&mut self) -> bool {
         let parsed = [
             parse_display_to_internal(&self.economy.money),
             parse_display_to_internal(&self.economy.transfer_budget),
@@ -3471,7 +6326,7 @@ Bridge TFM2 target: v{}",
 
         if parsed.iter().any(Result::is_err) {
             self.status = "All economy fields must contain valid numbers".to_string();
-            return;
+            return false;
         }
 
         let values: Vec<f64> = parsed.into_iter().map(Result::unwrap).collect();
@@ -3487,12 +6342,17 @@ Bridge TFM2 target: v{}",
                 Ok(()) => {
                     self.connected = true;
                     self.status = "Economy updated".to_string();
+                    true
                 }
-                Err(error) => self.status = human_error(&error),
+                Err(error) => {
+                    self.status = human_error(&error);
+                    false
+                }
             },
             Err(error) => {
                 self.connected = false;
                 self.status = error;
+                false
             }
         }
     }
@@ -3600,23 +6460,143 @@ Bridge TFM2 target: v{}",
     }
 
     #[cfg(feature = "dev")]
+    fn reset_dev_open_team_workspace_selection_state(&mut self) {
+        self.team_fan_momentum_probe_raw.clear();
+        self.team_fan_momentum_probe_window_open = false;
+        self.team_data_probe_window_open = false;
+        self.team_data_probe_team_id = None;
+        self.team_data_probe_raw.clear();
+        self.team_scouting_evidence_window_open = false;
+        self.team_performance_context_window_open = false;
+        self.team_own_strategy_probe_window_open = false;
+        self.team_own_strategy_filter_match_id.clear();
+        self.team_own_strategy_filter_set.clear();
+        self.team_own_strategy_filter_replay_id.clear();
+        self.team_own_strategy_filter_match_type = TeamTacticsHistoryMatchTypeFilter::All;
+        self.team_own_strategy_filter_opponent.clear();
+        self.team_own_strategy_selected_replay_id = None;
+    }
+
+    #[cfg(not(feature = "dev"))]
+    fn reset_dev_open_team_workspace_selection_state(&mut self) {}
+
+    #[cfg(feature = "dev")]
+    fn reset_dev_team_tab_selection_state(&mut self) {
+        self.team_fan_momentum_probe_raw.clear();
+        self.team_fan_momentum_probe_window_open = false;
+        self.team_data_probe_window_open = false;
+        self.team_data_probe_team_id = None;
+        self.team_data_probe_raw.clear();
+    }
+
+    #[cfg(not(feature = "dev"))]
+    fn reset_dev_team_tab_selection_state(&mut self) {}
+
+    #[cfg(feature = "dev")]
+    fn close_dev_champion_setup_window(&mut self) {
+        self.team_champion_setup_window_open = false;
+    }
+
+    #[cfg(not(feature = "dev"))]
+    fn close_dev_champion_setup_window(&mut self) {}
+
+    #[cfg(feature = "dev")]
+    fn open_dev_own_strategy_probe_if_requested(&mut self, open_probe: bool) {
+        if open_probe {
+            self.team_own_strategy_probe_window_open = true;
+        }
+    }
+
+    #[cfg(not(feature = "dev"))]
+    fn open_dev_own_strategy_probe_if_requested(&mut self, _: bool) {}
+
+    #[cfg(feature = "dev")]
+    fn reset_dev_fan_momentum_probe_state(&mut self) {
+        self.team_fan_momentum_probe_raw.clear();
+        self.team_fan_momentum_probe_window_open = false;
+    }
+
+    #[cfg(not(feature = "dev"))]
+    fn reset_dev_fan_momentum_probe_state(&mut self) {}
+
+    #[cfg(feature = "dev")]
+    fn render_dev_fan_momentum_probe_button(
+        &self,
+        ui: &mut egui::Ui,
+        with_hover: bool,
+    ) -> bool {
+        let response = ui.add_enabled(
+            self.connected,
+            egui::Button::new("Probe Fan Momentum"),
+        );
+        let response = if with_hover {
+            response.on_hover_text(
+                "Development probe for the raw Fan Momentum representation and observed Team values.",
+            )
+        } else {
+            response
+        };
+        response.clicked()
+    }
+
+    #[cfg(not(feature = "dev"))]
+    fn render_dev_fan_momentum_probe_button(
+        &self,
+        _: &mut egui::Ui,
+        _: bool,
+    ) -> bool {
+        false
+    }
+
+    #[cfg(feature = "dev")]
+    fn handle_dev_fan_momentum_probe_request(&mut self, requested: bool) {
+        if requested {
+            self.refresh_team_fan_momentum_probe();
+        }
+    }
+
+    #[cfg(not(feature = "dev"))]
+    fn handle_dev_fan_momentum_probe_request(&mut self, _: bool) {}
+
     fn open_team_workspace(&mut self, team_id: usize) {
         if self.teams.iter().any(|team| team.id == team_id) {
             let selection_changed = self.team_workspace_team_id != Some(team_id);
             if selection_changed {
                 self.team_roster_selected_player_id = None;
                 self.team_staff_selected_staff_id = None;
+                self.team_roster_selected_player_ids.clear();
+                self.team_staff_selected_staff_ids.clear();
+                self.team_roster_contract_extension_status.clear();
+                self.team_staff_contract_extension_status.clear();
+                self.team_contract_extension_confirmation = None;
+                self.team_merchandise_edit_team_id = None;
+                self.team_merchandise_edit_entries.clear();
+                self.team_merchandise_edit_status.clear();
+                self.team_fans_edit_team_id = None;
+                self.team_fans_edit_status.clear();
+                self.reset_dev_open_team_workspace_selection_state();
                 self.team_condition_window_open = false;
                 self.team_condition_entries.clear();
                 self.team_condition_team_id = None;
                 self.team_condition_selected_player_ids.clear();
-                self.team_data_probe_window_open = false;
-                self.team_data_probe_team_id = None;
-                self.team_data_probe_raw.clear();
                 self.team_management_data = None;
                 self.team_management_last_request_team_id = None;
+                self.team_strategy_edit_team_id = None;
+                self.team_strategy_edit_values.clear();
+                self.team_strategy_split_player_ids = [None, None];
+                self.team_strategy_edit_status.clear();
                 self.team_history_data = None;
                 self.team_history_last_request_team_id = None;
+                self.team_tactics_analysis_cache = None;
+                self.team_tactics_selected_area = None;
+                self.team_synergy_explorer_window_open = false;
+                self.team_synergy_explorer_depth = 2;
+                self.team_synergy_explorer_search.clear();
+                self.team_synergy_explorer_supported_only = true;
+                self.team_synergy_explorer_selected_key = None;
+                self.team_own_strategy_probe_team_id = None;
+                self.team_own_strategy_probe_rows.clear();
+                self.team_own_strategy_probe_status.clear();
             }
             self.team_workspace_team_id = Some(team_id);
             self.active_tab = AppTab::Team;
@@ -3631,7 +6611,6 @@ Bridge TFM2 target: v{}",
         }
     }
 
-    #[cfg(feature = "dev")]
     fn refresh_team_management_data(&mut self) {
         let Some(team) = self
             .team_workspace_team_id
@@ -3659,7 +6638,754 @@ Bridge TFM2 target: v{}",
         }
     }
 
+    fn extend_team_player_contracts(&mut self, player_ids: Vec<usize>, years_raw: String) {
+        let years = match parse_contract_extension_years(&years_raw) {
+            Ok(years) => years,
+            Err(error) => {
+                self.team_roster_contract_extension_status = error.clone();
+                self.status = error;
+                return;
+            }
+        };
+
+        let mut extended = 0usize;
+        let mut skipped = 0usize;
+        let mut failed = Vec::new();
+        for player_id in player_ids {
+            let Some(player) = self
+                .players
+                .iter()
+                .find(|player| player.id == player_id)
+                .cloned()
+            else {
+                failed.push(format!("Player {player_id}: not found"));
+                continue;
+            };
+            if player.contract_end.trim().is_empty() {
+                skipped += 1;
+                continue;
+            }
+            let new_end = match extend_contract_end_date(&player.contract_end, years) {
+                Ok(value) => value,
+                Err(error) => {
+                    failed.push(format!("{}: {error}", player.name));
+                    continue;
+                }
+            };
+            let command = format!("SET_PLAYER_CONTRACT_END|{}|{}", player.id, new_end);
+            match self
+                .game_request(&command)
+                .and_then(|response| parse_player_response(&response))
+            {
+                Ok(snapshot) if display_contract_date(&snapshot.contract_end_date) == new_end => {
+                    extended += 1;
+                }
+                Ok(_) => failed.push(format!("{}: contract end did not verify", player.name)),
+                Err(error) if error == "PLAYER_FREE_AGENT" || error.contains("free agent") => {
+                    skipped += 1;
+                }
+                Err(error) => failed.push(format!("{}: {}", player.name, human_error(&error))),
+            }
+        }
+
+        self.refresh_players();
+        let mut status = format!("{extended} contracts extended");
+        if skipped > 0 {
+            status.push_str(&format!(" · {skipped} skipped (no active contract)"));
+        }
+        if !failed.is_empty() {
+            status.push_str(&format!(" · {} failed", failed.len()));
+            status.push_str(&format!(" — {}", failed.join("; ")));
+        }
+        self.team_roster_contract_extension_status = status.clone();
+        self.status = status;
+    }
+
+    fn extend_team_staff_contracts(&mut self, staff_ids: Vec<usize>, years_raw: String) {
+        let years = match parse_contract_extension_years(&years_raw) {
+            Ok(years) => years,
+            Err(error) => {
+                self.team_staff_contract_extension_status = error.clone();
+                self.status = error;
+                return;
+            }
+        };
+
+        let mut extended = 0usize;
+        let mut skipped = 0usize;
+        let mut failed = Vec::new();
+        for staff_id in staff_ids {
+            let Some(staff) = self
+                .staffs
+                .iter()
+                .find(|staff| staff.id == staff_id)
+                .cloned()
+            else {
+                failed.push(format!("Staff {staff_id}: not found"));
+                continue;
+            };
+            if staff.contract_end.trim().is_empty() {
+                skipped += 1;
+                continue;
+            }
+            let new_end = match extend_contract_end_date(&staff.contract_end, years) {
+                Ok(value) => value,
+                Err(error) => {
+                    failed.push(format!("{}: {error}", staff.name));
+                    continue;
+                }
+            };
+            let command = format!("SET_STAFF_CONTRACT_END|{}|{}", staff.id, new_end);
+            match self
+                .game_request(&command)
+                .and_then(|response| parse_staff_response(&response))
+            {
+                Ok(snapshot) if display_contract_date(&snapshot.contract_end_date) == new_end => {
+                    extended += 1;
+                }
+                Ok(_) => failed.push(format!("{}: contract end did not verify", staff.name)),
+                Err(error) if error == "STAFF_FREE_AGENT" || error.contains("free agent") => {
+                    skipped += 1;
+                }
+                Err(error) => failed.push(format!("{}: {}", staff.name, human_error(&error))),
+            }
+        }
+
+        self.refresh_staff();
+        let mut status = format!("{extended} contracts extended");
+        if skipped > 0 {
+            status.push_str(&format!(" · {skipped} skipped (no active contract)"));
+        }
+        if !failed.is_empty() {
+            status.push_str(&format!(" · {} failed", failed.len()));
+            status.push_str(&format!(" — {}", failed.join("; ")));
+        }
+        self.team_staff_contract_extension_status = status.clone();
+        self.status = status;
+    }
+
+    fn apply_team_merchandise_edit(&mut self, row_index: usize) {
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.team_merchandise_edit_status = "Select a Team first.".to_string();
+            return;
+        };
+        if !team.is_player_team {
+            self.team_merchandise_edit_status = "AI Team Merchandise is read-only.".to_string();
+            return;
+        }
+        let Some(entry) = self.team_merchandise_edit_entries.get(row_index).cloned() else {
+            self.team_merchandise_edit_status =
+                "Merchandise row is no longer available.".to_string();
+            return;
+        };
+        if entry.stock.trim().parse::<u128>().is_err() {
+            self.team_merchandise_edit_status =
+                "Stock must be a non-negative whole number.".to_string();
+            return;
+        }
+        let Ok(sell_price) = parse_display_to_internal(&entry.sell_price) else {
+            self.team_merchandise_edit_status =
+                "Sell Price must use a valid Editor currency value.".to_string();
+            return;
+        };
+        if !sell_price.is_finite() || sell_price < 0.0 {
+            self.team_merchandise_edit_status =
+                "Sell Price must be a non-negative finite value.".to_string();
+            return;
+        }
+
+        let mut write_entry = entry.clone();
+        write_entry.sell_price = format_internal_for_command(sell_price);
+        let command = team_merchandise_write_command(team.id, &write_entry);
+        match self
+            .game_request(&command)
+            .and_then(|response| parse_simple_bridge_ok(&response, "OK|TEAM_MERCHANDISE"))
+        {
+            Ok(()) => {
+                self.refresh_team_management_data();
+                if let Some(data) = self
+                    .team_management_data
+                    .as_ref()
+                    .filter(|data| data.team_id == team.id)
+                {
+                    self.team_merchandise_edit_entries =
+                        team_merchandise_edit_rows(&data.merchandise);
+                    self.team_merchandise_edit_team_id = Some(team.id);
+                }
+                self.team_merchandise_edit_status = format!(
+                    "Updated Stock/Sell Price for {} · Player ID {}.",
+                    entry.product_type, entry.athlete_id
+                );
+                self.status = self.team_merchandise_edit_status.clone();
+            }
+            Err(error) => {
+                self.team_merchandise_edit_status = error.clone();
+                self.status = error;
+            }
+        }
+    }
+
+    fn sync_team_fans_edit_from_loaded_team(&mut self, team_id: usize) -> bool {
+        let Some(team) = self.teams.iter().find(|team| team.id == team_id) else {
+            return false;
+        };
+        sync_team_fan_edit_values(
+            team,
+            &mut self.team_fans_popularity,
+            &mut self.team_fans_count,
+            &mut self.team_fans_expectation,
+            &mut self.team_fans_satisfaction,
+            &mut self.team_fans_momentum,
+        );
+        self.team_fans_edit_team_id = Some(team_id);
+        true
+    }
+
+    fn apply_team_fans_edit(&mut self) {
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.team_fans_edit_status = "Select a Team first.".to_string();
+            return;
+        };
+        if !team.is_player_team {
+            self.team_fans_edit_status = "AI Team Fans are read-only.".to_string();
+            return;
+        }
+        let popularity = match parse_observed_team_popularity(&self.team_fans_popularity) {
+            Ok(value) => value,
+            Err(error) => {
+                self.team_fans_edit_status = error;
+                return;
+            }
+        };
+        self.team_fans_popularity = popularity.to_string();
+        if self.team_fans_count.trim().parse::<u128>().is_err() {
+            self.team_fans_edit_status =
+                "Fan Count must be a non-negative whole number.".to_string();
+            return;
+        }
+        if self.team_fans_expectation.trim().is_empty() {
+            self.team_fans_edit_status = "Fan Expectation cannot be empty.".to_string();
+            return;
+        }
+        if self.team_fans_satisfaction.trim().is_empty() {
+            self.team_fans_edit_status = "Fan Satisfaction cannot be empty.".to_string();
+            return;
+        }
+        let fan_momentum = match parse_team_fan_momentum(&self.team_fans_momentum) {
+            Ok(value) => value,
+            Err(error) => {
+                self.team_fans_edit_status = error;
+                return;
+            }
+        };
+        self.team_fans_momentum = fan_momentum.to_string();
+
+        let command = team_fans_write_command(
+            team.id,
+            &self.team_fans_popularity,
+            &self.team_fans_count,
+            &self.team_fans_expectation,
+            &self.team_fans_satisfaction,
+            &self.team_fans_momentum,
+        );
+        match self
+            .game_request(&command)
+            .and_then(|response| parse_simple_bridge_ok(&response, "OK|TEAM_FANS"))
+        {
+            Ok(()) => {
+                self.refresh_teams();
+                self.sync_team_fans_edit_from_loaded_team(team.id);
+                self.team_fans_edit_status =
+                    "Updated Popularity Level, displayed Fan Count, Fan Expectation, Fan Satisfaction, and Fan Momentum.".to_string();
+                self.status = self.team_fans_edit_status.clone();
+            }
+            Err(error) => {
+                self.team_fans_edit_status = error.clone();
+                self.status = error;
+            }
+        }
+    }
+
     #[cfg(feature = "dev")]
+    fn refresh_team_fan_momentum_probe(&mut self) {
+        let Some(team_id) = self.team_workspace_team_id else {
+            self.team_fan_momentum_probe_raw = "Select a Team first.".to_string();
+            return;
+        };
+        let command = team_fan_momentum_probe_command(team_id);
+        match self
+            .game_request(&command)
+            .and_then(|response| parse_team_fan_momentum_probe_response(&response))
+        {
+            Ok(raw) => {
+                self.team_fan_momentum_probe_raw = raw;
+                self.team_fan_momentum_probe_window_open = true;
+                self.status = "Fan Momentum probe refreshed. Player-Team editing uses the validated -5 to 5 range.".to_string();
+            }
+            Err(error) => {
+                self.team_fan_momentum_probe_raw = error.clone();
+                self.team_fan_momentum_probe_window_open = true;
+                self.status = error;
+            }
+        }
+    }
+
+    fn refresh_team_strategy_options(&mut self) {
+        self.team_strategy_options_attempted = true;
+        match self
+            .game_request("GET_TEAM_STRATEGY_OPTIONS")
+            .and_then(|response| parse_team_strategy_options_response(&response))
+        {
+            Ok(options) => {
+                self.team_strategy_options = options;
+                self.team_strategy_edit_status =
+                    "Strategy choices loaded from the active career.".to_string();
+            }
+            Err(error) => {
+                self.team_strategy_options.clear();
+                self.team_strategy_edit_status = human_error(&error);
+            }
+        }
+    }
+
+    fn apply_team_strategy_editor_values(&mut self) {
+        let Some((team, _)) = self.current_team_management_context() else {
+            self.team_strategy_edit_status = "Select a team first.".to_string();
+            return;
+        };
+        if !team.is_player_team {
+            self.team_strategy_edit_status = "AI teams are read-only.".to_string();
+            return;
+        }
+        if self.team_strategy_edit_team_id != Some(team.id) {
+            self.team_strategy_edit_status =
+                "Reload Current Strategy before applying changes.".to_string();
+            return;
+        }
+        if !TEAM_STRATEGY_KEYS.iter().all(|key| {
+            self.team_strategy_edit_values
+                .iter()
+                .any(|entry| entry.key == *key && !entry.value.trim().is_empty())
+        }) {
+            self.team_strategy_edit_status = "Strategy editor is missing a value.".to_string();
+            return;
+        }
+
+        let raw = self
+            .team_strategy_edit_values
+            .iter()
+            .map(|entry| format!("{}\t{}", entry.key, entry.value))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let command = format!("SET_TEAM_STRATEGY|{}|{}", team.id, hex_encode(&raw));
+        match self
+            .game_request(&command)
+            .and_then(|response| parse_team_management_response(&response))
+        {
+            Ok(data_after) => {
+                if !team_strategy_entries_equal(
+                    &data_after.current_strategy,
+                    &self.team_strategy_edit_values,
+                ) {
+                    self.team_strategy_edit_status =
+                        "Strategy Apply returned data that did not match the editor values."
+                            .to_string();
+                    self.team_management_data = Some(data_after);
+                    self.team_management_last_request_team_id = Some(team.id);
+                    return;
+                }
+                self.team_strategy_edit_values = data_after.current_strategy.clone();
+                self.team_strategy_edit_team_id = Some(team.id);
+                self.team_strategy_split_player_ids = [None, None];
+                self.team_management_data = Some(data_after);
+                self.team_management_last_request_team_id = Some(team.id);
+                self.team_strategy_edit_status =
+                    "Applied Current Strategy to the player-controlled Team.".to_string();
+            }
+            Err(error) => self.team_strategy_edit_status = human_error(&error),
+        }
+    }
+
+    fn team_strategy_library_dir() -> Result<PathBuf, String> {
+        let exe = std::env::current_exe()
+            .map_err(|error| format!("Could not resolve executable path: {error}"))?;
+        let parent = exe
+            .parent()
+            .ok_or_else(|| "Could not resolve executable folder".to_string())?;
+        Ok(parent.join("teamstrategy"))
+    }
+
+    fn sanitize_team_strategy_preset_name(name: &str) -> String {
+        let cleaned = name
+            .trim()
+            .chars()
+            .map(|ch| {
+                if ch.is_control() || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
+                    '_'
+                } else {
+                    ch
+                }
+            })
+            .collect::<String>()
+            .trim_matches([' ', '.'])
+            .to_string();
+
+        if cleaned.is_empty() {
+            "Strategy Preset".to_string()
+        } else {
+            cleaned
+        }
+    }
+
+    fn team_strategy_preset_path(name: &str) -> Result<PathBuf, String> {
+        Ok(Self::team_strategy_library_dir()?.join(format!(
+            "{}.tfm2strategy",
+            Self::sanitize_team_strategy_preset_name(name)
+        )))
+    }
+
+    fn reload_team_strategy_presets(&mut self) {
+        let Ok(dir) = Self::team_strategy_library_dir() else {
+            return;
+        };
+        if let Err(error) = fs::create_dir_all(&dir) {
+            self.team_strategy_preset_status =
+                format!("Could not create teamstrategy folder: {error}");
+            return;
+        }
+
+        let Ok(entries) = fs::read_dir(&dir) else {
+            return;
+        };
+        let mut presets = Vec::new();
+        let mut invalid_count = 0usize;
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            let is_preset = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("tfm2strategy"));
+            if !is_preset {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&path) else {
+                invalid_count += 1;
+                continue;
+            };
+            let Ok(mut preset) = serde_json::from_str::<TeamStrategyPreset>(&text) else {
+                invalid_count += 1;
+                continue;
+            };
+            if !preset.is_supported() {
+                invalid_count += 1;
+                continue;
+            }
+            preset.name = Self::sanitize_team_strategy_preset_name(&preset.name);
+            presets.push(preset);
+        }
+        presets.sort_by_key(|preset| preset.name.to_lowercase());
+        presets.dedup_by(|left, right| left.name.eq_ignore_ascii_case(&right.name));
+        self.team_strategy_presets = presets;
+
+        if let Some(selected) = self.team_strategy_selected_preset.as_ref() {
+            if !self
+                .team_strategy_presets
+                .iter()
+                .any(|preset| preset.name.eq_ignore_ascii_case(selected))
+            {
+                self.team_strategy_selected_preset = None;
+                self.team_strategy_preset_name.clear();
+            }
+        }
+
+        if invalid_count > 0 {
+            self.team_strategy_preset_status =
+                format!("Ignored {invalid_count} invalid strategy preset file(s).");
+        }
+    }
+
+    fn write_team_strategy_preset(
+        &mut self,
+        preset: &TeamStrategyPreset,
+        overwrite: bool,
+    ) -> Result<(), String> {
+        let path = Self::team_strategy_preset_path(&preset.name)?;
+        if path.exists() && !overwrite {
+            return Err(format!(
+                "Strategy preset '{}' already exists. Select it and use Edit.",
+                preset.name
+            ));
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("Could not create teamstrategy folder: {error}"))?;
+        }
+        let text = serde_json::to_string_pretty(preset)
+            .map_err(|error| format!("Could not serialize strategy preset: {error}"))?;
+        fs::write(&path, text)
+            .map_err(|error| format!("Could not save strategy preset: {error}"))?;
+        Ok(())
+    }
+
+    fn save_current_team_strategy_preset(&mut self) {
+        let Some((team, data)) = self.current_team_management_context() else {
+            self.team_strategy_preset_status = "Select a team first.".to_string();
+            return;
+        };
+        if !team.is_player_team {
+            self.team_strategy_preset_status =
+                "AI teams are read-only. Strategy Presets are player-team only.".to_string();
+            return;
+        }
+        let name = Self::sanitize_team_strategy_preset_name(&self.team_strategy_preset_name);
+        let preset = TeamStrategyPreset::new(name.clone(), data.current_strategy);
+        match self.write_team_strategy_preset(&preset, false) {
+            Ok(()) => {
+                self.team_strategy_selected_preset = Some(name.clone());
+                self.team_strategy_preset_name = name.clone();
+                self.reload_team_strategy_presets();
+                self.team_strategy_preset_status = format!("Saved strategy preset: {name}");
+            }
+            Err(error) => self.team_strategy_preset_status = error,
+        }
+    }
+
+    fn edit_selected_team_strategy_preset(&mut self) {
+        let Some((team, data)) = self.current_team_management_context() else {
+            self.team_strategy_preset_status = "Select a team first.".to_string();
+            return;
+        };
+        if !team.is_player_team {
+            self.team_strategy_preset_status =
+                "AI teams are read-only. Strategy Presets are player-team only.".to_string();
+            return;
+        }
+        let Some(old_name) = self.team_strategy_selected_preset.clone() else {
+            self.team_strategy_preset_status = "Select a strategy preset to edit.".to_string();
+            return;
+        };
+
+        let new_name = Self::sanitize_team_strategy_preset_name(&self.team_strategy_preset_name);
+        let preset = TeamStrategyPreset::new(new_name.clone(), data.current_strategy);
+        if !old_name.eq_ignore_ascii_case(&new_name) {
+            if let Ok(new_path) = Self::team_strategy_preset_path(&new_name) {
+                if new_path.exists() {
+                    self.team_strategy_preset_status =
+                        format!("Strategy preset '{new_name}' already exists.");
+                    return;
+                }
+            }
+        }
+
+        match self.write_team_strategy_preset(&preset, true) {
+            Ok(()) => {
+                if !old_name.eq_ignore_ascii_case(&new_name) {
+                    if let Ok(old_path) = Self::team_strategy_preset_path(&old_name) {
+                        let _ = fs::remove_file(old_path);
+                    }
+                }
+                self.team_strategy_selected_preset = Some(new_name.clone());
+                self.team_strategy_preset_name = new_name.clone();
+                self.reload_team_strategy_presets();
+                self.team_strategy_preset_status = format!(
+                    "Updated strategy preset from current player-team strategy: {new_name}"
+                );
+            }
+            Err(error) => self.team_strategy_preset_status = error,
+        }
+    }
+
+    fn delete_selected_team_strategy_preset(&mut self) {
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.team_strategy_preset_status = "Select a team first.".to_string();
+            return;
+        };
+        if !team.is_player_team {
+            self.team_strategy_preset_status =
+                "AI teams are read-only. Strategy Presets are player-team only.".to_string();
+            return;
+        }
+        let Some(name) = self.team_strategy_selected_preset.clone() else {
+            self.team_strategy_preset_status = "Select a strategy preset to delete.".to_string();
+            return;
+        };
+        match Self::team_strategy_preset_path(&name) {
+            Ok(path) => match fs::remove_file(path) {
+                Ok(()) => {
+                    self.team_strategy_selected_preset = None;
+                    self.team_strategy_preset_name.clear();
+                    self.reload_team_strategy_presets();
+                    self.team_strategy_preset_status = format!("Deleted strategy preset: {name}");
+                }
+                Err(error) => {
+                    self.team_strategy_preset_status =
+                        format!("Could not delete strategy preset: {error}");
+                }
+            },
+            Err(error) => self.team_strategy_preset_status = error,
+        }
+    }
+
+    fn apply_selected_team_strategy_preset(&mut self) {
+        let Some((team, _)) = self.current_team_management_context() else {
+            self.team_strategy_preset_status = "Select a team first.".to_string();
+            return;
+        };
+        if !team.is_player_team {
+            self.team_strategy_preset_status =
+                "AI teams are read-only. Strategy Presets cannot be applied.".to_string();
+            return;
+        }
+        let Some(selected) = self.team_strategy_selected_preset.clone() else {
+            self.team_strategy_preset_status = "Select a strategy preset to apply.".to_string();
+            return;
+        };
+        let Some(preset) = self
+            .team_strategy_presets
+            .iter()
+            .find(|preset| preset.name.eq_ignore_ascii_case(&selected))
+            .cloned()
+        else {
+            self.team_strategy_preset_status = "Selected strategy preset was not found.".to_string();
+            return;
+        };
+
+        let raw = preset
+            .strategy
+            .iter()
+            .map(|entry| format!("{}\t{}", entry.key, entry.value))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let command = format!("SET_TEAM_STRATEGY|{}|{}", team.id, hex_encode(&raw));
+        match self
+            .game_request(&command)
+            .and_then(|response| parse_team_management_response(&response))
+        {
+            Ok(data_after) => {
+                if !team_strategy_entries_equal(&data_after.current_strategy, &preset.strategy) {
+                    self.team_strategy_preset_status =
+                        "Strategy Apply returned data that did not match the preset.".to_string();
+                    self.team_management_data = Some(data_after);
+                    self.team_management_last_request_team_id = Some(team.id);
+                    return;
+                }
+                self.team_strategy_edit_values = data_after.current_strategy.clone();
+                self.team_strategy_edit_team_id = Some(team.id);
+                self.team_strategy_split_player_ids = [None, None];
+                self.team_management_data = Some(data_after);
+                self.team_management_last_request_team_id = Some(team.id);
+                self.team_strategy_preset_status =
+                    format!("Applied strategy preset to player team: {}", preset.name);
+            }
+            Err(error) => self.team_strategy_preset_status = human_error(&error),
+        }
+    }
+
+    fn run_team_strategy_safe_write_probe(&mut self) {
+        let Some((team, data_before)) = self.current_team_management_context() else {
+            self.team_strategy_probe_status =
+                self.localization.tr("team_strategy.probe_select_team");
+            return;
+        };
+
+        let restoring = if let Some(backup) = self.team_strategy_probe_backup.as_ref() {
+            if backup.team_id != team.id {
+                let team_id_text = backup.team_id.to_string();
+                self.team_strategy_probe_status = self.localization.tr_with(
+                    "team_strategy.probe_restore_other_team",
+                    &[("team_id", team_id_text.as_str())],
+                );
+                return;
+            }
+
+            if team_strategy_probe_is_restored(&data_before, backup) {
+                self.team_strategy_probe_backup = None;
+                self.team_strategy_probe_status =
+                    self.localization.tr("team_strategy.probe_already_restored");
+                return;
+            }
+
+            if !team_strategy_probe_is_swapped(&data_before, backup) {
+                self.team_strategy_probe_status =
+                    self.localization.tr("team_strategy.probe_verify_failed");
+                return;
+            }
+            true
+        } else {
+            if team_strategy_entries_equal(
+                &data_before.current_strategy,
+                &data_before.last_strategy,
+            ) {
+                self.team_strategy_probe_status =
+                    self.localization.tr("team_strategy.probe_identical");
+                return;
+            }
+
+            self.team_strategy_probe_backup = Some(TeamStrategyProbeBackup {
+                team_id: team.id,
+                current_strategy: data_before.current_strategy.clone(),
+                last_strategy: data_before.last_strategy.clone(),
+            });
+            false
+        };
+
+        let command = format!("PROBE_SWAP_TEAM_STRATEGY|{}", team.id);
+        match self
+            .game_request(&command)
+            .and_then(|response| parse_team_management_response(&response))
+        {
+            Ok(data_after) => {
+                let Some(backup) = self.team_strategy_probe_backup.as_ref() else {
+                    self.team_strategy_probe_status =
+                        self.localization.tr("team_strategy.probe_verify_failed");
+                    return;
+                };
+
+                let verified = if restoring {
+                    team_strategy_probe_is_restored(&data_after, backup)
+                } else {
+                    team_strategy_probe_is_swapped(&data_after, backup)
+                };
+
+                self.team_management_data = Some(data_after);
+                self.team_management_last_request_team_id = Some(team.id);
+
+                if !verified {
+                    self.team_strategy_probe_status =
+                        self.localization.tr("team_strategy.probe_verify_failed");
+                    return;
+                }
+
+                if restoring {
+                    self.team_strategy_probe_backup = None;
+                    self.team_strategy_probe_status =
+                        self.localization.tr("team_strategy.probe_restored");
+                } else {
+                    self.team_strategy_probe_status =
+                        self.localization.tr("team_strategy.probe_swapped");
+                }
+            }
+            Err(error) => {
+                if !restoring {
+                    self.team_strategy_probe_backup = None;
+                }
+                self.team_strategy_probe_status = human_error(&error);
+            }
+        }
+    }
+
     fn refresh_team_history_data(&mut self) {
         let Some(team) = self
             .team_workspace_team_id
@@ -3670,25 +7396,193 @@ Bridge TFM2 target: v{}",
             return;
         };
 
+        self.team_tactics_analysis_cache = None;
         self.team_history_last_request_team_id = Some(team.id);
         let command = format!("GET_TEAM_PROBE|{}", team.id);
-        match self.game_request(&command).and_then(|response| {
+        let team_history_result = self.game_request(&command).and_then(|response| {
             let parts = response.split('|').collect::<Vec<_>>();
             if parts.len() != 3 || parts[0] != "OK" || parts[1] != "TEAM_PROBE" {
                 return Err(response);
             }
             let raw = hex_decode(parts[2])?;
             parse_team_history_probe(&raw, team.id, &self.teams, &self.players)
-        }) {
-            Ok(data) => {
+        });
+
+        match team_history_result {
+            Ok(mut data) => {
+                let global_command = format!("GET_TEAM_HISTORY|{}", team.id);
+                match Self::global_history_request(&global_command).and_then(|response| {
+                    parse_global_team_history_response(&response, team.id, &self.teams)
+                }) {
+                    Ok(global_matches) => {
+                        let global_count = global_matches.len();
+                        let enriched_count = data.matches.len();
+                        let added_count = merge_global_match_history(&mut data, global_matches);
+                        self.status = if cfg!(feature = "dev") {
+                            format!(
+                                "Team match history loaded: {} · global {} · enriched {} · added {}",
+                                team.display_name, global_count, enriched_count, added_count
+                            )
+                        } else {
+                            format!(
+                                "Team match history loaded: {} · {} matches",
+                                team.display_name,
+                                data.matches.len()
+                            )
+                        };
+                    }
+                    Err(error) => {
+                        self.status = if cfg!(feature = "dev") {
+                            format!(
+                                "Team match history loaded: {} · global history unavailable ({})",
+                                team.display_name,
+                                human_error(&error)
+                            )
+                        } else {
+                            format!(
+                                "Team match history loaded: {} · additional match history unavailable ({})",
+                                team.display_name,
+                                human_error(&error)
+                            )
+                        };
+                    }
+                }
                 self.team_history_data = Some(data);
-                self.status = format!("Team match history loaded: {}", team.display_name);
             }
             Err(error) => {
                 self.team_history_data = None;
                 self.status = human_error(&error);
             }
         }
+    }
+
+    #[cfg(feature = "dev")]
+    fn refresh_team_own_strategy_history_probe(&mut self) {
+        self.refresh_team_own_strategy_history_evidence(true);
+    }
+
+    fn refresh_team_own_strategy_history_evidence(&mut self, open_probe: bool) {
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.team_own_strategy_probe_status = "Select a team first.".to_string();
+            return;
+        };
+        if !team.is_player_team {
+            self.team_own_strategy_probe_status =
+                "Own Strategy history research is player-team only.".to_string();
+            self.team_own_strategy_probe_rows.clear();
+            self.team_own_strategy_probe_team_id = None;
+            return;
+        }
+
+        self.team_tactics_analysis_cache = None;
+
+        if self.team_history_last_request_team_id != Some(team.id)
+            || self.team_history_data.as_ref().is_none_or(|data| data.team_id != team.id)
+        {
+            self.refresh_team_history_data();
+        }
+        if self.team_management_last_request_team_id != Some(team.id)
+            || self.team_management_data.as_ref().is_none_or(|data| data.team_id != team.id)
+        {
+            self.refresh_team_management_data();
+        }
+        if self.team_competition_last_request_team_id != Some(team.id) {
+            self.refresh_team_competition_data();
+        }
+
+        let Some(history) = self
+            .team_history_data
+            .as_ref()
+            .filter(|data| data.team_id == team.id)
+            .cloned()
+        else {
+            self.team_own_strategy_probe_status =
+                "Team history is unavailable; replay Match IDs cannot be correlated.".to_string();
+            self.team_own_strategy_probe_rows.clear();
+            self.team_own_strategy_probe_team_id = Some(team.id);
+            self.open_dev_own_strategy_probe_if_requested(open_probe);
+            return;
+        };
+
+        let replay_ids = history
+            .matches
+            .iter()
+            .flat_map(|entry| entry.replay_ids.iter().copied())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if replay_ids.is_empty() {
+            self.team_own_strategy_probe_status =
+                "No replay IDs were exposed by the completed MatchInfo records.".to_string();
+            self.team_own_strategy_probe_rows.clear();
+            self.team_own_strategy_probe_team_id = Some(team.id);
+            self.open_dev_own_strategy_probe_if_requested(open_probe);
+            return;
+        }
+
+        let replay_list = replay_ids
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let command = format!("GET_TEAM_REPLAY_STRATEGIES|{}|{}", team.id, replay_list);
+        let snapshots = match self
+            .game_request(&command)
+            .and_then(|response| parse_team_replay_strategies_response(&response))
+        {
+            Ok(values) => values,
+            Err(error) => {
+                self.team_own_strategy_probe_status = human_error(&error);
+                self.team_own_strategy_probe_rows.clear();
+                self.team_own_strategy_probe_team_id = Some(team.id);
+                self.open_dev_own_strategy_probe_if_requested(open_probe);
+                return;
+            }
+        };
+
+        let mut rows = Vec::new();
+        for match_entry in history.matches.iter().rev() {
+            for (set_index, replay_id) in match_entry.replay_ids.iter().copied().enumerate() {
+                let snapshot = snapshots.get(&replay_id);
+                rows.push(TeamOwnStrategyProbeRow {
+                    match_id: match_entry.match_id,
+                    date: match_entry.date.clone(),
+                    opponent_name: match_entry.opponent_name.clone(),
+                    result: format!(
+                        "{} {}-{}",
+                        if match_entry.is_win { "W" } else { "L" },
+                        match_entry.my_score,
+                        match_entry.enemy_score
+                    ),
+                    is_practice: match_entry.is_practice,
+                    replay_id,
+                    set_number: set_index + 1,
+                    side: snapshot.map(|value| value.side.clone()).unwrap_or_default(),
+                    status: snapshot
+                        .map(|value| value.status.clone())
+                        .unwrap_or_else(|| "NO_BRIDGE_ROW".to_string()),
+                    blue_team_id: snapshot.and_then(|value| value.blue_team_id),
+                    red_team_id: snapshot.and_then(|value| value.red_team_id),
+                    set_is_win: snapshot.and_then(|value| value.set_is_win),
+                    strategy: snapshot
+                        .map(|value| value.strategy.clone())
+                        .unwrap_or_default(),
+                });
+            }
+        }
+
+        let complete = rows.iter().filter(|row| row.status == "OK").count();
+        let requested = rows.len();
+        self.team_own_strategy_probe_rows = rows;
+        self.team_own_strategy_probe_team_id = Some(team.id);
+        self.open_dev_own_strategy_probe_if_requested(open_probe);
+        self.team_own_strategy_probe_status = format!(
+            "Replay Strategy evidence loaded: {complete}/{requested} replay sets available."
+        );
     }
 
     #[cfg(feature = "dev")]
@@ -3722,7 +7616,6 @@ Bridge TFM2 target: v{}",
         }
     }
 
-    #[cfg(feature = "dev")]
     fn refresh_team_condition_probe(&mut self) {
         let Some(team) = self
             .team_workspace_team_id
@@ -3790,7 +7683,6 @@ Bridge TFM2 target: v{}",
         );
     }
 
-    #[cfg(feature = "dev")]
     fn apply_team_condition_changes(&mut self) {
         let changed_indices = self
             .team_condition_entries
@@ -4161,7 +8053,37 @@ Bridge TFM2 target: v{}",
                     self.staff_contract_window_open = false;
                     self.staff_contract_mode = ContractEditorMode::EditActive;
                     self.refresh_staff();
-                    self.status = if editor_mode == ContractEditorMode::MoveFreeAgent {
+
+                    let pending_role = if editor_mode == ContractEditorMode::MoveFreeAgent {
+                        self.team_move_staff_pending_contract_role.take()
+                    } else {
+                        None
+                    };
+                    let role_result = pending_role.as_deref().map(|role| {
+                        let role_command =
+                            format!("MOVE_STAFF_TO_TEAM|{staff_id}|{team_id}|{role}");
+                        match self.game_request(&role_command) {
+                            Ok(response) if response == "OK|MOVE_STAFF" => {
+                                self.refresh_staff();
+                                self.refresh_selected_staff();
+                                Ok(localized_staff_role(&self.localization, role))
+                            }
+                            Ok(response) => Err(
+                                response
+                                    .strip_prefix("ERR|")
+                                    .map(human_error)
+                                    .unwrap_or_else(|| {
+                                        format!("Unexpected Bridge response: {response}")
+                                    }),
+                            ),
+                            Err(error) => {
+                                self.connected = false;
+                                Err(error)
+                            }
+                        }
+                    });
+
+                    let base_status = if editor_mode == ContractEditorMode::MoveFreeAgent {
                         let team_name = self
                             .teams
                             .iter()
@@ -4176,6 +8098,13 @@ Bridge TFM2 target: v{}",
                             Some(previous) if previous != team_id => format!("Staff moved and active contract applied: {staff_name}"),
                             Some(_) => format!("Active staff contract updated: {staff_name}"),
                         }
+                    };
+                    self.status = match role_result {
+                        Some(Ok(role_name)) => format!("{base_status} Role: {role_name}."),
+                        Some(Err(error)) => {
+                            format!("{base_status} Role update failed: {error}")
+                        }
+                        None => base_status,
                     };
                 }
                 Err(error) => self.status = human_error(&error),
@@ -4630,62 +8559,32 @@ Bridge TFM2 target: v{}",
             ui.visuals().widgets.noninteractive.bg_stroke
         };
 
-        #[cfg(feature = "dev")]
         let card_name = champion_mastery_card_display_name(&champion.display_name);
 
         let response = egui::Frame::group(ui.style())
             .fill(fill)
             .stroke(stroke)
             .show(ui, |ui| {
-                #[cfg(feature = "dev")]
-                {
-                    ui.set_min_width(CHAMPION_MASTERY_CARD_INNER_WIDTH);
-                    ui.set_max_width(CHAMPION_MASTERY_CARD_INNER_WIDTH);
-                    ui.set_min_height(CHAMPION_MASTERY_CARD_INNER_HEIGHT);
+                ui.set_min_width(CHAMPION_MASTERY_CARD_INNER_WIDTH);
+                ui.set_max_width(CHAMPION_MASTERY_CARD_INNER_WIDTH);
+                ui.set_min_height(CHAMPION_MASTERY_CARD_INNER_HEIGHT);
 
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        ui.checkbox(&mut champion.selected, "");
-                        ui.add_sized(
-                            [
-                                CHAMPION_MASTERY_CARD_NAME_WIDTH,
-                                CHAMPION_MASTERY_CARD_NAME_HEIGHT,
-                            ],
-                            egui::Label::new(egui::RichText::new(&card_name).strong())
-                                .wrap(),
-                        )
-                        .on_hover_text(champion.display_name.clone());
-
-                        let old = champion.edit_mastery;
-                        let changed = ui
-                            .add_sized(
-                                [CHAMPION_MASTERY_CARD_VALUE_WIDTH, 24.0],
-                                egui::DragValue::new(&mut champion.edit_mastery)
-                                    .range(0..=100)
-                                    .speed(1.0)
-                                    .suffix(" / 100"),
-                            )
-                            .changed();
-
-                        if changed && champion.edit_mastery != old {
-                            champion.selected = true;
-                        }
-                    });
-                }
-
-                #[cfg(not(feature = "dev"))]
-                {
-                    // Preserve the validated Community v0.4.1 card geometry and behavior.
-                    ui.set_min_width(125.0);
-                    ui.set_max_width(145.0);
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut champion.selected, "");
-                        ui.label(egui::RichText::new(&champion.display_name).strong());
-                    });
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.checkbox(&mut champion.selected, "");
+                    ui.add_sized(
+                        [
+                            CHAMPION_MASTERY_CARD_NAME_WIDTH,
+                            CHAMPION_MASTERY_CARD_NAME_HEIGHT,
+                        ],
+                        egui::Label::new(egui::RichText::new(&card_name).strong()).wrap(),
+                    )
+                    .on_hover_text(champion.display_name.clone());
 
                     let old = champion.edit_mastery;
                     let changed = ui
-                        .add(
+                        .add_sized(
+                            [CHAMPION_MASTERY_CARD_VALUE_WIDTH, 24.0],
                             egui::DragValue::new(&mut champion.edit_mastery)
                                 .range(0..=100)
                                 .speed(1.0)
@@ -4696,7 +8595,7 @@ Bridge TFM2 target: v{}",
                     if changed && champion.edit_mastery != old {
                         champion.selected = true;
                     }
-                }
+                });
             })
             .response;
 
@@ -4847,18 +8746,13 @@ Bridge TFM2 target: v{}",
         // The scrollbar reserve keeps the final column fully inside the clip rect.
         let local_width = ui.available_width().max(180.0);
 
-        #[cfg(feature = "dev")]
         let cards_per_row = champion_mastery_columns_for_width(local_width);
-
-        #[cfg(not(feature = "dev"))]
-        let cards_per_row = (local_width / 165.0_f32).floor().max(1.0) as usize;
 
         let mastery_scroll = egui::ScrollArea::vertical()
             .id_salt("champion_mastery_grid_scroll")
             .auto_shrink([false, false]);
 
-        #[cfg(feature = "dev")]
-        let mastery_scroll = mastery_scroll.max_height(ui.available_height().max(120.0));
+            let mastery_scroll = mastery_scroll.max_height(ui.available_height().max(120.0));
 
         mastery_scroll.show(ui, |ui| {
                 ui.heading(self.localization.tr("champion_mastery.active_heading"));
@@ -4872,7 +8766,6 @@ Bridge TFM2 target: v{}",
                     .filter_map(|(index, entry)| entry.active.then_some(index))
                     .collect::<Vec<_>>();
 
-                #[cfg(feature = "dev")]
                 egui::Grid::new("champion_mastery_active_fixed_grid")
                     .num_columns(cards_per_row)
                     .spacing([
@@ -4894,17 +8787,6 @@ Bridge TFM2 target: v{}",
                         }
                     });
 
-                #[cfg(not(feature = "dev"))]
-                for row in active_indices.chunks(cards_per_row) {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 10.0;
-                        for &index in row {
-                            let champion = &mut self.champion_mastery_entries[index];
-                            Self::render_champion_mastery_card(ui, champion, true);
-                        }
-                    });
-                    ui.add_space(10.0);
-                }
 
                 ui.add_space(6.0);
                 ui.separator();
@@ -4921,7 +8803,6 @@ Bridge TFM2 target: v{}",
                     .filter_map(|(index, entry)| (!entry.active).then_some(index))
                     .collect::<Vec<_>>();
 
-                #[cfg(feature = "dev")]
                 egui::Grid::new("champion_mastery_inactive_fixed_grid")
                     .num_columns(cards_per_row)
                     .spacing([
@@ -4943,17 +8824,6 @@ Bridge TFM2 target: v{}",
                         }
                     });
 
-                #[cfg(not(feature = "dev"))]
-                for row in inactive_indices.chunks(cards_per_row) {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 10.0;
-                        for &index in row {
-                            let champion = &mut self.champion_mastery_entries[index];
-                            Self::render_champion_mastery_card(ui, champion, false);
-                        }
-                    });
-                    ui.add_space(10.0);
-                }
             });
 
         (refresh_requested, apply_requested)
@@ -4985,8 +8855,7 @@ Bridge TFM2 target: v{}",
             .resizable(true)
             .default_size(egui::vec2(1080.0, 720.0));
 
-        #[cfg(feature = "dev")]
-        let mastery_window = mastery_window.min_width(380.0).min_height(320.0);
+            let mastery_window = mastery_window.min_width(380.0).min_height(320.0);
 
         mastery_window.show(ctx, |ui| {
             let (refresh, apply) = self.render_champion_mastery_contents(ui);
@@ -6497,10 +10366,11 @@ Bridge TFM2 target: v{}",
         ui.add_space(4.0);
 
         if let Some(player) = self.selected_player.as_mut() {
+            // Player Attributes are an editable form, not a zebra-striped data table.
+            // Keep one neutral input/form background like Staff Editor.
             egui::Grid::new("player_stats_grid")
                 .num_columns(4)
                 .spacing([18.0, 7.0])
-                .striped(true)
                 .show(ui, |ui| {
                     stat_edit_cell(
                         ui,
@@ -7246,8 +11116,7 @@ Bridge TFM2 target: v{}",
                 }
             });
 
-            #[cfg(feature = "dev")]
-            {
+                    {
                 ui.add_space(8.0);
                 ui.strong(
                     self.localization
@@ -7340,122 +11209,55 @@ Bridge TFM2 target: v{}",
         if let Some(communication) = self.player_communication.as_ref() {
             let previous_region = self.player_communication_region_id;
 
-            #[cfg(feature = "dev")]
-            {
-                if let Some(primary_region) = communication.primary_region {
-                    ui.horizontal(|ui| {
-                        ui.label(self.localization.tr("player_communication.native_region"));
-                        ui.strong(localized_communication_region_label(
+            // Shared production layout. Region IDs remain hidden in Community through
+            // localized_communication_region_label(); Development keeps its diagnostic IDs.
+            if let Some(primary_region) = communication.primary_region {
+                ui.horizontal(|ui| {
+                    ui.label(self.localization.tr("player_communication.native_region"));
+                    ui.strong(localized_communication_region_label(
+                        &self.localization,
+                        primary_region,
+                    ));
+                });
+            } else {
+                ui.weak(self.localization.tr("player_communication.native_unresolved"));
+            }
+
+            egui::Grid::new("player_communication_editor_grid")
+                .num_columns(2)
+                .spacing([16.0, 6.0])
+                .show(ui, |ui| {
+                    ui.label(self.localization.tr("common.region"));
+                    egui::ComboBox::from_id_salt("player_communication_region_select")
+                        .selected_text(localized_communication_region_label(
                             &self.localization,
-                            primary_region,
-                        ));
-                    });
-                } else {
-                    ui.weak(self.localization.tr("player_communication.native_unresolved"));
-                }
-
-                egui::Grid::new("player_communication_editor_grid")
-                    .num_columns(2)
-                    .spacing([16.0, 6.0])
-                    .show(ui, |ui| {
-                        ui.label(self.localization.tr("common.region"));
-                        egui::ComboBox::from_id_salt("player_communication_region_select")
-                            .selected_text(localized_communication_region_label(
-                                &self.localization,
-                                self.player_communication_region_id,
-                            ))
-                            .width(220.0)
-                            .show_ui(ui, |ui| {
-                                for (region_id, _) in COMMUNICATION_REGIONS {
-                                    if communication.primary_region == Some(region_id) {
-                                        continue;
-                                    }
-                                    ui.selectable_value(
-                                        &mut self.player_communication_region_id,
-                                        region_id,
-                                        localized_communication_region_label(
-                                            &self.localization,
-                                            region_id,
-                                        ),
-                                    );
+                            self.player_communication_region_id,
+                        ))
+                        .width(220.0)
+                        .show_ui(ui, |ui| {
+                            for (region_id, _) in COMMUNICATION_REGIONS {
+                                if communication.primary_region == Some(region_id) {
+                                    continue;
                                 }
-                            });
-                        ui.end_row();
-
-                        ui.label(self.localization.tr("player_communication.actual"));
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.player_communication_value)
-                                .desired_width(90.0),
-                        );
-                        ui.end_row();
-                    });
-            }
-
-            #[cfg(not(feature = "dev"))]
-            {
-                egui::Grid::new("player_communication_editor_grid")
-                    .num_columns(2)
-                    .spacing([16.0, 6.0])
-                    .show(ui, |ui| {
-                        ui.label(self.localization.tr("player_communication.native_region"));
-                        if let Some(primary_region) = communication.primary_region {
-                            ui.strong(localized_communication_region_label(
-                                &self.localization,
-                                primary_region,
-                            ));
-                        } else {
-                            ui.weak(self.localization.tr("player_communication.native_unresolved"));
-                        }
-                        ui.end_row();
-
-                        ui.label(self.localization.tr("common.region"));
-                        egui::ComboBox::from_id_salt("player_communication_region_select")
-                            .selected_text(localized_communication_region_label(
-                                &self.localization,
-                                self.player_communication_region_id,
-                            ))
-                            .width(220.0)
-                            .show_ui(ui, |ui| {
-                                for (region_id, _) in COMMUNICATION_REGIONS {
-                                    if communication.primary_region == Some(region_id) {
-                                        continue;
-                                    }
-                                    ui.selectable_value(
-                                        &mut self.player_communication_region_id,
+                                ui.selectable_value(
+                                    &mut self.player_communication_region_id,
+                                    region_id,
+                                    localized_communication_region_label(
+                                        &self.localization,
                                         region_id,
-                                        localized_communication_region_label(
-                                            &self.localization,
-                                            region_id,
-                                        ),
-                                    );
-                                }
-                            });
-                        ui.end_row();
+                                    ),
+                                );
+                            }
+                        });
+                    ui.end_row();
 
-                        ui.label(self.localization.tr("player_communication.actual"));
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.player_communication_value)
-                                .desired_width(90.0),
-                        );
-                        ui.end_row();
-
-                        ui.label(self.localization.tr("player_communication.pending_xp"))
-                            .on_hover_text(
-                                self.localization
-                                    .tr("player_communication.pending_xp_tooltip"),
-                            );
-                        let pending_xp = communication
-                            .xp_entries
-                            .iter()
-                            .find(|(region_id, _)| {
-                                *region_id == self.player_communication_region_id
-                            })
-                            .map(|(_, value)| *value)
-                            .unwrap_or(0);
-                        ui.weak(format!("{pending_xp} XP"));
-                        ui.end_row();
-                    });
-            }
+                    ui.label(self.localization.tr("player_communication.actual"));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.player_communication_value)
+                            .desired_width(90.0),
+                    );
+                    ui.end_row();
+                });
 
             if self.player_communication_region_id != previous_region {
                 self.player_communication_value = player_communication_value_for_region(
@@ -7464,18 +11266,15 @@ Bridge TFM2 target: v{}",
                 );
             }
 
-            #[cfg(feature = "dev")]
-            {
-                let pending_xp = communication
-                    .xp_entries
-                    .iter()
-                    .find(|(region_id, _)| *region_id == self.player_communication_region_id)
-                    .map(|(_, value)| *value)
-                    .unwrap_or(0);
-                ui.label(format!(
-                    "Pending training XP for selected region: {pending_xp}"
-                ));
-            }
+            let pending_xp = communication
+                .xp_entries
+                .iter()
+                .find(|(region_id, _)| *region_id == self.player_communication_region_id)
+                .map(|(_, value)| *value)
+                .unwrap_or(0);
+            ui.label(format!(
+                "Pending training XP for selected region: {pending_xp}"
+            ));
 
             let selected_region_exists = communication
                 .entries
@@ -7489,36 +11288,19 @@ Bridge TFM2 target: v{}",
                 ui.add_space(6.0);
                 ui.strong(self.localization.tr("player_communication.actual_regions"));
 
-                #[cfg(feature = "dev")]
                 for (region_id, value) in &communication.entries {
                     ui.label(format!(
                         "{}: {} / 100",
-                        localized_communication_region_label(
-                            &self.localization,
-                            *region_id,
-                        ),
+                        localized_communication_region_label(&self.localization, *region_id),
                         value
                     ));
                 }
-
-                #[cfg(not(feature = "dev"))]
-                egui::Grid::new("player_communication_learned_regions_grid")
-                    .num_columns(2)
-                    .spacing([20.0, 4.0])
-                    .show(ui, |ui| {
-                        for (region_id, value) in &communication.entries {
-                            ui.label(localized_communication_region_label(
-                                &self.localization,
-                                *region_id,
-                            ));
-                            ui.label(format!("{value} / 100"));
-                            ui.end_row();
-                        }
-                    });
             } else {
                 ui.label(self.localization.tr("player_communication.no_actual_regions"));
             }
 
+            // Full pending-XP inventory is Development-only diagnostic context. Community
+            // shows only the selected region's read-only Pending Training XP above.
             #[cfg(feature = "dev")]
             if !communication.xp_entries.is_empty() {
                 ui.add_space(6.0);
@@ -7526,10 +11308,7 @@ Bridge TFM2 target: v{}",
                 for (region_id, value) in &communication.xp_entries {
                     ui.label(format!(
                         "{}: {} XP",
-                        localized_communication_region_label(
-                            &self.localization,
-                            *region_id,
-                        ),
+                        localized_communication_region_label(&self.localization, *region_id),
                         value
                     ));
                 }
@@ -7540,31 +11319,24 @@ Bridge TFM2 target: v{}",
                 if ui
                     .add_enabled(
                         self.connected,
-                        egui::Button::new(
-                            self.localization.tr("player_communication.apply"),
-                        ),
+                        egui::Button::new(self.localization.tr("player_communication.apply")),
                     )
                     .clicked()
                 {
                     apply_clicked = true;
                 }
 
-                #[cfg(feature = "dev")]
-                let max_button_text = self.localization.tr("communication.max_selected");
-                #[cfg(not(feature = "dev"))]
-                let max_button_text = self
-                    .localization
-                    .tr("player_communication.set_actual_to_100");
-
                 if ui
-                    .add_enabled(self.connected, egui::Button::new(max_button_text))
+                    .add_enabled(
+                        self.connected,
+                        egui::Button::new(self.localization.tr("communication.max_selected")),
+                    )
                     .clicked()
                 {
                     max_clicked = true;
                 }
             });
 
-            #[cfg(feature = "dev")]
             ui.weak(self.localization.tr("player_communication.footer"));
         }
 
@@ -7596,12 +11368,81 @@ Bridge TFM2 target: v{}",
         }
     }
 
+    fn refresh_team_league_catalog(&mut self) {
+        if let Ok(leagues) = Self::global_history_request("GET_LEAGUES")
+            .and_then(|response| parse_global_leagues_response(&response))
+        {
+            self.team_leagues = leagues;
+        }
+    }
+
+    fn refresh_team_league_standings(&mut self) {
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.status = "Select a team first".to_string();
+            return;
+        };
+
+        let league_id = team.league_id;
+        let command = format!("GET_LEAGUE_COMPETITION|{league_id}");
+        match Self::global_history_request(&command).and_then(|response| {
+            parse_global_league_competition_response(&response, league_id, &self.teams)
+        }) {
+            Ok(data) => {
+                self.team_league_standings = Some(data);
+                self.team_league_standings_last_request_league_id = Some(league_id);
+                self.status = format!("League standings loaded for {}", team.display_name);
+            }
+            Err(error) => {
+                self.team_league_standings = None;
+                self.team_league_standings_last_request_league_id = Some(league_id);
+                self.status = format!("League standings unavailable: {error}");
+            }
+        }
+    }
+
+    fn refresh_team_competition_data(&mut self) {
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.status = "Select a team first".to_string();
+            return;
+        };
+
+        let command = format!("GET_TEAM_SCHEDULE|{}", team.id);
+        match Self::global_history_request(&command).and_then(|response| {
+            parse_global_team_schedule_response(&response, team.id, &self.teams)
+        }) {
+            Ok(data) => {
+                let total = data.matches.len();
+                let upcoming = data.upcoming_count();
+                self.team_competition_data = Some(data);
+                self.team_competition_last_request_team_id = Some(team.id);
+                self.status = format!(
+                    "Competition data loaded: {} · matches {} · upcoming {}",
+                    team.display_name, total, upcoming
+                );
+            }
+            Err(error) => {
+                self.team_competition_data = None;
+                self.team_competition_last_request_team_id = Some(team.id);
+                self.status = format!("Competition data unavailable: {}", human_error(&error));
+            }
+        }
+    }
+
     fn refresh_teams(&mut self) {
         match self.game_request("GET_TEAMS") {
             Ok(response) => match parse_teams_response(&response) {
                 Ok(teams) => {
                     self.connected = true;
                     self.teams = teams;
+                    self.refresh_team_league_catalog();
                     let keep_selection = self
                         .recruitment_team_id
                         .is_some_and(|id| self.teams.iter().any(|team| team.id == id));
@@ -7613,19 +11454,16 @@ Bridge TFM2 target: v{}",
                             .or_else(|| self.teams.first())
                             .map(|team| team.id);
                     }
-                    #[cfg(feature = "dev")]
-                    {
-                        let keep_workspace_selection = self
-                            .team_workspace_team_id
-                            .is_some_and(|id| self.teams.iter().any(|team| team.id == id));
-                        if !keep_workspace_selection {
-                            self.team_workspace_team_id = self
-                                .teams
-                                .iter()
-                                .find(|team| team.is_player_team)
-                                .or_else(|| self.teams.first())
-                                .map(|team| team.id);
-                        }
+                    let keep_workspace_selection = self
+                        .team_workspace_team_id
+                        .is_some_and(|id| self.teams.iter().any(|team| team.id == id));
+                    if !keep_workspace_selection {
+                        self.team_workspace_team_id = self
+                            .teams
+                            .iter()
+                            .find(|team| team.is_player_team)
+                            .or_else(|| self.teams.first())
+                            .map(|team| team.id);
                     }
                     self.status = format!("Loaded {} teams", self.teams.len());
                     self.update_team_search_status();
@@ -7748,6 +11586,10 @@ Bridge TFM2 target: v{}",
 
 
     fn move_recruitment_staff_to_team(&mut self) {
+        self.move_recruitment_staff_to_team_with_role(None);
+    }
+
+    fn move_recruitment_staff_to_team_with_role(&mut self, role: Option<String>) {
         let Some(staff_id) = self.recruitment_staff_id else {
             self.status = "Select a staff member first".to_string();
             return;
@@ -7764,6 +11606,7 @@ Bridge TFM2 target: v{}",
             .is_some_and(|staff| staff.team == "Free Agent");
 
         if selected_is_free_agent {
+            self.team_move_staff_pending_contract_role = role;
             self.selected_staff_id = Some(staff_id);
             self.refresh_selected_staff();
             if self.selected_staff.is_some() {
@@ -7772,12 +11615,14 @@ Bridge TFM2 target: v{}",
                     self.staff_contract_window_open = true;
                     self.status = "Free-agent contract filled automatically. Review it or click Apply Contract & Move Staff.".to_string();
                 } else {
+                    self.team_move_staff_pending_contract_role = None;
                     self.staff_contract_mode = ContractEditorMode::EditActive;
                 }
             }
             return;
         }
 
+        self.team_move_staff_pending_contract_role = None;
         let staff_name = self
             .staffs
             .iter()
@@ -7785,7 +11630,13 @@ Bridge TFM2 target: v{}",
             .map(|staff| staff.name.clone())
             .unwrap_or_else(|| format!("Staff {staff_id}"));
 
-        match self.game_request(&format!("MOVE_STAFF_TO_TEAM|{staff_id}|{team_id}")) {
+        let command = role
+            .as_deref()
+            .filter(|role| !role.trim().is_empty())
+            .map(|role| format!("MOVE_STAFF_TO_TEAM|{staff_id}|{team_id}|{role}"))
+            .unwrap_or_else(|| format!("MOVE_STAFF_TO_TEAM|{staff_id}|{team_id}"));
+
+        match self.game_request(&command) {
             Ok(response) => {
                 if let Some(error) = response.strip_prefix("ERR|") {
                     self.status = human_error(error);
@@ -7800,7 +11651,14 @@ Bridge TFM2 target: v{}",
                         .map(|team| team.display_name.clone())
                         .filter(|name| !name.trim().is_empty())
                         .unwrap_or_else(|| format!("Team {team_id}"));
-                    self.status = format!("Moved {staff_name} to {team_name}.");
+                    self.status = if let Some(role) = role.as_deref() {
+                        format!(
+                            "Moved {staff_name} to {team_name} as {}.",
+                            localized_staff_role(&self.localization, role)
+                        )
+                    } else {
+                        format!("Moved {staff_name} to {team_name}.")
+                    };
                     self.refresh_staff();
                     if self.selected_staff_id == Some(staff_id) {
                         self.refresh_selected_staff();
@@ -7895,9 +11753,9 @@ Bridge TFM2 target: v{}",
                     self.transfer_always_success = parts[2] == "1";
                     self.recruitment_instant_retry = parts[3] == "1";
                     self.status = if self.recruitment_instant_retry {
-                        "Instant recruitment retry enabled for your current team".to_string()
+                        "Instant negotiation retry enabled for your current team".to_string()
                     } else {
-                        "Recruitment retry cooldown restored to normal".to_string()
+                        "Negotiation retry cooldown restored to normal".to_string()
                     };
                 } else {
                     self.status = format!("Unexpected bridge response: {response}");
@@ -7923,7 +11781,7 @@ Bridge TFM2 target: v{}",
             let previous = self.transfer_always_success;
             let response = ui.checkbox(
                 &mut self.transfer_always_success,
-                "Transfer Always Success",
+                self.localization.tr("recruitment.transfer_always_success"),
             );
             response.on_hover_text(self.localization.tr(transfer_success_tooltip_key()));
 
@@ -7942,7 +11800,7 @@ Bridge TFM2 target: v{}",
             let previous = self.recruitment_instant_retry;
             let response = ui.checkbox(
                 &mut self.recruitment_instant_retry,
-                "Instant Retry (No Negotiation Cooldown)",
+                self.localization.tr("recruitment.instant_retry"),
             );
             response.on_hover_text(self.localization.tr(instant_retry_tooltip_key()));
 
@@ -7951,9 +11809,9 @@ Bridge TFM2 target: v{}",
             }
 
             ui.label(if self.recruitment_instant_retry {
-                "Mode: Instant. Rejected negotiations should be retryable immediately."
+                self.localization.tr("recruitment.retry_mode_instant")
             } else {
-                "Mode: Normal. TFM2 controls retry cooldowns."
+                self.localization.tr("recruitment.retry_mode_normal")
             });
         });
 
@@ -9239,50 +13097,6 @@ Bridge TFM2 target: v{}",
             SearchTab::Staff => self.render_staff_search_page(ui),
             SearchTab::Teams => self.render_team_search_page(ui),
             SearchTab::Lists => self.render_saved_lists_page(ui),
-            #[cfg(feature = "dev")]
-            SearchTab::History => {
-                #[cfg(feature = "dev")]
-                {
-
-                ui.columns(2, |columns| {
-                    columns[0].group(|ui| {
-                        ui.strong("Snapshot Filters");
-                        ui.add_space(6.0);
-                        ui.add_enabled(false, egui::Button::new("Player"));
-                        ui.add_enabled(false, egui::Button::new("Season"));
-                        ui.add_enabled(false, egui::Button::new("From Date"));
-                        ui.add_enabled(false, egui::Button::new("To Date"));
-                    });
-                    columns[1].group(|ui| {
-                        ui.strong("Tracked Fields");
-                        ui.add_space(6.0);
-                        ui.add_enabled(false, egui::Button::new("Actual Rating"));
-                        ui.add_enabled(false, egui::Button::new("Potential Rating"));
-                        ui.add_enabled(false, egui::Button::new("Salary / Contract"));
-                        ui.add_enabled(false, egui::Button::new("Team / Position"));
-                    });
-                });
-
-                ui.add_space(10.0);
-                ui.group(|ui| {
-                    ui.set_min_width(ui.available_width());
-                    ui.strong("History / Stats Over Time");
-                    ui.label(
-                        "Planned snapshot table: Player · Date · Actual Rating · Potential Rating · Salary · Team · Position. \
-                         This keeps Search extensible without redesigning the list when historical tracking is added.",
-                    );
-                    ui.add_space(6.0);
-                    ui.add_enabled(false, egui::Button::new("Historical snapshots not enabled yet"));
-                });
-
-                }
-
-                #[cfg(not(feature = "dev"))]
-                {
-                    ui.heading("History");
-                    ui.label("Under development.");
-                }
-            }
         }
     }
 
@@ -9834,18 +13648,20 @@ Bridge TFM2 target: v{}",
         }
     }
 
-    #[cfg(feature = "dev")]
     fn render_team_workspace_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading(self.localization.tr("team_workspace.heading"));
         ui.label(self.localization.tr("team_workspace.intro"));
-        ui.add_space(8.0);
+        render_editor_safety_recommendation(ui, &self.localization);
 
         let mut refresh_requested = false;
         let mut selection_changed = false;
         let mut condition_probe_requested = false;
+        #[cfg(feature = "dev")]
         let mut team_data_probe_requested = false;
         let mut team_management_requested = false;
         let mut team_history_requested = false;
+        let mut team_league_standings_requested = false;
+        let mut team_competition_requested = false;
 
         ui.horizontal(|ui| {
             ui.label(self.localization.tr("team_workspace.search"));
@@ -9929,17 +13745,38 @@ Bridge TFM2 target: v{}",
         if selection_changed {
             self.team_roster_selected_player_id = None;
             self.team_staff_selected_staff_id = None;
+            self.team_roster_selected_player_ids.clear();
+            self.team_staff_selected_staff_ids.clear();
+            self.team_roster_contract_extension_status.clear();
+            self.team_staff_contract_extension_status.clear();
+            self.team_contract_extension_confirmation = None;
+            self.team_merchandise_edit_team_id = None;
+            self.team_merchandise_edit_entries.clear();
+            self.team_merchandise_edit_status.clear();
+            self.team_fans_edit_team_id = None;
+            self.team_fans_edit_status.clear();
+            self.reset_dev_team_tab_selection_state();
             self.team_condition_window_open = false;
             self.team_condition_entries.clear();
             self.team_condition_team_id = None;
             self.team_condition_selected_player_ids.clear();
-            self.team_data_probe_window_open = false;
-            self.team_data_probe_team_id = None;
-            self.team_data_probe_raw.clear();
             self.team_management_data = None;
             self.team_management_last_request_team_id = None;
             self.team_history_data = None;
             self.team_history_last_request_team_id = None;
+            self.team_competition_data = None;
+            self.team_competition_last_request_team_id = None;
+
+            // Merchandise, Champion Setup, and stored Pre-Match Analysis are
+            // player-team-only data in the validated TFM2 0.5.4 career. Close
+            // any stale player-team windows when the workspace switches to an
+            // AI team so they cannot display misleading empty/stale content.
+            if !team.is_player_team {
+                self.team_merchandise_window_open = false;
+                self.close_dev_champion_setup_window();
+                self.team_pre_match_analysis_window_open = false;
+            }
+
             self.status = format!("Team data loaded: {}", team.display_name);
         }
 
@@ -9965,89 +13802,236 @@ Bridge TFM2 target: v{}",
             .as_ref()
             .filter(|data| data.team_id == team.id)
             .cloned();
-        let history_auto_request = (self.team_match_history_window_open
-            || self.team_pre_match_analysis_window_open
-            || self.team_history_summary_window_open)
-            && self.team_history_last_request_team_id != Some(team.id);
+        // UI Bulk 1 keeps Team Summary and League Standings inline on the Team page,
+        // so both read models must follow the selected Team even when their legacy
+        // standalone windows are closed.
+        let history_auto_request = self.team_history_last_request_team_id != Some(team.id);
 
-        ui.horizontal_wrapped(|ui| {
-            if ui.button(self.localization.tr("team_workspace.open_roster")).clicked() {
-                self.team_roster_window_open = true;
-            }
-            if ui.button(self.localization.tr("team_workspace.open_staff")).clicked() {
-                self.team_staff_window_open = true;
-            }
-            if ui
-                .button(self.localization.tr("team_workspace.open_condition_probe"))
-                .clicked()
-            {
-                condition_probe_requested = true;
-            }
-            if ui
-                .button(self.localization.tr("team_workspace.open_strategy"))
-                .clicked()
-            {
-                self.team_strategy_window_open = true;
-                team_management_requested = management_data.is_none();
-            }
-            if ui
-                .button(self.localization.tr("team_workspace.open_merchandise"))
-                .clicked()
-            {
-                self.team_merchandise_window_open = true;
-                team_management_requested = management_data.is_none();
-            }
-            if ui
-                .button(self.localization.tr("team_workspace.open_champion_setup"))
-                .clicked()
-            {
-                self.team_champion_setup_window_open = true;
-                team_management_requested = management_data.is_none();
-            }
-            if ui
-                .button(self.localization.tr("team_workspace.open_gaming_house"))
-                .clicked()
-            {
-                self.team_gaming_house_window_open = true;
-                team_management_requested = management_data.is_none();
-            }
-            if ui
-                .button(self.localization.tr("team_workspace.open_match_history"))
-                .clicked()
-            {
-                self.team_match_history_window_open = true;
-                team_history_requested = history_data.is_none();
-            }
-            if ui
-                .button(self.localization.tr("team_workspace.open_pre_match_analysis"))
-                .clicked()
-            {
-                self.team_pre_match_analysis_window_open = true;
-                team_history_requested = history_data.is_none();
-            }
-            if ui
-                .button(self.localization.tr("team_workspace.open_history_summary"))
-                .clicked()
-            {
-                self.team_history_summary_window_open = true;
-                team_history_requested = history_data.is_none();
-            }
-            if ui
-                .button(self.localization.tr("team_workspace.open_data_probe"))
-                .clicked()
-            {
-                team_data_probe_requested = true;
-            }
-            ui.separator();
-            ui.weak(self.localization.tr("team_workspace.read_only"));
+        let standings_auto_request =
+            self.team_league_standings_last_request_league_id != Some(team.league_id);
+        let competition_auto_request = self.team_competition_window_open
+            && self.team_competition_last_request_team_id != Some(team.id);
+
+        ui.scope(|ui| {
+            // Keep the v0.5.35 one-pixel Team action-button padding. v0.5.36
+            // groups navigation without changing the approved button colors.
+            ui.spacing_mut().button_padding += egui::vec2(1.0, 1.0);
+            ui.horizontal_wrapped(|ui| {
+                let team_members_menu_labels: Vec<String> = TEAM_MEMBERS_MENU_ACTIONS
+                    .iter()
+                    .map(|action| {
+                        self.localization
+                            .tr(team_navigation_action_label_key(*action))
+                    })
+                    .collect();
+                let match_strategy_menu_labels: Vec<String> = MATCH_STRATEGY_MENU_ACTIONS
+                    .iter()
+                    .copied()
+                    .filter(|action| {
+                        team_navigation_action_available(*action, team.is_player_team)
+                    })
+                    .map(|action| self.localization.tr(team_navigation_action_label_key(action)))
+                    .collect();
+                let recruitment_center_menu_labels: Vec<String> =
+                    RECRUITMENT_CENTER_MENU_ACTIONS
+                        .iter()
+                        .map(|action| {
+                            self.localization
+                                .tr(team_navigation_action_label_key(*action))
+                        })
+                        .collect();
+                let competition_menu_labels: Vec<String> = COMPETITION_MENU_ACTIONS
+                    .iter()
+                    .map(|action| {
+                        self.localization
+                            .tr(team_navigation_action_label_key(*action))
+                    })
+                    .collect();
+                #[cfg(feature = "dev")]
+                let development_menu_labels: Vec<String> = DEVELOPMENT_MENU_ACTIONS
+                    .iter()
+                    .copied()
+                    .filter(|action| {
+                        team_navigation_action_available(*action, team.is_player_team)
+                    })
+                    .map(|action| self.localization.tr(team_navigation_action_label_key(action)))
+                    .collect();
+                team_navigation_dropdown(
+                    ui,
+                    "team_members",
+                    self.localization.tr("team_workspace.nav.team_members"),
+                    team_members_menu_labels.iter(),
+                    |ui| {
+                    for action in TEAM_MEMBERS_MENU_ACTIONS {
+                        if ui
+                            .button(self.localization.tr(team_navigation_action_label_key(action)))
+                            .clicked()
+                        {
+                            match action {
+                                TeamNavigationAction::Roster => self.team_roster_window_open = true,
+                                TeamNavigationAction::Staff => self.team_staff_window_open = true,
+                                TeamNavigationAction::Condition => condition_probe_requested = true,
+                                _ => {}
+                            }
+                            ui.memory_mut(|memory| memory.close_popup());
+                        }
+                    }
+                    },
+                );
+
+                team_navigation_dropdown(
+                    ui,
+                    "match_strategy",
+                    self.localization.tr("team_workspace.nav.match_strategy"),
+                    match_strategy_menu_labels.iter(),
+                    |ui| {
+                        for action in MATCH_STRATEGY_MENU_ACTIONS {
+                            if !team_navigation_action_available(action, team.is_player_team) {
+                                continue;
+                            }
+                            if ui
+                                .button(self.localization.tr(team_navigation_action_label_key(action)))
+                                .clicked()
+                            {
+                                match action {
+                                    TeamNavigationAction::PreMatchAnalysis => {
+                                        self.team_pre_match_analysis_window_open = true;
+                                        team_history_requested = history_data.is_none();
+                                    }
+                                    TeamNavigationAction::Strategy => {
+                                        self.team_strategy_window_open = true;
+                                        team_management_requested = management_data.is_none();
+                                    }
+                                    TeamNavigationAction::TacticsAnalysis => {
+                                        self.team_tactics_window_open = true;
+                                        team_management_requested = management_data.is_none();
+                                        team_history_requested = history_data.is_none();
+                                    }
+                                    TeamNavigationAction::TeamStats => {
+                                        self.team_performance_window_open = true;
+                                        team_league_standings_requested = true;
+                                    }
+                                    _ => {}
+                                }
+                                ui.memory_mut(|memory| memory.close_popup());
+                            }
+                        }
+                    },
+                );
+
+                team_navigation_dropdown(
+                    ui,
+                    "recruitment_center",
+                    self.localization.tr("team_workspace.nav.recruitment_center"),
+                    recruitment_center_menu_labels.iter(),
+                    |ui| {
+                        for action in RECRUITMENT_CENTER_MENU_ACTIONS {
+                            if ui
+                                .button(self.localization.tr(team_navigation_action_label_key(action)))
+                                .clicked()
+                            {
+                                match action {
+                                    TeamNavigationAction::Transfers => {
+                                        self.team_recruitment_window_open = true;
+                                        self.recruitment_team_id = Some(team.id);
+                                        self.recruitment_team_search.clear();
+                                    }
+                                    TeamNavigationAction::ContractCenter => {
+                                        self.team_contract_center_window_open = true;
+                                    }
+                                    _ => {}
+                                }
+                                ui.memory_mut(|memory| memory.close_popup());
+                            }
+                        }
+                    },
+                );
+
+                if ui
+                    .button(self.localization.tr("team_workspace.open_finance_center"))
+                    .clicked()
+                {
+                    self.team_finance_center_window_open = true;
+                    self.team_finance_last_team_id = None;
+                }
+
+                team_navigation_dropdown(
+                    ui,
+                    "competition",
+                    self.localization.tr("team_workspace.nav.competition"),
+                    competition_menu_labels.iter(),
+                    |ui| {
+                    for action in COMPETITION_MENU_ACTIONS {
+                        if ui
+                            .button(self.localization.tr(team_navigation_action_label_key(action)))
+                            .clicked()
+                        {
+                            match action {
+                                TeamNavigationAction::CompetitionCenter => {
+                                    self.team_competition_window_open = true;
+                                    team_competition_requested = true;
+                                }
+                                TeamNavigationAction::MatchHistory => {
+                                    self.team_match_history_window_open = true;
+                                    team_history_requested = history_data.is_none();
+                                }
+                                _ => {}
+                            }
+                            ui.memory_mut(|memory| memory.close_popup());
+                        }
+                    }
+                    },
+                );
+
+                #[cfg(feature = "dev")]
+                team_navigation_dropdown(
+                    ui,
+                    "development",
+                    self.localization.tr("team_workspace.nav.development"),
+                    development_menu_labels.iter(),
+                    |ui| {
+                    for action in DEVELOPMENT_MENU_ACTIONS {
+                        if !team_navigation_action_available(action, team.is_player_team) {
+                            continue;
+                        }
+                        if ui
+                            .button(self.localization.tr(team_navigation_action_label_key(action)))
+                            .clicked()
+                        {
+                            match action {
+                                TeamNavigationAction::TeamDataProbe => {
+                                    team_data_probe_requested = true;
+                                }
+                                TeamNavigationAction::ChampionSetup => {
+                                    self.team_champion_setup_window_open = true;
+                                    team_management_requested = management_data.is_none();
+                                }
+                                _ => {}
+                            }
+                            ui.memory_mut(|memory| memory.close_popup());
+                        }
+                    }
+                    },
+                );
+
+                ui.separator();
+                let read_only_key = if team.is_player_team {
+                    "team_workspace.read_only"
+                } else {
+                    "team_workspace.read_only_ai"
+                };
+                ui.weak(self.localization.tr(read_only_key));
+            });
         });
 
         ui.add_space(10.0);
 
+        let mut management_open_player_id = None;
+
         {
         let render_overview = |ui: &mut egui::Ui| {
-            ui.group(|ui| {
-                ui.set_min_width(420.0);
+            show_team_dashboard_card(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 ui.strong(self.localization.tr("team_workspace.overview"));
                 ui.add_space(6.0);
                 egui::Grid::new("team_workspace_overview_grid")
@@ -10102,13 +14086,13 @@ Bridge TFM2 target: v{}",
         };
 
         let render_finance = |ui: &mut egui::Ui| {
-            ui.group(|ui| {
-                ui.set_min_width(420.0);
+            show_team_dashboard_card(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 ui.strong(self.localization.tr("team_workspace.finance"));
-                ui.add_space(6.0);
+                ui.add_space(3.0);
                 egui::Grid::new("team_workspace_finance_grid")
                     .num_columns(2)
-                    .spacing(egui::vec2(24.0, 6.0))
+                    .spacing(egui::vec2(18.0, 4.0))
                     .show(ui, |ui| {
                         ui.label(self.localization.tr("economy.money"));
                         ui.label(format_internal_amount(&team.total_balance.to_string()));
@@ -10126,8 +14110,8 @@ Bridge TFM2 target: v{}",
         };
 
         let render_stadium = |ui: &mut egui::Ui| {
-            ui.group(|ui| {
-                ui.set_min_width(420.0);
+            show_team_dashboard_card(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 ui.strong(self.localization.tr("team_workspace.stadium"));
                 ui.add_space(6.0);
                 egui::Grid::new("team_workspace_stadium_grid")
@@ -10164,30 +14148,26 @@ Bridge TFM2 target: v{}",
         };
 
         let render_fans = |ui: &mut egui::Ui| {
-            ui.group(|ui| {
-                ui.set_min_width(420.0);
+            show_team_dashboard_card(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 ui.strong(self.localization.tr("team_workspace.fans"));
-                ui.add_space(6.0);
-                egui::Grid::new("team_workspace_fans_grid")
+                ui.add_space(3.0);
+                egui::Grid::new("team_workspace_fans_grid_v0532_summary")
                     .num_columns(2)
-                    .spacing(egui::vec2(24.0, 6.0))
+                    .spacing(egui::vec2(18.0, 4.0))
                     .show(ui, |ui| {
                         ui.label(self.localization.tr("team_workspace.popularity"));
                         ui.label(value_or_dash(&team.popularity));
                         ui.end_row();
-
                         ui.label(self.localization.tr("team_workspace.fan_count"));
                         ui.label(value_or_dash(&team.fan_count));
                         ui.end_row();
-
                         ui.label(self.localization.tr("team_workspace.fan_expectation"));
                         ui.label(value_or_dash(&team.fan_expectation));
                         ui.end_row();
-
                         ui.label(self.localization.tr("team_workspace.fan_satisfaction"));
                         ui.label(value_or_dash(&team.fan_satisfaction));
                         ui.end_row();
-
                         ui.label(self.localization.tr("team_workspace.fan_momentum"));
                         ui.label(value_or_dash(&team.fan_momentum));
                         ui.end_row();
@@ -10196,13 +14176,13 @@ Bridge TFM2 target: v{}",
         };
 
         let render_facilities = |ui: &mut egui::Ui| {
-            ui.group(|ui| {
-                ui.set_min_width(420.0);
+            show_team_dashboard_card(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 ui.strong(self.localization.tr("team_workspace.facilities"));
-                ui.add_space(6.0);
+                ui.add_space(3.0);
                 egui::Grid::new("team_workspace_facilities_grid")
                     .num_columns(2)
-                    .spacing(egui::vec2(24.0, 6.0))
+                    .spacing(egui::vec2(18.0, 4.0))
                     .show(ui, |ui| {
                         ui.label(
                             self.localization
@@ -10220,33 +14200,49 @@ Bridge TFM2 target: v{}",
                         ui.label(display_facility_grade(&team.training_facility_grade));
                         ui.end_row();
 
-                        ui.label(self.localization.tr("team_workspace.gaming_house_level"));
-                        ui.label(value_or_dash(&team.gaming_house_level));
-                        ui.end_row();
-
-                        ui.label(self.localization.tr("team_workspace.welfare"));
-                        ui.label(value_or_dash(&team.welfare));
-                        ui.end_row();
                     });
             });
         };
 
-        let render_management = |ui: &mut egui::Ui| {
-            ui.group(|ui| {
-                ui.set_min_width(420.0);
+        let mut render_management = |ui: &mut egui::Ui| {
+            show_team_dashboard_card(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 ui.strong(self.localization.tr("team_workspace.management"));
                 ui.add_space(6.0);
                 if let Some(data) = management_data.as_ref() {
+                    ui.strong(self.localization.tr("team_workspace.last_starting"));
+                    ui.add_space(3.0);
+                    let lineup_rows = team_management_lineup_player_rows(data);
+                    if lineup_rows.is_empty() {
+                        ui.weak("—");
+                    } else {
+                        egui::Grid::new("team_workspace_last_starting_grid_v0535")
+                            .num_columns(3)
+                            .spacing(egui::vec2(12.0, 4.0))
+                            .show(ui, |ui| {
+                                for (slot, player_id, player_name) in lineup_rows {
+                                    ui.label(format!("{slot}:"));
+                                    let player_response =
+                                        ui.selectable_label(false, player_name.as_str());
+                                    ui.weak(format!("[{player_id}]"));
+                                    if player_response.double_clicked() {
+                                        management_open_player_id = Some(player_id);
+                                    }
+                                    player_response.context_menu(|ui| {
+                                        if ui.button("Open in Player Editor").clicked() {
+                                            management_open_player_id = Some(player_id);
+                                            ui.close_menu();
+                                        }
+                                    });
+                                    ui.end_row();
+                                }
+                            });
+                    }
+                    ui.add_space(8.0);
                     egui::Grid::new("team_workspace_management_grid")
                         .num_columns(2)
                         .spacing(egui::vec2(24.0, 6.0))
                         .show(ui, |ui| {
-                            ui.label(self.localization.tr("team_workspace.last_starting"));
-                            ui.add(
-                                egui::Label::new(format_team_lineup(&data.lineup)).wrap(),
-                            );
-                            ui.end_row();
-
                             ui.label(self.localization.tr("team_workspace.watched_players"));
                             ui.label(data.watched_players.len().to_string()).on_hover_text(
                                 format_team_member_references(&data.watched_players),
@@ -10307,45 +14303,340 @@ Bridge TFM2 target: v{}",
             });
         };
 
-        if ui.available_width() >= 900.0 {
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
-                ui.vertical(|ui| {
-                    render_overview(ui);
-                    ui.add_space(12.0);
-                    render_management(ui);
-                    ui.add_space(12.0);
-                    render_stadium(ui);
-                });
-                ui.add_space(16.0);
-                ui.vertical(|ui| {
-                    render_finance(ui);
-                    ui.add_space(12.0);
-                    render_fans(ui);
-                    ui.add_space(12.0);
-                    render_facilities(ui);
-                });
+        let render_team_summary_inline = |ui: &mut egui::Ui| {
+            show_team_dashboard_card(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.strong("Team Summary");
+                ui.add_space(3.0);
+                if let Some(data) = history_data.as_ref() {
+                    egui::Grid::new("team_workspace_summary_inline_grid_v0535")
+                        .num_columns(2)
+                        .spacing(egui::vec2(18.0, 4.0))
+                        .show(ui, |ui| {
+                            let rows = [
+                                ("team_history_summary.registered_matches", data.matches.len().to_string()),
+                                ("team_history_summary.official_matches", data.official_matches().to_string()),
+                                ("team_history_summary.practice_matches", data.practice_matches().to_string()),
+                                ("team_history_summary.match_record", format!("{}-{}", data.wins(), data.losses())),
+                                ("team_history_summary.set_record", format!("{}-{}", data.set_wins(), data.set_losses())),
+                                ("team_history_summary.recent_form", data.recent_form()),
+                                ("team_history_summary.pre_match_analyses", data.analyses.len().to_string()),
+                                (
+                                    "team_history_summary.latest_rating",
+                                    data.latest_rating
+                                        .map(|value| value.to_string())
+                                        .unwrap_or_else(|| "—".to_string()),
+                                ),
+                                (
+                                    "team_history_summary.latest_rank",
+                                    data.latest_rank
+                                        .map(|value| value.to_string())
+                                        .unwrap_or_else(|| "—".to_string()),
+                                ),
+                                ("team_history_summary.rating_date", value_or_dash(&data.latest_rating_date)),
+                            ];
+                            for (key, value) in rows {
+                                ui.label(self.localization.tr(key));
+                                ui.label(value);
+                                ui.end_row();
+                            }
+                        });
+                } else {
+                    ui.weak(self.localization.tr("team_history.loading"));
+                }
             });
-        } else {
-            render_overview(ui);
-            ui.add_space(12.0);
-            render_management(ui);
-            ui.add_space(12.0);
-            render_finance(ui);
-            ui.add_space(12.0);
-            render_stadium(ui);
-            ui.add_space(12.0);
-            render_fans(ui);
-            ui.add_space(12.0);
-            render_facilities(ui);
+        };
+
+        let render_gaming_house_inline = |ui: &mut egui::Ui| {
+            show_team_dashboard_card(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.strong("Gaming House");
+                ui.add_space(3.0);
+                if let Some(data) = management_data.as_ref() {
+                    let summary = &data.gaming_house;
+                    let left_rows = [
+                        ("team_workspace.gaming_house_level", value_or_dash(&summary.level)),
+                        ("team_workspace.welfare", value_or_dash(&summary.welfare)),
+                        ("team_gaming_house.owned_furniture_types", summary.owned_furniture_types.to_string()),
+                        ("team_gaming_house.owned_furniture_total", summary.owned_furniture_total.to_string()),
+                        ("team_gaming_house.owned_wallpaper_types", summary.owned_wallpaper_types.to_string()),
+                        ("team_gaming_house.owned_wallpaper_total", summary.owned_wallpaper_total.to_string()),
+                        ("team_gaming_house.owned_wall_types", summary.owned_wall_types.to_string()),
+                    ];
+                    let right_rows = [
+                        ("team_gaming_house.owned_wall_total", summary.owned_wall_total.to_string()),
+                        ("team_gaming_house.owned_window_types", summary.owned_window_types.to_string()),
+                        ("team_gaming_house.owned_window_total", summary.owned_window_total.to_string()),
+                        ("team_gaming_house.placed_furniture", summary.placed_furniture.to_string()),
+                        ("team_gaming_house.placed_wallpapers", summary.placed_wallpapers.to_string()),
+                        ("team_gaming_house.placed_walls", summary.placed_walls.to_string()),
+                        ("team_gaming_house.placed_windows", summary.placed_windows.to_string()),
+                    ];
+
+                    let render_rows = |ui: &mut egui::Ui, id: &str, rows: &[(&str, String)]| {
+                        egui::Grid::new(id)
+                            .num_columns(2)
+                            .spacing(egui::vec2(12.0, 4.0))
+                            .show(ui, |ui| {
+                                for (key, value) in rows {
+                                    ui.label(self.localization.tr(key));
+                                    ui.label(value.as_str());
+                                    ui.end_row();
+                                }
+                            });
+                    };
+
+                    if ui.available_width() >= 500.0 {
+                        ui.columns(2, |columns| {
+                            render_rows(
+                                &mut columns[0],
+                                "team_workspace_gaming_house_left_v0535",
+                                &left_rows,
+                            );
+                            render_rows(
+                                &mut columns[1],
+                                "team_workspace_gaming_house_right_v0535",
+                                &right_rows,
+                            );
+                        });
+                    } else {
+                        let mut rows = left_rows.to_vec();
+                        rows.extend(right_rows);
+                        render_rows(
+                            ui,
+                            "team_workspace_gaming_house_single_v0535",
+                            &rows,
+                        );
+                    }
+                } else {
+                    ui.weak(self.localization.tr("team_workspace.management_loading"));
+                }
+            });
+        };
+
+        let render_league_standings_inline = |ui: &mut egui::Ui| {
+            show_team_dashboard_card(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.strong("League Standings");
+                ui.add_space(3.0);
+                let data = self
+                    .team_league_standings
+                    .as_ref()
+                    .filter(|data| data.league_id == team.league_id);
+                let Some(data) = data else {
+                    ui.weak(self.localization.tr("team_standings.loading"));
+                    return;
+                };
+
+                let league_label = self
+                    .team_leagues
+                    .iter()
+                    .find(|league| league.id == team.league_id)
+                    .map(|league| league.display_label(&self.localization))
+                    .unwrap_or_else(|| format!("League {}", team.league_id));
+                let state = if data.finalized {
+                    self.localization.tr("team_standings.finalized")
+                } else {
+                    self.localization.tr("team_standings.in_progress")
+                };
+                let row_count = data.rows.len().to_string();
+                ui.horizontal_wrapped(|ui| {
+                    ui.strong(league_label);
+                    ui.separator();
+                    ui.label(state);
+                    ui.separator();
+                    ui.label(self.localization.tr_with(
+                        "common.total_count",
+                        &[("count", row_count.as_str())],
+                    ));
+                });
+                ui.add_space(4.0);
+
+                if data.rows.is_empty() {
+                    ui.weak(self.localization.tr("team_standings.empty"));
+                    return;
+                }
+
+                // The full validated standings model stays intact. A local horizontal
+                // viewport prevents the inline table from widening the whole app.
+                let standings_viewport_width = ui.available_width();
+                egui::ScrollArea::horizontal()
+                    .id_salt("team_workspace_league_standings_inline_horizontal_v0535")
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.set_min_width(standings_viewport_width.max(600.0));
+                        let widths = [38.0, 150.0, 38.0, 38.0, 48.0, 48.0, 48.0, 45.0, 45.0, 45.0];
+                        let mut table = TableBuilder::new(ui)
+                            .id_salt("team_workspace_league_standings_inline_table_v0535")
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .min_scrolled_height(0.0)
+                            .auto_shrink([false, true]);
+                        for (index, width) in widths.into_iter().enumerate() {
+                            let column = if index == 1 {
+                                Column::remainder()
+                                    .at_least(150.0)
+                                    .clip(true)
+                                    .resizable(true)
+                            } else {
+                                Column::initial(width)
+                                    .at_least(38.0)
+                                    .clip(true)
+                                    .resizable(true)
+                            };
+                            table = table.column(column);
+                        }
+                        table
+                            .header(26.0, |mut header| {
+                                for key in [
+                                    "team_standings.rank",
+                                    "common.team",
+                                    "team_standings.wins",
+                                    "team_standings.losses",
+                                    "team_standings.set_wins",
+                                    "team_standings.set_losses",
+                                    "team_standings.set_diff",
+                                    "team_standings.kills",
+                                    "team_standings.deaths",
+                                    "team_standings.assists",
+                                ] {
+                                    header.col(|ui| {
+                                        ui.strong(self.localization.tr(key));
+                                    });
+                                }
+                            })
+                            .body(|body| {
+                                body.rows(26.0, data.rows.len(), |mut row| {
+                                    let index = row.index();
+                                    let entry = &data.rows[index];
+                                    let selected = entry.team_id == team.id;
+                                    let set_diff = entry.set_wins as isize - entry.set_losses as isize;
+                                    let rank = (index + 1).to_string();
+                                    row.col(|ui| {
+                                        if selected { ui.strong(rank); } else { ui.label(rank); }
+                                    });
+                                    row.col(|ui| {
+                                        let label = format!("{} ({})", entry.team_name, entry.team_id);
+                                        if selected { ui.strong(label); } else { ui.label(label); }
+                                    });
+                                    row.col(|ui| { ui.label(entry.wins.to_string()); });
+                                    row.col(|ui| { ui.label(entry.losses.to_string()); });
+                                    row.col(|ui| { ui.label(entry.set_wins.to_string()); });
+                                    row.col(|ui| { ui.label(entry.set_losses.to_string()); });
+                                    row.col(|ui| { ui.label(format!("{set_diff:+}")); });
+                                    row.col(|ui| { ui.label(entry.kills.to_string()); });
+                                    row.col(|ui| { ui.label(entry.deaths.to_string()); });
+                                    row.col(|ui| { ui.label(entry.assists.to_string()); });
+                                });
+                            });
+                    });
+            });
+        };
+
+        let dashboard_width = ui.available_width();
+        match team_dashboard_column_count(dashboard_width) {
+            3 => {
+                // Grow only within the deliberate min/preferred/max bands. At very
+                // wide desktop sizes the remaining width stays plain #0B0F14 instead
+                // of stretching every dashboard card indefinitely.
+                let [column_1_width, column_2_width, column_3_width] =
+                    team_dashboard_three_column_widths(dashboard_width);
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.vertical(|ui| {
+                        ui.set_width(column_1_width);
+                        render_overview(ui);
+                        ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                        render_management(ui);
+                        ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                        render_stadium(ui);
+                    });
+                    ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                    ui.vertical(|ui| {
+                        ui.set_width(column_2_width);
+                        render_finance(ui);
+                        ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                        render_fans(ui);
+                        ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                        render_facilities(ui);
+                        ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                        render_team_summary_inline(ui);
+                    });
+                    ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                    ui.vertical(|ui| {
+                        ui.set_width(column_3_width);
+                        render_gaming_house_inline(ui);
+                        ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                        render_league_standings_inline(ui);
+                    });
+                });
+            }
+            2 => {
+                // Keep the fallback useful but bounded as well. The right column gets
+                // the larger share because it carries League Standings.
+                let working_width = dashboard_width.min(1000.0);
+                let usable = working_width - TEAM_DASHBOARD_COLUMN_GAP;
+                let column_1_width = (usable * 0.43).clamp(320.0, 440.0);
+                let column_2_width = usable - column_1_width;
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.vertical(|ui| {
+                        ui.set_width(column_1_width);
+                        render_overview(ui);
+                        ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                        render_management(ui);
+                        ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                        render_stadium(ui);
+                        ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                        render_gaming_house_inline(ui);
+                    });
+                    ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                    ui.vertical(|ui| {
+                        ui.set_width(column_2_width);
+                        render_finance(ui);
+                        ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                        render_fans(ui);
+                        ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                        render_facilities(ui);
+                        ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                        render_team_summary_inline(ui);
+                        ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                        render_league_standings_inline(ui);
+                    });
+                });
+            }
+            _ => {
+                render_overview(ui);
+                ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                render_management(ui);
+                ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                render_stadium(ui);
+                ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                render_finance(ui);
+                ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                render_fans(ui);
+                ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                render_facilities(ui);
+                ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                render_team_summary_inline(ui);
+                ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                render_gaming_house_inline(ui);
+                ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                render_league_standings_inline(ui);
+            }
         }
         }
 
-        ui.add_space(10.0);
-        ui.weak(self.localization.tr("team_workspace.current_scope"));
+        if let Some(player_id) = management_open_player_id {
+            self.open_player_in_editor(player_id);
+        }
+
 
         if condition_probe_requested {
             self.refresh_team_condition_probe();
         }
+        #[cfg(feature = "dev")]
         if team_data_probe_requested {
             self.refresh_team_data_probe();
         }
@@ -10378,9 +14669,14 @@ Bridge TFM2 target: v{}",
         if team_history_requested || history_auto_request {
             self.refresh_team_history_data();
         }
+        if team_league_standings_requested || standings_auto_request {
+            self.refresh_team_league_standings();
+        }
+        if team_competition_requested || competition_auto_request {
+            self.refresh_team_competition_data();
+        }
     }
 
-    #[cfg(feature = "dev")]
     fn render_team_roster_window(&mut self, ctx: &egui::Context) {
         if !self.team_roster_window_open {
             return;
@@ -10393,6 +14689,7 @@ Bridge TFM2 target: v{}",
         else {
             self.team_roster_window_open = false;
             self.team_roster_selected_player_id = None;
+            self.team_roster_selected_player_ids.clear();
             return;
         };
 
@@ -10408,21 +14705,27 @@ Bridge TFM2 target: v{}",
         let mut selected_player_id = self
             .team_roster_selected_player_id
             .filter(|player_id| valid_player_ids.contains(player_id));
+        let mut selected_player_ids = self.team_roster_selected_player_ids.clone();
+        selected_player_ids.retain(|player_id| valid_player_ids.contains(player_id));
+        let mut extension_years = self.team_roster_contract_extension_years.clone();
+        let extension_status = self.team_roster_contract_extension_status.clone();
+        let mut extend_selected_requested = false;
+        let mut extend_all_requested = false;
         let mut open_player_id = None;
+        let mut move_player_id = None;
         let mut open = self.team_roster_window_open;
         let title = self.localization.tr_with(
             "team_workspace.roster_window_title",
             &[("team", team.display_name.as_str())],
         );
         let window_id = egui::Id::new("team_workspace_roster_window_v051e");
-        let default_window_size = egui::vec2(1080.0, 520.0);
 
         egui::Window::new(title)
             .id(window_id)
             .open(&mut open)
             .resizable(true)
-            .default_size(default_window_size)
-            .min_size(egui::vec2(680.0, 320.0))
+            .default_size(egui::vec2(1080.0, 560.0))
+            .min_size(egui::vec2(680.0, 340.0))
             .constrain(true)
             .show(ctx, |ui| {
                 let loaded = roster.len().to_string();
@@ -10432,25 +14735,46 @@ Bridge TFM2 target: v{}",
                     &[("loaded", loaded.as_str()), ("reported", reported.as_str())],
                 ));
                 ui.weak(self.localization.tr("team_workspace.roster_source"));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.strong("Contract Extension");
+                    ui.label("Years:");
+                    ui.add(egui::TextEdit::singleline(&mut extension_years).desired_width(52.0));
+                    ui.label(format!("{} selected", selected_player_ids.len()));
+                    if ui
+                        .add_enabled(
+                            self.connected && !selected_player_ids.is_empty(),
+                            egui::Button::new("Extend Selected"),
+                        )
+                        .clicked()
+                    {
+                        extend_selected_requested = true;
+                    }
+                    if ui
+                        .add_enabled(self.connected, egui::Button::new("Apply to All"))
+                        .clicked()
+                    {
+                        extend_all_requested = true;
+                    }
+                });
+                if !extension_status.is_empty() {
+                    ui.weak(extension_status.as_str());
+                }
                 ui.separator();
 
-                // The shared viewport owns all remaining window space. Data changes
-                // update only the rows inside it and cannot resize the outer window.
-                let widths = [190.0, 70.0, 70.0, 105.0, 145.0, 110.0, 115.0, 120.0];
-                let table_min_width = widths.iter().copied().sum::<f32>() + 48.0;
-
+                let widths = [42.0, 185.0, 65.0, 65.0, 100.0, 140.0, 105.0, 110.0, 115.0];
+                let table_min_width = widths.iter().copied().sum::<f32>() + 52.0;
                 render_team_member_table_viewport(
                     ui,
-                    "team_workspace_roster_horizontal_v051e",
+                    "team_workspace_roster_horizontal_v0532",
                     table_min_width,
                     |ui, table_height| {
                         if roster.is_empty() {
                             ui.weak(self.localization.tr("team_workspace.no_roster_members"));
                             return;
                         }
-
                         let mut table = TableBuilder::new(ui)
-                            .id_salt("team_workspace_roster_table")
+                            .id_salt("team_workspace_roster_table_v0532")
                             .striped(true)
                             .resizable(true)
                             .sense(egui::Sense::click())
@@ -10459,92 +14783,59 @@ Bridge TFM2 target: v{}",
                             .max_scroll_height(table_height)
                             .auto_shrink([false, false]);
                         for width in widths {
-                            table = table.column(
-                                Column::initial(width)
-                                    .at_least(58.0)
-                                    .clip(true)
-                                    .resizable(true),
-                            );
+                            table = table.column(Column::initial(width).at_least(38.0).clip(true).resizable(true));
                         }
-
                         table
                             .header(24.0, |mut header| {
-                                header.col(|ui| {
-                                    ui.strong(self.localization.tr("common.name"));
-                                });
-                                header.col(|ui| {
-                                    ui.strong(self.localization.tr("common.id"));
-                                });
-                                header.col(|ui| {
-                                    ui.strong(self.localization.tr("common.age"));
-                                });
-                                header.col(|ui| {
-                                    ui.strong(self.localization.tr("search.columns.salary"));
-                                });
-                                header.col(|ui| {
-                                    ui.strong(self.localization.tr("search.players.position"));
-                                });
-                                header.col(|ui| {
-                                    ui.strong(self.localization.tr("search.columns.actual_rating"));
-                                });
-                                header.col(|ui| {
-                                    ui.strong(self.localization.tr("search.players.actual_potential"));
-                                });
-                                header.col(|ui| {
-                                    ui.strong(self.localization.tr("contract.end"));
-                                });
+                                header.col(|ui| { ui.strong("Select"); });
+                                header.col(|ui| { ui.strong(self.localization.tr("common.name")); });
+                                header.col(|ui| { ui.strong(self.localization.tr("common.id")); });
+                                header.col(|ui| { ui.strong(self.localization.tr("common.age")); });
+                                header.col(|ui| { ui.strong(self.localization.tr("search.columns.salary")); });
+                                header.col(|ui| { ui.strong(self.localization.tr("search.players.position")); });
+                                header.col(|ui| { ui.strong(self.localization.tr("search.columns.actual_rating")); });
+                                header.col(|ui| { ui.strong(self.localization.tr("search.players.actual_potential")); });
+                                header.col(|ui| { ui.strong(self.localization.tr("contract.end")); });
                             })
                             .body(|body| {
                                 body.rows(24.0, roster.len(), |mut row| {
                                     let player = &roster[row.index()];
-                                    row.set_selected(selected_player_id == Some(player.id));
+                                    row.set_selected(selected_player_ids.contains(&player.id));
                                     row.col(|ui| {
-                                        ui.label(&player.name);
+                                        let mut checked = selected_player_ids.contains(&player.id);
+                                        if ui.checkbox(&mut checked, "").changed() {
+                                            if checked { selected_player_ids.insert(player.id); } else { selected_player_ids.remove(&player.id); }
+                                        }
                                     });
-                                    row.col(|ui| {
-                                        ui.label(player.id.to_string());
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(value_or_dash(&player.age));
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(pretty_or_dash(&player.salary));
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(localized_position_summary(
-                                            &self.localization,
-                                            &player.position,
-                                        ));
-                                    });
-                                    row.col(|ui| {
-                                        render_actual_rating(ui, player, &self.localization);
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(pretty_or_dash(&player.actual_potential));
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(value_or_dash(&display_contract_date(
-                                            &player.contract_end,
-                                        )));
-                                    });
+                                    row.col(|ui| { ui.label(&player.name); });
+                                    row.col(|ui| { ui.label(player.id.to_string()); });
+                                    row.col(|ui| { ui.label(value_or_dash(&player.age)); });
+                                    row.col(|ui| { ui.label(pretty_or_dash(&player.salary)); });
+                                    row.col(|ui| { ui.label(localized_position_summary(&self.localization, &player.position)); });
+                                    row.col(|ui| { render_actual_rating(ui, player, &self.localization); });
+                                    row.col(|ui| { ui.label(pretty_or_dash(&player.actual_potential)); });
+                                    row.col(|ui| { ui.label(value_or_dash(&display_contract_date(&player.contract_end))); });
 
                                     let row_response = row.response();
                                     if row_response.double_clicked() {
                                         selected_player_id = Some(player.id);
+                                        selected_player_ids.insert(player.id);
                                         open_player_id = Some(player.id);
                                     } else if row_response.clicked() {
                                         selected_player_id = Some(player.id);
+                                        selected_player_ids.insert(player.id);
                                     }
                                     row_response.context_menu(|ui| {
-                                        if ui
-                                            .button(
-                                                self.localization
-                                                    .tr("search.open_in_player_editor"),
-                                            )
-                                            .clicked()
-                                        {
+                                        if ui.button(self.localization.tr("search.open_in_player_editor")).clicked() {
                                             selected_player_id = Some(player.id);
+                                            selected_player_ids.insert(player.id);
                                             open_player_id = Some(player.id);
+                                            ui.close_menu();
+                                        }
+                                        if ui.button(self.localization.tr("team_move.move_player_context")).clicked() {
+                                            selected_player_id = Some(player.id);
+                                            selected_player_ids.insert(player.id);
+                                            move_player_id = Some(player.id);
                                             ui.close_menu();
                                         }
                                     });
@@ -10554,15 +14845,60 @@ Bridge TFM2 target: v{}",
                 );
             });
 
+        let selected_targets = if extend_selected_requested {
+            Some(team_contract_extension_target_ids(
+                roster.iter().map(|player| (player.id, player.contract_end.as_str())),
+                &selected_player_ids,
+                false,
+            ))
+        } else if extend_all_requested {
+            Some(team_contract_extension_target_ids(
+                roster.iter().map(|player| (player.id, player.contract_end.as_str())),
+                &selected_player_ids,
+                true,
+            ))
+        } else {
+            None
+        };
+
         self.team_roster_selected_player_id = selected_player_id;
+        self.team_roster_selected_player_ids = selected_player_ids;
+        self.team_roster_contract_extension_years = extension_years.clone();
         self.team_roster_window_open = open;
+        if let Some(ids) = selected_targets {
+            match parse_contract_extension_years(&extension_years) {
+                Err(error) => {
+                    self.team_roster_contract_extension_status = error.clone();
+                    self.status = error;
+                }
+                Ok(_) if ids.is_empty() => {
+                    self.team_roster_contract_extension_status =
+                        "No eligible Player contracts found for this action.".to_string();
+                    self.status = self.team_roster_contract_extension_status.clone();
+                }
+                Ok(_) => {
+                    self.team_contract_extension_confirmation = Some(
+                        TeamContractExtensionConfirmation {
+                            member_kind: TeamContractExtensionMemberKind::Player,
+                            apply_to_all: extend_all_requested,
+                            member_ids: ids,
+                            years: extension_years,
+                        },
+                    );
+                }
+            }
+        }
         if let Some(player_id) = open_player_id {
             self.team_roster_window_open = false;
             self.open_player_in_editor(player_id);
         }
+        if let Some(player_id) = move_player_id {
+            self.team_move_player_id = Some(player_id);
+            self.team_move_player_team_id = None;
+            self.team_move_player_window_open = true;
+        }
     }
 
-    #[cfg(feature = "dev")]
     fn render_team_staff_window(&mut self, ctx: &egui::Context) {
         if !self.team_staff_window_open {
             return;
@@ -10575,6 +14911,7 @@ Bridge TFM2 target: v{}",
         else {
             self.team_staff_window_open = false;
             self.team_staff_selected_staff_id = None;
+            self.team_staff_selected_staff_ids.clear();
             return;
         };
 
@@ -10586,28 +14923,30 @@ Bridge TFM2 target: v{}",
             .collect::<Vec<_>>();
         staff_members.sort_by_key(|staff| staff.name.to_lowercase());
 
-        let valid_staff_ids = staff_members
-            .iter()
-            .map(|staff| staff.id)
-            .collect::<BTreeSet<_>>();
+        let valid_staff_ids = staff_members.iter().map(|staff| staff.id).collect::<BTreeSet<_>>();
         let mut selected_staff_id = self
             .team_staff_selected_staff_id
             .filter(|staff_id| valid_staff_ids.contains(staff_id));
+        let mut selected_staff_ids = self.team_staff_selected_staff_ids.clone();
+        selected_staff_ids.retain(|staff_id| valid_staff_ids.contains(staff_id));
+        let mut extension_years = self.team_staff_contract_extension_years.clone();
+        let extension_status = self.team_staff_contract_extension_status.clone();
+        let mut extend_selected_requested = false;
+        let mut extend_all_requested = false;
         let mut open_staff_id = None;
+        let mut move_staff_id = None;
         let mut open = self.team_staff_window_open;
         let title = self.localization.tr_with(
             "team_workspace.staff_window_title",
             &[("team", team.display_name.as_str())],
         );
-        let window_id = egui::Id::new("team_workspace_staff_window_v051e");
-        let default_window_size = egui::vec2(820.0, 480.0);
 
         egui::Window::new(title)
-            .id(window_id)
+            .id(egui::Id::new("team_workspace_staff_window_v051e"))
             .open(&mut open)
             .resizable(true)
-            .default_size(default_window_size)
-            .min_size(egui::vec2(560.0, 300.0))
+            .default_size(egui::vec2(860.0, 520.0))
+            .min_size(egui::vec2(560.0, 320.0))
             .constrain(true)
             .show(ctx, |ui| {
                 let loaded = staff_members.len().to_string();
@@ -10617,25 +14956,44 @@ Bridge TFM2 target: v{}",
                     &[("loaded", loaded.as_str()), ("reported", reported.as_str())],
                 ));
                 ui.weak(self.localization.tr("team_workspace.staff_source"));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.strong("Contract Extension");
+                    ui.label("Years:");
+                    ui.add(egui::TextEdit::singleline(&mut extension_years).desired_width(52.0));
+                    ui.label(format!("{} selected", selected_staff_ids.len()));
+                    if ui
+                        .add_enabled(
+                            self.connected && !selected_staff_ids.is_empty(),
+                            egui::Button::new("Extend Selected"),
+                        )
+                        .clicked()
+                    {
+                        extend_selected_requested = true;
+                    }
+                    if ui
+                        .add_enabled(self.connected, egui::Button::new("Apply to All"))
+                        .clicked()
+                    {
+                        extend_all_requested = true;
+                    }
+                });
+                if !extension_status.is_empty() { ui.weak(extension_status.as_str()); }
                 ui.separator();
 
-                // Roster and Staff use the same fixed viewport helper, so member count,
-                // refreshes, and team changes cannot alter the user-controlled window size.
-                let widths = [210.0, 70.0, 70.0, 120.0, 170.0, 130.0];
-                let table_min_width = widths.iter().copied().sum::<f32>() + 40.0;
-
+                let widths = [42.0, 200.0, 65.0, 65.0, 115.0, 160.0, 125.0];
+                let table_min_width = widths.iter().copied().sum::<f32>() + 42.0;
                 render_team_member_table_viewport(
                     ui,
-                    "team_workspace_staff_horizontal_v051e",
+                    "team_workspace_staff_horizontal_v0532",
                     table_min_width,
                     |ui, table_height| {
                         if staff_members.is_empty() {
                             ui.weak(self.localization.tr("team_workspace.no_staff_members"));
                             return;
                         }
-
                         let mut table = TableBuilder::new(ui)
-                            .id_salt("team_workspace_staff_table")
+                            .id_salt("team_workspace_staff_table_v0532")
                             .striped(true)
                             .resizable(true)
                             .sense(egui::Sense::click())
@@ -10644,80 +15002,55 @@ Bridge TFM2 target: v{}",
                             .max_scroll_height(table_height)
                             .auto_shrink([false, false]);
                         for width in widths {
-                            table = table.column(
-                                Column::initial(width)
-                                    .at_least(58.0)
-                                    .clip(true)
-                                    .resizable(true),
-                            );
+                            table = table.column(Column::initial(width).at_least(38.0).clip(true).resizable(true));
                         }
-
                         table
                             .header(24.0, |mut header| {
-                                header.col(|ui| {
-                                    ui.strong(self.localization.tr("common.name"));
-                                });
-                                header.col(|ui| {
-                                    ui.strong(self.localization.tr("common.id"));
-                                });
-                                header.col(|ui| {
-                                    ui.strong(self.localization.tr("common.age"));
-                                });
-                                header.col(|ui| {
-                                    ui.strong(self.localization.tr("search.columns.salary"));
-                                });
-                                header.col(|ui| {
-                                    ui.strong(self.localization.tr("common.role"));
-                                });
-                                header.col(|ui| {
-                                    ui.strong(self.localization.tr("contract.end"));
-                                });
+                                header.col(|ui| { ui.strong("Select"); });
+                                header.col(|ui| { ui.strong(self.localization.tr("common.name")); });
+                                header.col(|ui| { ui.strong(self.localization.tr("common.id")); });
+                                header.col(|ui| { ui.strong(self.localization.tr("common.age")); });
+                                header.col(|ui| { ui.strong(self.localization.tr("search.columns.salary")); });
+                                header.col(|ui| { ui.strong(self.localization.tr("common.role")); });
+                                header.col(|ui| { ui.strong(self.localization.tr("contract.end")); });
                             })
                             .body(|body| {
                                 body.rows(24.0, staff_members.len(), |mut row| {
                                     let staff = &staff_members[row.index()];
-                                    row.set_selected(selected_staff_id == Some(staff.id));
+                                    row.set_selected(selected_staff_ids.contains(&staff.id));
                                     row.col(|ui| {
-                                        ui.label(&staff.name);
+                                        let mut checked = selected_staff_ids.contains(&staff.id);
+                                        if ui.checkbox(&mut checked, "").changed() {
+                                            if checked { selected_staff_ids.insert(staff.id); } else { selected_staff_ids.remove(&staff.id); }
+                                        }
                                     });
-                                    row.col(|ui| {
-                                        ui.label(staff.id.to_string());
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(value_or_dash(&staff.age));
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(pretty_or_dash(&staff.annual_salary));
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(localized_staff_role(
-                                            &self.localization,
-                                            &staff.role,
-                                        ));
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(value_or_dash(&display_contract_date(
-                                            &staff.contract_end,
-                                        )));
-                                    });
+                                    row.col(|ui| { ui.label(&staff.name); });
+                                    row.col(|ui| { ui.label(staff.id.to_string()); });
+                                    row.col(|ui| { ui.label(value_or_dash(&staff.age)); });
+                                    row.col(|ui| { ui.label(pretty_or_dash(&staff.annual_salary)); });
+                                    row.col(|ui| { ui.label(localized_staff_role(&self.localization, &staff.role)); });
+                                    row.col(|ui| { ui.label(value_or_dash(&display_contract_date(&staff.contract_end))); });
 
                                     let row_response = row.response();
                                     if row_response.double_clicked() {
                                         selected_staff_id = Some(staff.id);
+                                        selected_staff_ids.insert(staff.id);
                                         open_staff_id = Some(staff.id);
                                     } else if row_response.clicked() {
                                         selected_staff_id = Some(staff.id);
+                                        selected_staff_ids.insert(staff.id);
                                     }
                                     row_response.context_menu(|ui| {
-                                        if ui
-                                            .button(
-                                                self.localization
-                                                    .tr("search.open_in_staff_editor"),
-                                            )
-                                            .clicked()
-                                        {
+                                        if ui.button(self.localization.tr("search.open_in_staff_editor")).clicked() {
                                             selected_staff_id = Some(staff.id);
+                                            selected_staff_ids.insert(staff.id);
                                             open_staff_id = Some(staff.id);
+                                            ui.close_menu();
+                                        }
+                                        if ui.button(self.localization.tr("team_move.move_staff_context")).clicked() {
+                                            selected_staff_id = Some(staff.id);
+                                            selected_staff_ids.insert(staff.id);
+                                            move_staff_id = Some(staff.id);
                                             ui.close_menu();
                                         }
                                     });
@@ -10727,15 +15060,397 @@ Bridge TFM2 target: v{}",
                 );
             });
 
+        let selected_targets = if extend_selected_requested {
+            Some(team_contract_extension_target_ids(
+                staff_members.iter().map(|staff| (staff.id, staff.contract_end.as_str())),
+                &selected_staff_ids,
+                false,
+            ))
+        } else if extend_all_requested {
+            Some(team_contract_extension_target_ids(
+                staff_members.iter().map(|staff| (staff.id, staff.contract_end.as_str())),
+                &selected_staff_ids,
+                true,
+            ))
+        } else {
+            None
+        };
+
         self.team_staff_selected_staff_id = selected_staff_id;
+        self.team_staff_selected_staff_ids = selected_staff_ids;
+        self.team_staff_contract_extension_years = extension_years.clone();
         self.team_staff_window_open = open;
+        if let Some(ids) = selected_targets {
+            match parse_contract_extension_years(&extension_years) {
+                Err(error) => {
+                    self.team_staff_contract_extension_status = error.clone();
+                    self.status = error;
+                }
+                Ok(_) if ids.is_empty() => {
+                    self.team_staff_contract_extension_status =
+                        "No eligible Staff contracts found for this action.".to_string();
+                    self.status = self.team_staff_contract_extension_status.clone();
+                }
+                Ok(_) => {
+                    self.team_contract_extension_confirmation = Some(
+                        TeamContractExtensionConfirmation {
+                            member_kind: TeamContractExtensionMemberKind::Staff,
+                            apply_to_all: extend_all_requested,
+                            member_ids: ids,
+                            years: extension_years,
+                        },
+                    );
+                }
+            }
+        }
         if let Some(staff_id) = open_staff_id {
             self.team_staff_window_open = false;
             self.open_staff_in_editor(staff_id);
         }
+        if let Some(staff_id) = move_staff_id {
+            self.open_team_move_staff_window(staff_id);
+        }
     }
 
-    #[cfg(feature = "dev")]
+    fn render_team_contract_extension_confirmation_window(&mut self, ctx: &egui::Context) {
+        let Some(confirmation) = self.team_contract_extension_confirmation.clone() else {
+            return;
+        };
+
+        let mut open = true;
+        let mut confirm_yes = false;
+        let mut confirm_no = false;
+        let message = team_contract_extension_confirmation_message(&confirmation);
+
+        egui::Window::new("Confirm Contract Extension")
+            .id(egui::Id::new("team_contract_extension_confirmation_v0534"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .default_width(380.0)
+            .show(ctx, |ui| {
+                ui.label(message);
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Yes").clicked() {
+                        confirm_yes = true;
+                    }
+                    if ui.button("No").clicked() {
+                        confirm_no = true;
+                    }
+                });
+            });
+
+        if confirm_yes {
+            self.team_contract_extension_confirmation = None;
+            match confirmation.member_kind {
+                TeamContractExtensionMemberKind::Player => {
+                    self.extend_team_player_contracts(confirmation.member_ids, confirmation.years);
+                }
+                TeamContractExtensionMemberKind::Staff => {
+                    self.extend_team_staff_contracts(confirmation.member_ids, confirmation.years);
+                }
+            }
+        } else if confirm_no || !open {
+            self.team_contract_extension_confirmation = None;
+        }
+    }
+
+    fn open_team_move_staff_window(&mut self, staff_id: usize) {
+        self.team_move_staff_id = Some(staff_id);
+        self.team_move_staff_team_id = None;
+        self.team_move_staff_role = self
+            .staffs
+            .iter()
+            .find(|staff| staff.id == staff_id)
+            .map(|staff| staff.role.clone());
+        self.team_move_staff_pending_contract_role = None;
+        self.team_move_staff_window_open = true;
+    }
+
+    fn render_team_move_player_window(&mut self, ctx: &egui::Context) {
+        if !self.team_move_player_window_open {
+            return;
+        }
+
+        let Some(player) = self
+            .team_move_player_id
+            .and_then(|player_id| self.players.iter().find(|player| player.id == player_id))
+            .cloned()
+        else {
+            self.team_move_player_window_open = false;
+            self.team_move_player_id = None;
+            self.team_move_player_team_id = None;
+            return;
+        };
+
+        let mut destination_teams = self
+            .teams
+            .iter()
+            .filter(|team| !summary_belongs_to_team(&player.team, team))
+            .cloned()
+            .collect::<Vec<_>>();
+        destination_teams.sort_by(|left, right| {
+            left.display_name
+                .to_lowercase()
+                .cmp(&right.display_name.to_lowercase())
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        if self
+            .team_move_player_team_id
+            .is_some_and(|team_id| !destination_teams.iter().any(|team| team.id == team_id))
+        {
+            self.team_move_player_team_id = None;
+        }
+
+        let is_free_agent = player.team == "Free Agent";
+        let mut open = self.team_move_player_window_open;
+        let mut execute_move = false;
+        let title = self.localization.tr_with(
+            "team_move.player_window_title",
+            &[("name", player.name.as_str())],
+        );
+
+        egui::Window::new(title)
+            .id(egui::Id::new("team_move_player_window_v0518"))
+            .open(&mut open)
+            .resizable(false)
+            .default_size(egui::vec2(560.0, 300.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                egui::Grid::new("team_move_player_info_v0518")
+                    .num_columns(2)
+                    .spacing(egui::vec2(24.0, 7.0))
+                    .show(ui, |ui| {
+                        ui.label(self.localization.tr("common.name"));
+                        ui.strong(&player.name);
+                        ui.end_row();
+                        ui.label(self.localization.tr("common.id"));
+                        ui.label(player.id.to_string());
+                        ui.end_row();
+                        ui.label(self.localization.tr("team_move.current_team"));
+                        ui.label(value_or_dash(&player.team));
+                        ui.end_row();
+                        ui.label(self.localization.tr("search.players.position"));
+                        ui.label(localized_position_summary(&self.localization, &player.position));
+                        ui.end_row();
+                        ui.label(self.localization.tr("contract.end"));
+                        ui.label(value_or_dash(&display_contract_date(&player.contract_end)));
+                        ui.end_row();
+                    });
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.label(self.localization.tr("team_move.destination_team"));
+                let selected_text = self
+                    .team_move_player_team_id
+                    .and_then(|team_id| destination_teams.iter().find(|team| team.id == team_id))
+                    .map(|team| format!("{} ({})", team.display_name, team.id))
+                    .unwrap_or_else(|| self.localization.tr("team_move.select_destination"));
+                egui::ComboBox::from_id_salt("team_move_player_destination_v0518")
+                    .selected_text(selected_text)
+                    .width(470.0)
+                    .show_ui(ui, |ui| {
+                        for team in &destination_teams {
+                            ui.selectable_value(
+                                &mut self.team_move_player_team_id,
+                                Some(team.id),
+                                format!("{} ({})", team.display_name, team.id),
+                            );
+                        }
+                    });
+
+                ui.add_space(8.0);
+                if is_free_agent {
+                    ui.weak(self.localization.tr("team_move.free_agent_player_note"));
+                } else {
+                    ui.weak(self.localization.tr("team_move.contracted_player_note"));
+                }
+                ui.add_space(8.0);
+                let action_label = if is_free_agent {
+                    self.localization.tr("team_move.contract_and_move_player")
+                } else {
+                    self.localization.tr("team_move.move_player")
+                };
+                if ui
+                    .add_enabled(
+                        self.connected && self.team_move_player_team_id.is_some(),
+                        egui::Button::new(action_label),
+                    )
+                    .clicked()
+                {
+                    execute_move = true;
+                }
+            });
+
+        self.team_move_player_window_open = open;
+        if execute_move {
+            self.recruitment_player_id = Some(player.id);
+            self.recruitment_team_id = self.team_move_player_team_id;
+            self.team_move_player_window_open = false;
+            self.move_recruitment_player_to_team();
+        }
+    }
+
+    fn render_team_move_staff_window(&mut self, ctx: &egui::Context) {
+        if !self.team_move_staff_window_open {
+            return;
+        }
+
+        let Some(staff) = self
+            .team_move_staff_id
+            .and_then(|staff_id| self.staffs.iter().find(|staff| staff.id == staff_id))
+            .cloned()
+        else {
+            self.team_move_staff_window_open = false;
+            self.team_move_staff_id = None;
+            self.team_move_staff_team_id = None;
+            self.team_move_staff_role = None;
+            return;
+        };
+
+        let mut destination_teams = self
+            .teams
+            .iter()
+            .filter(|team| !summary_belongs_to_team(&staff.team, team))
+            .cloned()
+            .collect::<Vec<_>>();
+        destination_teams.sort_by(|left, right| {
+            left.display_name
+                .to_lowercase()
+                .cmp(&right.display_name.to_lowercase())
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        if self
+            .team_move_staff_team_id
+            .is_some_and(|team_id| !destination_teams.iter().any(|team| team.id == team_id))
+        {
+            self.team_move_staff_team_id = None;
+        }
+
+        let is_free_agent = staff.team == "Free Agent";
+        if self
+            .team_move_staff_role
+            .as_deref()
+            .is_none_or(|role| !TEAM_MOVE_STAFF_ROLES.contains(&role))
+        {
+            self.team_move_staff_role = Some(staff.role.clone());
+        }
+        let mut open = self.team_move_staff_window_open;
+        let mut execute_move = false;
+        let title = self.localization.tr_with(
+            "team_move.staff_window_title",
+            &[("name", staff.name.as_str())],
+        );
+
+        egui::Window::new(title)
+            .id(egui::Id::new("team_move_staff_window_v0518"))
+            .open(&mut open)
+            .resizable(false)
+            .default_size(egui::vec2(560.0, 300.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                egui::Grid::new("team_move_staff_info_v0518")
+                    .num_columns(2)
+                    .spacing(egui::vec2(24.0, 7.0))
+                    .show(ui, |ui| {
+                        ui.label(self.localization.tr("common.name"));
+                        ui.strong(&staff.name);
+                        ui.end_row();
+                        ui.label(self.localization.tr("common.id"));
+                        ui.label(staff.id.to_string());
+                        ui.end_row();
+                        ui.label(self.localization.tr("team_move.current_team"));
+                        ui.label(value_or_dash(&staff.team));
+                        ui.end_row();
+                        ui.label(self.localization.tr("common.role"));
+                        ui.label(localized_staff_role(&self.localization, &staff.role));
+                        ui.end_row();
+                        ui.label(self.localization.tr("contract.end"));
+                        ui.label(value_or_dash(&display_contract_date(&staff.contract_end)));
+                        ui.end_row();
+                    });
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.label(self.localization.tr("team_move.destination_team"));
+                let selected_text = self
+                    .team_move_staff_team_id
+                    .and_then(|team_id| destination_teams.iter().find(|team| team.id == team_id))
+                    .map(|team| format!("{} ({})", team.display_name, team.id))
+                    .unwrap_or_else(|| self.localization.tr("team_move.select_destination"));
+                egui::ComboBox::from_id_salt("team_move_staff_destination_v0518")
+                    .selected_text(selected_text)
+                    .width(470.0)
+                    .show_ui(ui, |ui| {
+                        for team in &destination_teams {
+                            ui.selectable_value(
+                                &mut self.team_move_staff_team_id,
+                                Some(team.id),
+                                format!("{} ({})", team.display_name, team.id),
+                            );
+                        }
+                    });
+
+                ui.add_space(8.0);
+                ui.label(self.localization.tr("team_move.destination_role"));
+                let role_text = self
+                    .team_move_staff_role
+                    .as_deref()
+                    .map(|role| localized_staff_role(&self.localization, role))
+                    .unwrap_or_else(|| self.localization.tr("team_move.select_role"));
+                egui::ComboBox::from_id_salt("team_move_staff_role_v0519")
+                    .selected_text(role_text)
+                    .width(300.0)
+                    .show_ui(ui, |ui| {
+                        for role in TEAM_MOVE_STAFF_ROLES {
+                            ui.selectable_value(
+                                &mut self.team_move_staff_role,
+                                Some(role.to_string()),
+                                localized_staff_role(&self.localization, role),
+                            );
+                        }
+                    });
+                ui.weak(self.localization.tr("team_move.role_only_note"));
+
+                ui.add_space(8.0);
+                if is_free_agent {
+                    ui.weak(self.localization.tr("team_move.free_agent_staff_note"));
+                } else {
+                    ui.weak(self.localization.tr("team_move.contracted_staff_note"));
+                }
+                ui.add_space(8.0);
+                let action_label = if is_free_agent {
+                    self.localization.tr("team_move.contract_and_move_staff")
+                } else {
+                    self.localization.tr("team_move.move_staff")
+                };
+                if ui
+                    .add_enabled(
+                        self.connected
+                            && self.team_move_staff_team_id.is_some()
+                            && self.team_move_staff_role.is_some(),
+                        egui::Button::new(action_label),
+                    )
+                    .clicked()
+                {
+                    execute_move = true;
+                }
+            });
+
+        self.team_move_staff_window_open = open;
+        if execute_move {
+            let role = self.team_move_staff_role.clone();
+            self.recruitment_staff_id = Some(staff.id);
+            self.recruitment_team_id = self.team_move_staff_team_id;
+            self.team_move_staff_window_open = false;
+            self.move_recruitment_staff_to_team_with_role(role);
+        }
+    }
+
     fn current_team_management_context(&self) -> Option<(TeamSummary, TeamManagementData)> {
         let team = self
             .team_workspace_team_id
@@ -10749,7 +15464,6 @@ Bridge TFM2 target: v{}",
         Some((team, data))
     }
 
-    #[cfg(feature = "dev")]
     fn current_team_history_context(&self) -> Option<(TeamSummary, Option<TeamHistoryData>)> {
         let team = self
             .team_workspace_team_id
@@ -10763,7 +15477,6 @@ Bridge TFM2 target: v{}",
         Some((team, data))
     }
 
-    #[cfg(feature = "dev")]
     fn render_team_match_history_window(&mut self, ctx: &egui::Context) {
         if !self.team_match_history_window_open {
             return;
@@ -10793,7 +15506,13 @@ Bridge TFM2 target: v{}",
                     if ui.button(self.localization.tr("common.refresh")).clicked() {
                         refresh_requested = true;
                     }
-                    ui.weak(self.localization.tr("team_match_history.help"));
+                    if cfg!(feature = "dev") {
+                        ui.weak(
+                            "Read-only global completed match history. Stored Team reports enrich matching records with detailed set data. Newest matches are shown first.",
+                        );
+                    } else {
+                        ui.weak(self.localization.tr("team_match_history.help"));
+                    }
                 });
                 ui.separator();
 
@@ -10846,6 +15565,15 @@ Bridge TFM2 target: v{}",
                             } else {
                                 self.localization.tr("team_history.loss")
                             };
+                            let match_pattern = if entry.sets.is_empty() {
+                                if cfg!(feature = "dev") {
+                                    "Global Match Record".to_string()
+                                } else {
+                                    "—".to_string()
+                                }
+                            } else {
+                                value_or_dash(&entry.article_pattern)
+                            };
                             let header = format!(
                                 "{} · {} {}-{} · {} · {}",
                                 entry.date,
@@ -10853,7 +15581,7 @@ Bridge TFM2 target: v{}",
                                 entry.my_score,
                                 entry.enemy_score,
                                 entry.opponent_name,
-                                entry.article_pattern
+                                match_pattern
                             );
                             egui::CollapsingHeader::new(header)
                                 .id_salt(("team_match_history_entry_v057", entry.match_id))
@@ -10886,20 +15614,35 @@ Bridge TFM2 target: v{}",
                                         ui.end_row();
 
                                         ui.label(self.localization.tr("team_history.match_pattern"));
-                                        ui.label(value_or_dash(&entry.article_pattern));
+                                        ui.label(match_pattern.as_str());
                                         ui.end_row();
                                     });
 
                                     ui.add_space(8.0);
                                     ui.strong(self.localization.tr("team_match_history.set_details"));
-                                    egui::Grid::new((
-                                        "team_match_history_sets_grid_v057",
-                                        entry.match_id,
-                                    ))
-                                    .striped(true)
-                                    .num_columns(8)
-                                    .spacing(egui::vec2(16.0, 5.0))
-                                    .show(ui, |ui| {
+                                    if entry.sets.is_empty() {
+                                        if cfg!(feature = "dev") {
+                                            ui.weak(
+                                                "Detailed set data is unavailable for this global record.",
+                                            );
+                                        } else if team.is_player_team {
+                                            ui.weak(
+                                                "Detailed set data is unavailable for this match.",
+                                            );
+                                        } else {
+                                            ui.weak(
+                                                "Detailed set data is unavailable for AI teams.",
+                                            );
+                                        }
+                                    } else {
+                                        egui::Grid::new((
+                                            "team_match_history_sets_grid_v057",
+                                            entry.match_id,
+                                        ))
+                                        .striped(true)
+                                        .num_columns(8)
+                                        .spacing(egui::vec2(16.0, 5.0))
+                                        .show(ui, |ui| {
                                         for key in [
                                             "team_match_history.set",
                                             "team_match_history.pattern",
@@ -10954,6 +15697,7 @@ Bridge TFM2 target: v{}",
                                             ui.end_row();
                                         }
                                     });
+                                    }
                                 });
                             ui.add_space(4.0);
                         }
@@ -10966,7 +15710,6 @@ Bridge TFM2 target: v{}",
         }
     }
 
-    #[cfg(feature = "dev")]
     fn render_team_pre_match_analysis_window(&mut self, ctx: &egui::Context) {
         if !self.team_pre_match_analysis_window_open {
             return;
@@ -11140,7 +15883,6 @@ Bridge TFM2 target: v{}",
         }
     }
 
-    #[cfg(feature = "dev")]
     fn render_team_history_summary_window(&mut self, ctx: &egui::Context) {
         if !self.team_history_summary_window_open {
             return;
@@ -11253,6 +15995,1538 @@ Bridge TFM2 target: v{}",
         }
     }
 
+    fn render_team_tactics_window(&mut self, ctx: &egui::Context) {
+        if !self.team_tactics_window_open {
+            return;
+        }
+
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.team_tactics_window_open = false;
+            return;
+        };
+
+        let history = self
+            .team_history_data
+            .as_ref()
+            .filter(|data| data.team_id == team.id)
+            .cloned();
+        let management = self
+            .team_management_data
+            .as_ref()
+            .filter(|data| data.team_id == team.id)
+            .cloned();
+        let own_strategy_auto_request = team.is_player_team
+            && history.is_some()
+            && self.team_own_strategy_probe_team_id != Some(team.id);
+
+        if self
+            .team_tactics_analysis_cache
+            .as_ref()
+            .is_none_or(|cache| cache.team_id != team.id)
+        {
+            if let Some(history) = history.as_ref() {
+                let own_strategy_rows = if team.is_player_team
+                    && self.team_own_strategy_probe_team_id == Some(team.id)
+                {
+                    self.team_own_strategy_probe_rows.as_slice()
+                } else {
+                    &[]
+                };
+                self.team_tactics_analysis_cache = Some(team_tactics_build_analysis_cache(
+                    team.id,
+                    history,
+                    own_strategy_rows,
+                ));
+            }
+        }
+
+        let cache = self
+            .team_tactics_analysis_cache
+            .as_ref()
+            .filter(|cache| cache.team_id == team.id);
+        let mut open = self.team_tactics_window_open;
+        let mut refresh_requested = false;
+        #[cfg(feature = "dev")]
+        let mut open_own_history_requested = false;
+        let mut open_synergy_explorer_requested = false;
+        #[cfg(feature = "dev")]
+        let mut open_scouting_requested = false;
+        #[cfg(feature = "dev")]
+        let mut open_context_requested = false;
+        let mut selected_area = self.team_tactics_selected_area.clone();
+        let title = self.localization.tr_with(
+            "team_tactics.window_title",
+            &[("team", team.display_name.as_str())],
+        );
+
+        egui::Window::new(title)
+            .id(egui::Id::new("team_tactics_window_v0531"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size(egui::vec2(900.0, 700.0))
+            .min_size(egui::vec2(680.0, 480.0))
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(self.localization.tr("common.refresh")).clicked() {
+                        refresh_requested = true;
+                    }
+                    #[cfg(feature = "dev")]
+                    if ui.button("Own Strategy History").clicked() {
+                        open_own_history_requested = true;
+                    }
+                    if ui.button("Full Synergy Explorer").clicked() {
+                        open_synergy_explorer_requested = true;
+                    }
+                    #[cfg(feature = "dev")]
+                    if ui.button("Scouting Evidence").clicked() {
+                        open_scouting_requested = true;
+                    }
+                    #[cfg(feature = "dev")]
+                    if ui.button("Performance / Context Details").clicked() {
+                        open_context_requested = true;
+                    }
+                });
+                ui.separator();
+
+                let Some(history) = history.as_ref() else {
+                    ui.weak(self.localization.tr("team_history.loading"));
+                    return;
+                };
+
+                egui::ScrollArea::vertical()
+                    .id_salt("team_tactics_main_scroll_v0531")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.strong("Historical Data");
+                        if let Some(cache) = cache {
+                            ui.label(format!(
+                                "{} Official Matches · {} Practice Matches · {} Replay Sets",
+                                cache.official_matches, cache.practice_matches, cache.replay_sets
+                            ));
+                        } else {
+                            ui.weak("Historical Strategy data is not loaded yet.");
+                        }
+
+                        ui.add_space(12.0);
+                        ui.strong("Historical Performance");
+                        ui.weak(self.localization.tr("team_tactics.historical_performance_help"));
+                        ui.add_space(4.0);
+
+                        if let Some(cache) = cache {
+                            if cache.historical_leader_rows.is_empty() {
+                                ui.weak("No historical Strategy performance is available.");
+                            } else {
+                                egui::ScrollArea::horizontal()
+                                    .id_salt("team_tactics_historical_performance_summary_scroll_v0531")
+                                    .auto_shrink([false, true])
+                                    .show(ui, |ui| {
+                                        ui.set_min_width(790.0);
+                                        egui::Grid::new("team_tactics_historical_performance_summary_v0531")
+                                            .striped(true)
+                                            .num_columns(6)
+                                            .spacing(egui::vec2(18.0, 5.0))
+                                            .show(ui, |ui| {
+                                                ui.strong("Strategy Area");
+                                                ui.strong("Top Official History");
+                                                ui.strong("Official Matches");
+                                                ui.strong("Official W-L");
+                                                ui.strong("Official Sets");
+                                                ui.strong("Practice Matches");
+                                                ui.end_row();
+
+                                                for row in &cache.historical_leader_rows {
+                                                    ui.label(self.localization.tr(&format!(
+                                                        "team_strategy.{}",
+                                                        row.key
+                                                    )));
+                                                    ui.label(
+                                                        row.historical_value
+                                                            .as_deref()
+                                                            .unwrap_or("No supported Official history"),
+                                                    );
+                                                    ui.label(row.official_matches.to_string());
+                                                    ui.label(format!(
+                                                        "{}-{}",
+                                                        row.official_wins, row.official_losses
+                                                    ));
+                                                    ui.label(row.official_sets.to_string());
+                                                    ui.label(row.practice_matches.to_string());
+                                                    ui.end_row();
+                                                }
+                                            });
+                                    });
+                            }
+
+                            team_tactics_render_historical_synergy_presentation(
+                                ui,
+                                &self.localization,
+                                &cache.synergy_presentation_rows,
+                                &mut selected_area,
+                            );
+
+                            ui.add_space(14.0);
+                            ui.strong("Current Strategy Comparison");
+                            ui.weak(
+                                "Compares the current Strategy with the strongest supported historical value for each area. This is historical comparison, not automatic tactical advice.",
+                            );
+                            ui.add_space(4.0);
+
+                            if let Some(management) = management.as_ref() {
+                                egui::ScrollArea::horizontal()
+                                    .id_salt("team_tactics_current_history_comparison_scroll_v0531")
+                                    .auto_shrink([false, true])
+                                    .show(ui, |ui| {
+                                        ui.set_min_width(660.0);
+                                        egui::Grid::new("team_tactics_current_history_comparison_v0531")
+                                            .striped(true)
+                                            .num_columns(3)
+                                            .spacing(egui::vec2(22.0, 5.0))
+                                            .show(ui, |ui| {
+                                                ui.strong("Strategy Area");
+                                                ui.strong("Current Strategy");
+                                                ui.strong("Best Historical Value");
+                                                ui.end_row();
+
+                                                for leader in &cache.historical_leader_rows {
+                                                    ui.label(self.localization.tr(&format!(
+                                                        "team_strategy.{}",
+                                                        leader.key
+                                                    )));
+                                                    ui.label(team_strategy_option_label(
+                                                        &leader.key,
+                                                        &team_strategy_value(
+                                                            &management.current_strategy,
+                                                            &leader.key,
+                                                        ),
+                                                        &management.lineup,
+                                                    ));
+                                                    ui.label(
+                                                        leader
+                                                            .historical_value
+                                                            .as_deref()
+                                                            .unwrap_or("—"),
+                                                    );
+                                                    ui.end_row();
+                                                }
+                                            });
+                                    });
+                            } else {
+                                ui.weak(self.localization.tr("team_workspace.management_loading"));
+                            }
+                        } else if team.is_player_team {
+                            ui.weak(
+                                "Historical Strategy data is still loading. Use Refresh if it does not appear.",
+                            );
+                        } else {
+                            ui.weak(
+                                "Detailed historical Strategy analysis is currently available for the player Team.",
+                            );
+                        }
+
+                        if history.matches.is_empty() {
+                            ui.add_space(8.0);
+                            ui.weak(self.localization.tr("team_match_history.empty"));
+                        }
+                    });
+            });
+
+        self.team_tactics_window_open = open;
+        self.team_tactics_selected_area = selected_area;
+
+        if refresh_requested {
+            self.team_tactics_analysis_cache = None;
+            self.refresh_team_history_data();
+            self.refresh_team_management_data();
+            if team.is_player_team {
+                self.refresh_team_own_strategy_history_evidence(false);
+            }
+        } else if own_strategy_auto_request {
+            self.refresh_team_own_strategy_history_evidence(false);
+        }
+
+        #[cfg(feature = "dev")]
+        if open_own_history_requested {
+            if team.is_player_team {
+                self.team_own_strategy_probe_window_open = true;
+                if self.team_own_strategy_probe_team_id != Some(team.id)
+                    || self.team_own_strategy_probe_rows.is_empty()
+                {
+                    self.refresh_team_own_strategy_history_evidence(true);
+                }
+            } else {
+                self.status = "Own Strategy History is player-team only.".to_string();
+            }
+        }
+        if open_synergy_explorer_requested {
+            self.team_synergy_explorer_window_open = true;
+        }
+        #[cfg(feature = "dev")]
+        if open_scouting_requested {
+            self.team_scouting_evidence_window_open = true;
+        }
+        #[cfg(feature = "dev")]
+        if open_context_requested {
+            self.team_performance_context_window_open = true;
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn render_team_own_strategy_history_probe_window(&mut self, ctx: &egui::Context) {
+        if !self.team_own_strategy_probe_window_open {
+            return;
+        }
+
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.team_own_strategy_probe_window_open = false;
+            return;
+        };
+        if !team.is_player_team || self.team_own_strategy_probe_team_id != Some(team.id) {
+            self.team_own_strategy_probe_window_open = false;
+            return;
+        }
+
+        let history = self
+            .team_history_data
+            .as_ref()
+            .filter(|data| data.team_id == team.id);
+        let competition = self
+            .team_competition_data
+            .as_ref()
+            .filter(|data| data.team_id == team.id);
+        let linked_match_evidence = history
+            .map(team_tactics_linked_match_evidence)
+            .unwrap_or_default();
+        let rows = self.team_own_strategy_probe_rows.as_slice();
+        let status = self.team_own_strategy_probe_status.as_str();
+
+        let mut open = self.team_own_strategy_probe_window_open;
+        let mut refresh_requested = false;
+        let mut match_id_filter = self.team_own_strategy_filter_match_id.clone();
+        let mut set_filter = self.team_own_strategy_filter_set.clone();
+        let mut replay_filter = self.team_own_strategy_filter_replay_id.clone();
+        let mut match_type_filter = self.team_own_strategy_filter_match_type;
+        let mut opponent_filter = self.team_own_strategy_filter_opponent.clone();
+        let mut selected_replay_id = self.team_own_strategy_selected_replay_id;
+        let filtered_indices = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| {
+                team_tactics_history_row_matches_filter(
+                    row,
+                    &match_id_filter,
+                    &set_filter,
+                    &replay_filter,
+                    match_type_filter,
+                    &opponent_filter,
+                )
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
+
+        egui::Window::new(format!(
+            "Own-Team Historical Strategy Evidence — {}",
+            team.display_name
+        ))
+        .id(egui::Id::new("team_own_strategy_history_inspector_v0531"))
+        .open(&mut open)
+        .resizable(true)
+        .default_size(egui::vec2(980.0, 760.0))
+        .min_size(egui::vec2(720.0, 520.0))
+        .show(ctx, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if ui.button(self.localization.tr("common.refresh")).clicked() {
+                    refresh_requested = true;
+                }
+                ui.label(status);
+            });
+            ui.weak(
+                "Read-only Development inspector. Filters operate on cached normalized Match/Set/Replay evidence and never mutate the source data.",
+            );
+            ui.separator();
+
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Match ID:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut match_id_filter)
+                        .desired_width(80.0)
+                        .hint_text("850"),
+                );
+                ui.label("Set:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut set_filter)
+                        .desired_width(60.0)
+                        .hint_text("2"),
+                );
+                ui.label("Replay ID:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut replay_filter)
+                        .desired_width(90.0)
+                        .hint_text("1875"),
+                );
+                ui.label("Match Type:");
+                egui::ComboBox::from_id_salt("team_own_strategy_match_type_filter_v0531")
+                    .selected_text(match_type_filter.label())
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut match_type_filter,
+                            TeamTacticsHistoryMatchTypeFilter::All,
+                            "All",
+                        );
+                        ui.selectable_value(
+                            &mut match_type_filter,
+                            TeamTacticsHistoryMatchTypeFilter::Official,
+                            "Official",
+                        );
+                        ui.selectable_value(
+                            &mut match_type_filter,
+                            TeamTacticsHistoryMatchTypeFilter::Practice,
+                            "Practice",
+                        );
+                    });
+                ui.label("Opponent:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut opponent_filter)
+                        .desired_width(150.0)
+                        .hint_text("Solary"),
+                );
+                if ui.button("Clear Filters").clicked() {
+                    match_id_filter.clear();
+                    set_filter.clear();
+                    replay_filter.clear();
+                    match_type_filter = TeamTacticsHistoryMatchTypeFilter::All;
+                    opponent_filter.clear();
+                    selected_replay_id = None;
+                }
+            });
+
+            ui.add_space(5.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.strong(format!("{} matching replay records", filtered_indices.len()));
+                if let Some(competition) = competition {
+                    let live_or_next = competition
+                        .matches
+                        .iter()
+                        .find(|entry| entry.status == TeamCompetitionMatchStatus::Running)
+                        .or_else(|| competition.next_match());
+                    if let Some(entry) = live_or_next {
+                        ui.label(format!(
+                            "· Current/next Match {} vs {}",
+                            entry.match_id, entry.opponent_name
+                        ));
+                    }
+                }
+                if let Some(latest) = history.and_then(|data| data.matches.last()) {
+                    ui.label(format!(
+                        "· Latest completed Match {} vs {} · {} {}-{}",
+                        latest.match_id,
+                        latest.opponent_name,
+                        if latest.is_win { "W" } else { "L" },
+                        latest.my_score,
+                        latest.enemy_score
+                    ));
+                }
+            });
+            ui.separator();
+
+            ui.strong("Historical Match / Set / Replay Records");
+            let row_height = 24.0;
+            egui::ScrollArea::vertical()
+                .id_salt("team_own_strategy_history_result_list_v0531")
+                .max_height(260.0)
+                .auto_shrink([false, false])
+                .show_rows(ui, row_height, filtered_indices.len(), |ui, range| {
+                    for visible_index in range {
+                        let row = &rows[filtered_indices[visible_index]];
+                        let selected = selected_replay_id == Some(row.replay_id);
+                        let match_type = if row.is_practice {
+                            "Practice"
+                        } else {
+                            "Official"
+                        };
+                        let set_result = match row.set_is_win {
+                            Some(true) => "W",
+                            Some(false) => "L",
+                            None => "—",
+                        };
+                        let label = format!(
+                            "Match {} · Set {} · Replay {} · {} · {} · Set {} · {}",
+                            row.match_id,
+                            row.set_number,
+                            row.replay_id,
+                            match_type,
+                            row.opponent_name,
+                            set_result,
+                            row.result
+                        );
+                        if ui.selectable_label(selected, label).clicked() {
+                            selected_replay_id = Some(row.replay_id);
+                        }
+                    }
+                });
+
+            ui.separator();
+            ui.strong("Selected Replay Evidence");
+            let selected_row = selected_replay_id
+                .and_then(|replay_id| rows.iter().find(|row| row.replay_id == replay_id));
+            if let Some(row) = selected_row {
+                egui::ScrollArea::vertical()
+                    .id_salt("team_own_strategy_selected_replay_details_v0531")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let match_type = if row.is_practice {
+                            "Practice"
+                        } else {
+                            "Official"
+                        };
+                        let set_result = match row.set_is_win {
+                            Some(true) => "W",
+                            Some(false) => "L",
+                            None => "—",
+                        };
+                        let opponent_team_id = if row.blue_team_id == Some(team.id) {
+                            row.red_team_id
+                        } else if row.red_team_id == Some(team.id) {
+                            row.blue_team_id
+                        } else {
+                            None
+                        };
+                        let scouted = linked_match_evidence
+                            .iter()
+                            .find(|entry| entry.match_id == row.match_id)
+                            .map(|entry| entry.scouted_tactics.as_str())
+                            .unwrap_or("—");
+
+                        egui::Grid::new("team_own_strategy_selected_summary_v0531")
+                            .num_columns(2)
+                            .spacing(egui::vec2(22.0, 5.0))
+                            .show(ui, |ui| {
+                                for (label, value) in [
+                                    ("Match ID", row.match_id.to_string()),
+                                    ("Match Type", match_type.to_string()),
+                                    ("Date", row.date.clone()),
+                                    ("Opponent", row.opponent_name.clone()),
+                                    ("Parent Match Result", row.result.clone()),
+                                    ("Set", row.set_number.to_string()),
+                                    ("Replay ID", row.replay_id.to_string()),
+                                    ("Set Result", set_result.to_string()),
+                                    ("Player Team ID", team.id.to_string()),
+                                    (
+                                        "Opponent Team ID",
+                                        opponent_team_id
+                                            .map(|value| value.to_string())
+                                            .unwrap_or_else(|| "—".to_string()),
+                                    ),
+                                    ("Side", value_or_dash(&row.side)),
+                                    (
+                                        "Blue Team ID",
+                                        row.blue_team_id
+                                            .map(|value| value.to_string())
+                                            .unwrap_or_else(|| "—".to_string()),
+                                    ),
+                                    (
+                                        "Red Team ID",
+                                        row.red_team_id
+                                            .map(|value| value.to_string())
+                                            .unwrap_or_else(|| "—".to_string()),
+                                    ),
+                                    ("Bridge Row Status", row.status.clone()),
+                                    ("Scouted Opponent Tactics", scouted.to_string()),
+                                ] {
+                                    ui.label(label);
+                                    ui.label(value);
+                                    ui.end_row();
+                                }
+                            });
+
+                        ui.add_space(8.0);
+                        ui.strong("Own Strategy");
+                        egui::Grid::new((
+                            "team_own_strategy_selected_strategy_v0531",
+                            row.match_id,
+                            row.replay_id,
+                        ))
+                        .striped(true)
+                        .num_columns(2)
+                        .spacing(egui::vec2(24.0, 4.0))
+                        .show(ui, |ui| {
+                            ui.strong("Strategy Area");
+                            ui.strong("Own Strategy Used");
+                            ui.end_row();
+                            for (key, value) in team_tactics_strategy_display_rows(&row.strategy) {
+                                ui.label(
+                                    self.localization
+                                        .tr(&format!("team_strategy.{key}")),
+                                );
+                                ui.label(value);
+                                ui.end_row();
+                            }
+                        });
+                        ui.weak(
+                            "Morgard/Split Push assignments are preserved in the player-facing Strategy values above. Use Match/Set/Replay filters to compare CLEAN and MIXED series directly.",
+                        );
+                    });
+            } else {
+                ui.weak("Select one replay record to inspect its complete 12-area Strategy evidence.");
+            }
+        });
+
+        self.team_own_strategy_probe_window_open = open;
+        self.team_own_strategy_filter_match_id = match_id_filter;
+        self.team_own_strategy_filter_set = set_filter;
+        self.team_own_strategy_filter_replay_id = replay_filter;
+        self.team_own_strategy_filter_match_type = match_type_filter;
+        self.team_own_strategy_filter_opponent = opponent_filter;
+        self.team_own_strategy_selected_replay_id = selected_replay_id;
+
+        if refresh_requested {
+            self.refresh_team_own_strategy_history_probe();
+        }
+    }
+
+    fn render_team_synergy_explorer_window(&mut self, ctx: &egui::Context) {
+        if !self.team_synergy_explorer_window_open {
+            return;
+        }
+
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.team_synergy_explorer_window_open = false;
+            return;
+        };
+
+        if self
+            .team_tactics_analysis_cache
+            .as_ref()
+            .is_none_or(|cache| cache.team_id != team.id)
+        {
+            if let Some(history) = self
+                .team_history_data
+                .as_ref()
+                .filter(|data| data.team_id == team.id)
+            {
+                let own_strategy_rows = if self.team_own_strategy_probe_team_id == Some(team.id) {
+                    self.team_own_strategy_probe_rows.as_slice()
+                } else {
+                    &[]
+                };
+                self.team_tactics_analysis_cache = Some(team_tactics_build_analysis_cache(
+                    team.id,
+                    history,
+                    own_strategy_rows,
+                ));
+            }
+        }
+
+        let cache = self
+            .team_tactics_analysis_cache
+            .as_ref()
+            .filter(|cache| cache.team_id == team.id);
+        let own_strategy_rows = self.team_own_strategy_probe_rows.as_slice();
+        let mut open = self.team_synergy_explorer_window_open;
+        let mut depth = self.team_synergy_explorer_depth.clamp(2, TEAM_TACTICS_MAX_SYNERGY_DEPTH);
+        let mut search = self.team_synergy_explorer_search.clone();
+        let mut supported_only = self.team_synergy_explorer_supported_only;
+        let mut selected_key = self.team_synergy_explorer_selected_key.clone();
+
+        egui::Window::new(format!(
+            "Full Historical Synergy Explorer — {}",
+            team.display_name
+        ))
+        .id(egui::Id::new("team_synergy_explorer_window_v0531"))
+        .open(&mut open)
+        .resizable(true)
+        .default_size(egui::vec2(1080.0, 640.0))
+        .min_size(egui::vec2(720.0, 400.0))
+        .constrain(true)
+        .show(ctx, |ui| {
+            let Some(cache) = cache else {
+                ui.weak("Historical Synergy analysis is not available yet. Refresh Tactics Analysis.");
+                return;
+            };
+
+            ui.horizontal_wrapped(|ui| {
+                ui.strong("Depth:");
+                for candidate_depth in 2..=TEAM_TACTICS_MAX_SYNERGY_DEPTH {
+                    if ui
+                        .selectable_label(
+                            depth == candidate_depth,
+                            format!("{candidate_depth}-way"),
+                        )
+                        .clicked()
+                    {
+                        depth = candidate_depth;
+                        selected_key = None;
+                    }
+                }
+                ui.separator();
+                ui.label("Search:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut search)
+                        .desired_width(220.0)
+                        .hint_text("Strategy text..."),
+                );
+                ui.checkbox(&mut supported_only, "Supported only");
+            });
+
+            ui.horizontal_wrapped(|ui| {
+                ui.label(format!(
+                    "MAX_SYNERGY_DEPTH = {} · Generated: 2-way {} · 3-way {} · 4-way {}",
+                    TEAM_TACTICS_MAX_SYNERGY_DEPTH,
+                    cache.generated_counts[2],
+                    cache.generated_counts[3],
+                    cache.generated_counts[4],
+                ));
+                ui.label(format!(
+                    "· Supported: {}/{}/{}",
+                    cache.supported_counts[2],
+                    cache.supported_counts[3],
+                    cache.supported_counts[4],
+                ));
+            });
+            ui.weak(format!(
+                "Support threshold: at least {} clean Official Matches. Ranking: 95% Wilson lower bound on clean Official Match W/L, then Official Match support, Set support, raw Match rate and canonical key. Canonical members follow the fixed 12-area Strategy order, preventing reordered duplicates.",
+                TEAM_TACTICS_PROVISIONAL_SYNERGY_MIN_OFFICIAL_MATCHES,
+            ));
+            ui.separator();
+
+            let search_lower = search.trim().to_lowercase();
+            let filtered_indices = cache.sorted_combination_indices[depth]
+                .iter()
+                .copied()
+                .filter(|index| {
+                    let combination = &cache.strategy_combinations[*index];
+                    (!supported_only
+                        || combination.support_count
+                            >= TEAM_TACTICS_PROVISIONAL_SYNERGY_MIN_OFFICIAL_MATCHES)
+                        && team_tactics_combination_matches_search(combination, &search_lower)
+                })
+                .collect::<Vec<_>>();
+
+            ui.strong(format!(
+                "{} matching {}-way combinations",
+                filtered_indices.len(),
+                depth
+            ));
+
+            // Keep the Explorer header fixed and give the result/evidence region exactly
+            // the space left by the user's current window size. The outer window never
+            // derives its height from the table or selected evidence.
+            StripBuilder::new(ui)
+                .clip(true)
+                .size(Size::remainder().at_least(140.0))
+                .vertical(|mut strip| {
+                    strip.cell(|ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("team_synergy_explorer_results_vertical_v0531")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+            egui::ScrollArea::horizontal()
+                .id_salt("team_synergy_explorer_table_horizontal_v0531")
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.set_min_width(1500.0);
+                    TableBuilder::new(ui)
+                        .striped(true)
+                        .resizable(true)
+                        .vscroll(false)
+                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        .column(Column::initial(430.0).resizable(true))
+                        .column(Column::initial(75.0).resizable(true))
+                        .column(Column::initial(90.0).resizable(true))
+                        .column(Column::initial(105.0).resizable(true))
+                        .column(Column::initial(90.0).resizable(true))
+                        .column(Column::initial(95.0).resizable(true))
+                        .column(Column::initial(80.0).resizable(true))
+                        .column(Column::initial(95.0).resizable(true))
+                        .column(Column::initial(110.0).resizable(true))
+                        .column(Column::initial(90.0).resizable(true))
+                        .column(Column::initial(95.0).resizable(true))
+                        .header(24.0, |mut header| {
+                            for label in [
+                                "Historical Combination",
+                                "Official M",
+                                "Official W-L",
+                                "Official Set W-L",
+                                "Official Sets",
+                                "Official Mixed",
+                                "Practice M",
+                                "Practice W-L",
+                                "Practice Set W-L",
+                                "Practice Sets",
+                                "Practice Mixed",
+                            ] {
+                                header.col(|ui| {
+                                    ui.strong(label);
+                                });
+                            }
+                        })
+                        .body(|body| {
+                            body.rows(24.0, filtered_indices.len(), |mut row| {
+                                let combination =
+                                    &cache.strategy_combinations[filtered_indices[row.index()]];
+                                let selected = selected_key.as_deref() == Some(&combination.key);
+                                row.col(|ui| {
+                                    if ui
+                                        .selectable_label(
+                                            selected,
+                                            team_tactics_combination_display(
+                                                combination,
+                                                &self.localization,
+                                            ),
+                                        )
+                                        .clicked()
+                                    {
+                                        selected_key = Some(combination.key.clone());
+                                    }
+                                });
+                                row.col(|ui| {
+                                    ui.label(combination.official_matches.to_string());
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!(
+                                        "{}-{}",
+                                        combination.official_wins,
+                                        combination.official_losses
+                                    ));
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!(
+                                        "{}-{}",
+                                        combination.official_set_wins,
+                                        combination.official_set_losses
+                                    ));
+                                });
+                                row.col(|ui| {
+                                    ui.label(combination.official_sets.to_string());
+                                });
+                                row.col(|ui| {
+                                    ui.label(combination.official_mixed_matches.to_string());
+                                });
+                                row.col(|ui| {
+                                    ui.label(combination.practice_matches.to_string());
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!(
+                                        "{}-{}",
+                                        combination.practice_wins,
+                                        combination.practice_losses
+                                    ));
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!(
+                                        "{}-{}",
+                                        combination.practice_set_wins,
+                                        combination.practice_set_losses
+                                    ));
+                                });
+                                row.col(|ui| {
+                                    ui.label(combination.practice_sets.to_string());
+                                });
+                                row.col(|ui| {
+                                    ui.label(combination.practice_mixed_matches.to_string());
+                                });
+                            });
+                        });
+                });
+
+            ui.separator();
+            ui.strong("Selected Combination Evidence");
+            let selected = selected_key.as_ref().and_then(|key| {
+                cache
+                    .strategy_combinations
+                    .iter()
+                    .find(|combination| &combination.key == key)
+            });
+            if let Some(combination) = selected {
+                        ui.strong(team_tactics_combination_display(
+                            combination,
+                            &self.localization,
+                        ));
+                        ui.label(format!("Depth: {}-way", combination.depth));
+                        ui.label(format!("Canonical key: {}", combination.key));
+                        ui.label(format!(
+                            "Wilson lower bound: {:.6} · Raw Official Match rate: {:.2}% · Support count: {}",
+                            combination.adjusted_performance,
+                            combination.raw_performance * 100.0,
+                            combination.support_count,
+                        ));
+
+                        ui.add_space(6.0);
+                        ui.strong("Canonical Members");
+                        for member in &combination.members {
+                            ui.label(format!(
+                                "{} = {} · raw {}",
+                                self.localization
+                                    .tr(&format!("team_strategy.{}", member.area_key)),
+                                member.display_value,
+                                member.raw_value
+                            ));
+                        }
+
+                        ui.add_space(6.0);
+                        egui::Grid::new("team_synergy_selected_aggregate_v0531")
+                            .striped(true)
+                            .num_columns(6)
+                            .spacing(egui::vec2(18.0, 4.0))
+                            .show(ui, |ui| {
+                                ui.strong("Type");
+                                ui.strong("Clean M");
+                                ui.strong("Match W-L");
+                                ui.strong("Set W-L");
+                                ui.strong("Sets");
+                                ui.strong("Mixed M");
+                                ui.end_row();
+
+                                ui.label("Official");
+                                ui.label(combination.official_matches.to_string());
+                                ui.label(format!(
+                                    "{}-{}",
+                                    combination.official_wins,
+                                    combination.official_losses
+                                ));
+                                ui.label(format!(
+                                    "{}-{}",
+                                    combination.official_set_wins,
+                                    combination.official_set_losses
+                                ));
+                                ui.label(combination.official_sets.to_string());
+                                ui.label(combination.official_mixed_matches.to_string());
+                                ui.end_row();
+
+                                ui.label("Practice");
+                                ui.label(combination.practice_matches.to_string());
+                                ui.label(format!(
+                                    "{}-{}",
+                                    combination.practice_wins,
+                                    combination.practice_losses
+                                ));
+                                ui.label(format!(
+                                    "{}-{}",
+                                    combination.practice_set_wins,
+                                    combination.practice_set_losses
+                                ));
+                                ui.label(combination.practice_sets.to_string());
+                                ui.label(combination.practice_mixed_matches.to_string());
+                                ui.end_row();
+                            });
+
+                        ui.add_space(6.0);
+                        egui::Grid::new("team_synergy_selected_ids_v0531")
+                            .num_columns(2)
+                            .spacing(egui::vec2(18.0, 4.0))
+                            .show(ui, |ui| {
+                                for (label, value) in [
+                                    (
+                                        "Official Clean Match IDs",
+                                        team_tactics_format_id_list(
+                                            &combination.official_match_ids,
+                                        ),
+                                    ),
+                                    (
+                                        "Official Mixed Match IDs",
+                                        team_tactics_format_id_list(
+                                            &combination.official_mixed_match_ids,
+                                        ),
+                                    ),
+                                    (
+                                        "Official Replay IDs",
+                                        team_tactics_format_id_list(
+                                            &combination.official_replay_ids,
+                                        ),
+                                    ),
+                                    (
+                                        "Practice Clean Match IDs",
+                                        team_tactics_format_id_list(
+                                            &combination.practice_match_ids,
+                                        ),
+                                    ),
+                                    (
+                                        "Practice Mixed Match IDs",
+                                        team_tactics_format_id_list(
+                                            &combination.practice_mixed_match_ids,
+                                        ),
+                                    ),
+                                    (
+                                        "Practice Replay IDs",
+                                        team_tactics_format_id_list(
+                                            &combination.practice_replay_ids,
+                                        ),
+                                    ),
+                                ] {
+                                    ui.label(label);
+                                    ui.label(value);
+                                    ui.end_row();
+                                }
+                            });
+
+                        let supporting_rows = own_strategy_rows
+                            .iter()
+                            .filter(|row| {
+                                team_tactics_replay_contains_combination(row, combination)
+                            })
+                            .collect::<Vec<_>>();
+                        ui.add_space(6.0);
+                        ui.strong(format!(
+                            "Supporting Replay Sets — {}",
+                            supporting_rows.len()
+                        ));
+                        ui.weak(
+                            "CLEAN/MIXED is classified from the selected combination's parent-Match evidence. Use Own Strategy History with a Replay ID to inspect all 12 Strategy values for any row.",
+                        );
+                        TableBuilder::new(ui)
+                            .striped(true)
+                            .vscroll(false)
+                            .column(Column::auto())
+                            .column(Column::auto())
+                            .column(Column::auto())
+                            .column(Column::auto())
+                            .column(Column::auto())
+                            .column(Column::auto())
+                            .column(Column::remainder())
+                            .header(22.0, |mut header| {
+                                for label in [
+                                    "Match",
+                                    "Set",
+                                    "Replay",
+                                    "Type",
+                                    "Class",
+                                    "Set Result",
+                                    "Opponent",
+                                ] {
+                                    header.col(|ui| {
+                                        ui.strong(label);
+                                    });
+                                }
+                            })
+                            .body(|body| {
+                                body.rows(22.0, supporting_rows.len(), |mut row| {
+                                    let evidence = supporting_rows[row.index()];
+                                    row.col(|ui| {
+                                        ui.label(evidence.match_id.to_string());
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(evidence.set_number.to_string());
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(evidence.replay_id.to_string());
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(if evidence.is_practice {
+                                            "Practice"
+                                        } else {
+                                            "Official"
+                                        });
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(team_tactics_match_evidence_class(
+                                            evidence,
+                                            combination,
+                                        ));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(match evidence.set_is_win {
+                                            Some(true) => "W",
+                                            Some(false) => "L",
+                                            None => "—",
+                                        });
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(&evidence.opponent_name);
+                                    });
+                                });
+                            });
+            } else {
+                ui.weak("Select one combination to inspect its exact Match/Replay evidence.");
+            }
+                            });
+                    });
+                });
+        });
+
+        self.team_synergy_explorer_window_open = open;
+        self.team_synergy_explorer_depth = depth;
+        self.team_synergy_explorer_search = search;
+        self.team_synergy_explorer_supported_only = supported_only;
+        self.team_synergy_explorer_selected_key = selected_key;
+    }
+
+    #[cfg(feature = "dev")]
+    fn render_team_scouting_evidence_window(&mut self, ctx: &egui::Context) {
+        if !self.team_scouting_evidence_window_open {
+            return;
+        }
+
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.team_scouting_evidence_window_open = false;
+            return;
+        };
+        let history = self
+            .team_history_data
+            .as_ref()
+            .filter(|data| data.team_id == team.id);
+        let mut open = self.team_scouting_evidence_window_open;
+
+        egui::Window::new(format!(
+            "Scouting / Pre-Match Analysis Evidence — {}",
+            team.display_name
+        ))
+        .id(egui::Id::new("team_scouting_evidence_window_v0531"))
+        .open(&mut open)
+        .resizable(true)
+        .default_size(egui::vec2(1040.0, 700.0))
+        .min_size(egui::vec2(720.0, 480.0))
+        .show(ctx, |ui| {
+            let Some(history) = history else {
+                ui.weak(self.localization.tr("team_history.loading"));
+                return;
+            };
+            let linked_match_evidence = team_tactics_linked_match_evidence(history);
+            let outcome_summaries = team_tactics_outcome_summaries(history);
+
+            egui::ScrollArea::vertical()
+                .id_salt("team_scouting_evidence_scroll_v0531")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.strong("Linked Match Evidence");
+                    ui.weak(
+                        "Stored Pre-Match Analysis reports joined to completed parent Match IDs. This remains scouting/context research and does not replace actual replay Strategy.",
+                    );
+                    if linked_match_evidence.is_empty() {
+                        ui.weak("No linked Match evidence is available.");
+                    } else {
+                        egui::Grid::new("team_scouting_linked_match_grid_v0531")
+                            .striped(true)
+                            .num_columns(5)
+                            .spacing(egui::vec2(18.0, 4.0))
+                            .show(ui, |ui| {
+                                ui.strong("Match ID");
+                                ui.strong("Date");
+                                ui.strong("Opponent");
+                                ui.strong("Result");
+                                ui.strong("Scouted Tactics");
+                                ui.end_row();
+                                for evidence in &linked_match_evidence {
+                                    ui.label(evidence.match_id.to_string());
+                                    ui.label(&evidence.date);
+                                    ui.label(&evidence.opponent_name);
+                                    ui.label(&evidence.result);
+                                    ui.label(&evidence.scouted_tactics);
+                                    ui.end_row();
+                                }
+                            });
+                    }
+
+                    ui.add_space(14.0);
+                    ui.strong("Opponent Tactic Outcome Evidence");
+                    ui.weak(
+                        "Historical result correlation against stored scouted opponent tactics. This is retained for research and does not drive Historical Synergy.",
+                    );
+                    if outcome_summaries.is_empty() {
+                        ui.weak("No opponent tactic outcome evidence is available.");
+                    } else {
+                        egui::Grid::new("team_scouting_outcome_grid_v0531")
+                            .striped(true)
+                            .num_columns(6)
+                            .spacing(egui::vec2(18.0, 4.0))
+                            .show(ui, |ui| {
+                                ui.strong("Strategy Area");
+                                ui.strong("Scouted Opponent Tactic");
+                                ui.strong("Matches");
+                                ui.strong("W");
+                                ui.strong("L");
+                                ui.strong("Win %");
+                                ui.end_row();
+                                for summary in &outcome_summaries {
+                                    ui.label(&summary.category);
+                                    ui.label(&summary.value);
+                                    ui.label(summary.matches.to_string());
+                                    ui.label(summary.wins.to_string());
+                                    ui.label(summary.losses.to_string());
+                                    let rate = if summary.matches == 0 {
+                                        0.0
+                                    } else {
+                                        summary.wins as f64 * 100.0
+                                            / summary.matches as f64
+                                    };
+                                    ui.label(format!("{rate:.1}%"));
+                                    ui.end_row();
+                                }
+                            });
+                    }
+
+                    ui.add_space(14.0);
+                    ui.strong(format!(
+                        "Stored Pre-Match Analysis Reports — {}",
+                        history.analyses.len()
+                    ));
+                    for entry in history.analyses.iter().rev() {
+                        egui::CollapsingHeader::new(format!(
+                            "{} · {} · Match {}",
+                            entry.date, entry.opponent_name, entry.match_id
+                        ))
+                        .id_salt(("team_scouting_pre_match_report_v0531", entry.match_id))
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            egui::Grid::new((
+                                "team_scouting_pre_match_summary_v0531",
+                                entry.match_id,
+                            ))
+                            .num_columns(2)
+                            .spacing(egui::vec2(20.0, 4.0))
+                            .show(ui, |ui| {
+                                ui.label("Opponent");
+                                ui.label(format!(
+                                    "{} (ID {})",
+                                    entry.opponent_name, entry.opponent_id
+                                ));
+                                ui.end_row();
+                                ui.label("Analysis Level");
+                                ui.label(value_or_dash(&entry.analysis_level));
+                                ui.end_row();
+                                ui.label("Has Match History");
+                                ui.label(if entry.has_match_history { "Yes" } else { "No" });
+                                ui.end_row();
+                                ui.label("Star Player");
+                                ui.label(format!(
+                                    "{} (ID {})",
+                                    entry.star_player_name, entry.star_player_id
+                                ));
+                                ui.end_row();
+                            });
+
+                            ui.add_space(5.0);
+                            ui.strong("Scouted Tactics");
+                            if entry.tactics.is_empty() {
+                                ui.weak("—");
+                            } else {
+                                for tactic in &entry.tactics {
+                                    ui.label(format!(
+                                        "{} = {}",
+                                        value_or_dash(&tactic.category),
+                                        value_or_dash(&tactic.value)
+                                    ));
+                                }
+                            }
+
+                            ui.add_space(5.0);
+                            ui.strong("Champion Picks");
+                            if entry.champion_picks.is_empty() {
+                                ui.weak("—");
+                            } else {
+                                egui::Grid::new((
+                                    "team_scouting_champion_picks_v0531",
+                                    entry.match_id,
+                                ))
+                                .striped(true)
+                                .num_columns(4)
+                                .spacing(egui::vec2(18.0, 4.0))
+                                .show(ui, |ui| {
+                                    ui.strong("Champion");
+                                    ui.strong("Position");
+                                    ui.strong("W");
+                                    ui.strong("L");
+                                    ui.end_row();
+                                    for champion in &entry.champion_picks {
+                                        ui.label(champion_display_name(
+                                            &champion.champion_id,
+                                        ))
+                                        .on_hover_text(&champion.champion_id);
+                                        ui.label(value_or_dash(&champion.position));
+                                        ui.label(champion.wins.to_string());
+                                        ui.label(champion.losses.to_string());
+                                        ui.end_row();
+                                    }
+                                });
+                            }
+
+                            ui.add_space(5.0);
+                            ui.strong("Insights / Research Context");
+                            if entry.insights.is_empty() {
+                                ui.weak("—");
+                            } else {
+                                for insight in &entry.insights {
+                                    ui.group(|ui| {
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.strong(&insight.section);
+                                            ui.label("·");
+                                            ui.label(&insight.label)
+                                                .on_hover_text(&insight.source_key);
+                                        });
+                                        if !insight.details.trim().is_empty() {
+                                            ui.weak(&insight.details);
+                                        }
+                                    });
+                                }
+                            }
+                        });
+                    }
+                });
+        });
+
+        self.team_scouting_evidence_window_open = open;
+    }
+
+    #[cfg(feature = "dev")]
+    fn render_team_performance_context_window(&mut self, ctx: &egui::Context) {
+        if !self.team_performance_context_window_open {
+            return;
+        }
+
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.team_performance_context_window_open = false;
+            return;
+        };
+        let history = self
+            .team_history_data
+            .as_ref()
+            .filter(|data| data.team_id == team.id);
+        let management = self
+            .team_management_data
+            .as_ref()
+            .filter(|data| data.team_id == team.id);
+        let cache = self
+            .team_tactics_analysis_cache
+            .as_ref()
+            .filter(|cache| cache.team_id == team.id);
+        let roster_context = history
+            .map(|history| team_tactics_roster_context(&team, &self.players, history))
+            .unwrap_or_default();
+        let mut open = self.team_performance_context_window_open;
+
+        egui::Window::new(format!(
+            "Performance / Context Details — {}",
+            team.display_name
+        ))
+        .id(egui::Id::new("team_performance_context_window_v0531"))
+        .open(&mut open)
+        .resizable(true)
+        .default_size(egui::vec2(1080.0, 720.0))
+        .min_size(egui::vec2(760.0, 500.0))
+        .show(ctx, |ui| {
+            let Some(history) = history else {
+                ui.weak(self.localization.tr("team_history.loading"));
+                return;
+            };
+
+            egui::ScrollArea::vertical()
+                .id_salt("team_performance_context_scroll_v0531")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.strong("Analysis / Source Status");
+                    let linked = team_tactics_linked_analysis_count(history);
+                    let replay_match_count = self
+                        .team_own_strategy_probe_rows
+                        .iter()
+                        .filter(|row| row.status == "OK")
+                        .map(|row| row.match_id)
+                        .collect::<BTreeSet<_>>()
+                        .len();
+                    egui::Grid::new("team_performance_context_source_status_v0531")
+                        .num_columns(2)
+                        .spacing(egui::vec2(24.0, 5.0))
+                        .show(ui, |ui| {
+                            for (label, value) in [
+                                ("Completed Matches", history.matches.len().to_string()),
+                                (
+                                    "Stored Pre-Match Analysis Reports",
+                                    history.analyses.len().to_string(),
+                                ),
+                                (
+                                    "Analysis Reports Linked to Completed Matches",
+                                    linked.to_string(),
+                                ),
+                                (
+                                    "Direct Replay Strategy Matches",
+                                    replay_match_count.to_string(),
+                                ),
+                                (
+                                    "Replay Strategy Status",
+                                    self.team_own_strategy_probe_status.clone(),
+                                ),
+                            ] {
+                                ui.label(label);
+                                ui.label(value);
+                                ui.end_row();
+                            }
+                        });
+
+                    ui.add_space(14.0);
+                    ui.strong("Historical Performance Details");
+                    ui.weak(
+                        "Complete Development table. Match W/L contains clean parent-Match exposure; Set W/L includes every observed replay set, including mixed Matches.",
+                    );
+                    if let Some(cache) = cache {
+                        egui::ScrollArea::horizontal()
+                            .id_salt("team_performance_details_horizontal_v0531")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                egui::Grid::new("team_performance_details_grid_v0531")
+                                    .striped(true)
+                                    .num_columns(12)
+                                    .spacing(egui::vec2(14.0, 4.0))
+                                    .show(ui, |ui| {
+                                        for label in [
+                                            "Area",
+                                            "Observed Own Strategy",
+                                            "Official M",
+                                            "Official W-L",
+                                            "Official Set W-L",
+                                            "Official Sets",
+                                            "Official Mixed",
+                                            "Practice M",
+                                            "Practice W-L",
+                                            "Practice Set W-L",
+                                            "Practice Sets",
+                                            "Practice Mixed",
+                                        ] {
+                                            ui.strong(label);
+                                        }
+                                        ui.end_row();
+
+                                        for evidence in &cache.historical_performance_evidence {
+                                            ui.label(self.localization.tr(&format!(
+                                                "team_strategy.{}",
+                                                evidence.key
+                                            )));
+                                            ui.label(&evidence.display_value);
+                                            ui.label(evidence.official_matches.to_string());
+                                            ui.label(format!(
+                                                "{}-{}",
+                                                evidence.official_wins,
+                                                evidence.official_losses
+                                            ));
+                                            ui.label(format!(
+                                                "{}-{}",
+                                                evidence.official_set_wins,
+                                                evidence.official_set_losses
+                                            ));
+                                            ui.label(evidence.official_sets.to_string());
+                                            ui.label(
+                                                evidence.official_mixed_matches.to_string(),
+                                            );
+                                            ui.label(evidence.practice_matches.to_string());
+                                            ui.label(format!(
+                                                "{}-{}",
+                                                evidence.practice_wins,
+                                                evidence.practice_losses
+                                            ));
+                                            ui.label(format!(
+                                                "{}-{}",
+                                                evidence.practice_set_wins,
+                                                evidence.practice_set_losses
+                                            ));
+                                            ui.label(evidence.practice_sets.to_string());
+                                            ui.label(
+                                                evidence.practice_mixed_matches.to_string(),
+                                            );
+                                            ui.end_row();
+                                        }
+                                    });
+                            });
+                    } else {
+                        ui.weak("Historical Performance cache is not available yet.");
+                    }
+
+                    ui.add_space(14.0);
+                    ui.strong("Current Roster Context");
+                    ui.weak(
+                        "Current roster context remains read-only research/context and does not affect Historical Synergy ranking.",
+                    );
+                    egui::Grid::new("team_performance_context_roster_grid_v0531")
+                        .striped(true)
+                        .num_columns(5)
+                        .spacing(egui::vec2(18.0, 4.0))
+                        .show(ui, |ui| {
+                            ui.strong("Position");
+                            ui.strong("Best Current Player");
+                            ui.strong("Player ID");
+                            ui.strong("Actual Rating");
+                            ui.strong("Stored MVP Sets");
+                            ui.end_row();
+                            for context in &roster_context {
+                                ui.label(&context.position);
+                                ui.label(&context.player_name);
+                                ui.label(
+                                    context
+                                        .player_id
+                                        .map(|value| value.to_string())
+                                        .unwrap_or_else(|| "—".to_string()),
+                                );
+                                ui.label(
+                                    context
+                                        .actual_rating
+                                        .map(|value| format!("{value:.1}"))
+                                        .unwrap_or_else(|| "—".to_string()),
+                                );
+                                ui.label(context.stored_mvp_sets.to_string());
+                                ui.end_row();
+                            }
+                        });
+
+                    ui.add_space(14.0);
+                    ui.strong("Current / Last Strategy Snapshots");
+                    if let Some(management) = management {
+                        egui::Grid::new("team_performance_context_strategy_grid_v0531")
+                            .striped(true)
+                            .num_columns(3)
+                            .spacing(egui::vec2(22.0, 5.0))
+                            .show(ui, |ui| {
+                                ui.strong("Strategy Area");
+                                ui.strong("Current Strategy");
+                                ui.strong("Last Strategy");
+                                ui.end_row();
+                                for key in TEAM_STRATEGY_KEYS {
+                                    ui.label(
+                                        self.localization
+                                            .tr(&format!("team_strategy.{key}")),
+                                    );
+                                    ui.label(team_strategy_option_label(
+                                        key,
+                                        &team_strategy_value(
+                                            &management.current_strategy,
+                                            key,
+                                        ),
+                                        &management.lineup,
+                                    ));
+                                    ui.label(team_strategy_option_label(
+                                        key,
+                                        &team_strategy_value(
+                                            &management.last_strategy,
+                                            key,
+                                        ),
+                                        &management.lineup,
+                                    ));
+                                    ui.end_row();
+                                }
+                            });
+                    } else {
+                        ui.weak(self.localization.tr("team_workspace.management_loading"));
+                    }
+                });
+        });
+
+        self.team_performance_context_window_open = open;
+    }
+
     #[cfg(feature = "dev")]
     fn render_team_data_probe_window(&mut self, ctx: &egui::Context) {
         if !self.team_data_probe_window_open {
@@ -11332,7 +17606,2082 @@ Bridge TFM2 target: v{}",
         }
     }
 
+    fn render_team_league_standings_window(&mut self, ctx: &egui::Context) {
+        if !self.team_league_standings_window_open {
+            return;
+        }
+
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.team_league_standings_window_open = false;
+            return;
+        };
+
+        let mut open = self.team_league_standings_window_open;
+        let league_label = self
+            .team_leagues
+            .iter()
+            .find(|league| league.id == team.league_id)
+            .map(|league| league.display_label(&self.localization))
+            .unwrap_or_else(|| format!("League {}", team.league_id));
+        let title = self.localization.tr_with(
+            "team_standings.window_title",
+            &[("league", league_label.as_str())],
+        );
+
+        egui::Window::new(title)
+            .id(egui::Id::new("team_league_standings_window_v0514"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size(egui::vec2(980.0, 520.0))
+            .min_size(egui::vec2(720.0, 340.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                let data = self
+                    .team_league_standings
+                    .as_ref()
+                    .filter(|data| data.league_id == team.league_id);
+
+                let Some(data) = data else {
+                    ui.weak(self.localization.tr("team_standings.loading"));
+                    return;
+                };
+
+                let state = if data.finalized {
+                    self.localization.tr("team_standings.finalized")
+                } else {
+                    self.localization.tr("team_standings.in_progress")
+                };
+                let competition_type = value_or_dash(&data.league_type);
+                let row_count = data.rows.len().to_string();
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(self.localization.tr_with(
+                        "team_standings.competition",
+                        &[("type", competition_type.as_str())],
+                    ));
+                    ui.separator();
+                    ui.label(state);
+                    ui.separator();
+                    ui.label(self.localization.tr_with(
+                        "common.total_count",
+                        &[("count", row_count.as_str())],
+                    ));
+                });
+                ui.weak(self.localization.tr("team_standings.help"));
+                ui.separator();
+
+                if data.rows.is_empty() {
+                    ui.weak(self.localization.tr("team_standings.empty"));
+                    return;
+                }
+
+                let widths = [55.0, 235.0, 55.0, 55.0, 70.0, 70.0, 70.0, 65.0, 65.0, 65.0];
+                let mut table = TableBuilder::new(ui)
+                    .id_salt("team_league_standings_table_v0514")
+                    .striped(true)
+                    .resizable(true)
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                    .min_scrolled_height(0.0)
+                    .auto_shrink([false, false]);
+                for width in widths {
+                    table = table.column(
+                        Column::initial(width)
+                            .at_least(48.0)
+                            .clip(true)
+                            .resizable(true),
+                    );
+                }
+
+                table
+                    .header(26.0, |mut header| {
+                        for key in [
+                            "team_standings.rank",
+                            "common.team",
+                            "team_standings.wins",
+                            "team_standings.losses",
+                            "team_standings.set_wins",
+                            "team_standings.set_losses",
+                            "team_standings.set_diff",
+                            "team_standings.kills",
+                            "team_standings.deaths",
+                            "team_standings.assists",
+                        ] {
+                            header.col(|ui| {
+                                ui.strong(self.localization.tr(key));
+                            });
+                        }
+                    })
+                    .body(|body| {
+                        body.rows(26.0, data.rows.len(), |mut row| {
+                            let index = row.index();
+                            let entry = &data.rows[index];
+                            let selected = entry.team_id == team.id;
+                            let set_diff = entry.set_wins as isize - entry.set_losses as isize;
+                            let rank = (index + 1).to_string();
+                            row.col(|ui| {
+                                if selected { ui.strong(rank); } else { ui.label(rank); }
+                            });
+                            row.col(|ui| {
+                                let label = format!("{} ({})", entry.team_name, entry.team_id);
+                                if selected { ui.strong(label); } else { ui.label(label); }
+                            });
+                            row.col(|ui| { ui.label(entry.wins.to_string()); });
+                            row.col(|ui| { ui.label(entry.losses.to_string()); });
+                            row.col(|ui| { ui.label(entry.set_wins.to_string()); });
+                            row.col(|ui| { ui.label(entry.set_losses.to_string()); });
+                            row.col(|ui| { ui.label(format!("{set_diff:+}")); });
+                            row.col(|ui| { ui.label(entry.kills.to_string()); });
+                            row.col(|ui| { ui.label(entry.deaths.to_string()); });
+                            row.col(|ui| { ui.label(entry.assists.to_string()); });
+                        });
+                    });
+            });
+
+        self.team_league_standings_window_open = open;
+    }
+
+    fn render_team_performance_window(&mut self, ctx: &egui::Context) {
+        if !self.team_performance_window_open {
+            return;
+        }
+
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.team_performance_window_open = false;
+            return;
+        };
+
+        let data = self
+            .team_league_standings
+            .as_ref()
+            .filter(|data| data.league_id == team.league_id)
+            .cloned();
+        let roster = self
+            .players
+            .iter()
+            .filter(|player| summary_belongs_to_team(&player.team, &team))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mut open = self.team_performance_window_open;
+        let mut refresh_requested = false;
+        let title = self.localization.tr_with(
+            "team_performance.window_title",
+            &[("team", team.display_name.as_str())],
+        );
+
+        egui::Window::new(title)
+            .id(egui::Id::new("team_performance_center_window_v0517"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size(egui::vec2(1180.0, 760.0))
+            .min_size(egui::vec2(820.0, 500.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(self.localization.tr("common.refresh")).clicked() {
+                        refresh_requested = true;
+                    }
+                    ui.weak(self.localization.tr("team_performance.help"));
+                });
+                ui.separator();
+
+                let Some(data) = data.as_ref() else {
+                    ui.weak(self.localization.tr("team_performance.loading"));
+                    return;
+                };
+
+                let standing = data.rows.iter().find(|row| row.team_id == team.id);
+                let rank = data
+                    .rows
+                    .iter()
+                    .position(|row| row.team_id == team.id)
+                    .map(|index| index + 1);
+                let player_stats = roster
+                    .iter()
+                    .filter_map(|player| {
+                        data.player_performance
+                            .iter()
+                            .find(|entry| entry.player_id == player.id)
+                            .cloned()
+                            .map(|stats| (player.clone(), stats))
+                    })
+                    .collect::<Vec<_>>();
+                let current_stats = player_stats
+                    .iter()
+                    .map(|(_, stats)| stats.clone())
+                    .collect::<Vec<_>>();
+                let champion_stats = aggregate_team_champion_performance(&current_stats);
+
+                ui.horizontal_wrapped(|ui| {
+                    if let (Some(rank), Some(standing)) = (rank, standing) {
+                        let rank_text = rank.to_string();
+                        let teams_text = data.rows.len().to_string();
+                        ui.label(self.localization.tr_with(
+                            "team_performance.league_rank",
+                            &[("rank", rank_text.as_str()), ("teams", teams_text.as_str())],
+                        ));
+                        ui.separator();
+                        ui.label(format!(
+                            "{}-{} · Sets {}-{}",
+                            standing.wins,
+                            standing.losses,
+                            standing.set_wins,
+                            standing.set_losses
+                        ));
+                        ui.separator();
+                        ui.label(format!(
+                            "K/D/A {} / {} / {}",
+                            standing.kills, standing.deaths, standing.assists
+                        ));
+                    }
+                    let coverage = player_stats.len().to_string();
+                    let roster_count = roster.len().to_string();
+                    ui.separator();
+                    ui.label(self.localization.tr_with(
+                        "team_performance.roster_coverage",
+                        &[("covered", coverage.as_str()), ("roster", roster_count.as_str())],
+                    ));
+                });
+                ui.weak(self.localization.tr("team_performance.roster_note"));
+
+                ui.add_space(8.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("team_performance_center_vertical_v0517")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        // Keep current-roster performance first because it is the primary
+                        // Team view. Champion performance follows immediately below with the
+                        // same compact section spacing; neither section should be pushed to the
+                        // bottom edge by the horizontal table viewport.
+                        ui.strong(self.localization.tr("team_performance.players"));
+                        ui.add_space(4.0);
+                        if player_stats.is_empty() {
+                            ui.weak(self.localization.tr("team_performance.no_player_stats"));
+                        } else {
+                            let mut player_rows = player_stats.clone();
+                            player_rows.sort_by(|left, right| {
+                                let left_avg = if left.1.matches == 0 {
+                                    0.0
+                                } else {
+                                    left.1.rating as f64 / left.1.matches as f64
+                                };
+                                let right_avg = if right.1.matches == 0 {
+                                    0.0
+                                } else {
+                                    right.1.rating as f64 / right.1.matches as f64
+                                };
+                                right_avg
+                                    .partial_cmp(&left_avg)
+                                    .unwrap_or(Ordering::Equal)
+                                    .then_with(|| right.1.matches.cmp(&left.1.matches))
+                                    .then_with(|| left.0.name.cmp(&right.0.name))
+                            });
+
+                            egui::ScrollArea::horizontal()
+                                .id_salt("team_performance_players_horizontal_v0517")
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    egui::Grid::new("team_performance_players_grid_v0517")
+                                        .striped(true)
+                                        .num_columns(18)
+                                        .spacing(egui::vec2(18.0, 5.0))
+                                        .show(ui, |ui| {
+                                            for key in [
+                                                "common.name",
+                                                "common.id",
+                                                "search.players.position",
+                                                "team_performance.games",
+                                                "team_standings.wins",
+                                                "team_competition.win_rate",
+                                                "team_standings.kills",
+                                                "team_standings.deaths",
+                                                "team_standings.assists",
+                                                "team_performance.kda",
+                                                "team_performance.mvp",
+                                                "team_performance.avg_rating",
+                                                "team_performance.avg_gold",
+                                                "team_performance.avg_damage",
+                                                "team_performance.avg_healing",
+                                                "team_performance.avg_tanking",
+                                                "team_performance.solo_kills",
+                                                "team_performance.solo_deaths",
+                                            ] {
+                                                ui.strong(self.localization.tr(key));
+                                            }
+                                            ui.end_row();
+
+                                            for (player, stats) in player_rows {
+                                                ui.label(player.name);
+                                                ui.label(player.id.to_string());
+                                                ui.label(localized_position_summary(
+                                                    &self.localization,
+                                                    &player.position,
+                                                ));
+                                                ui.label(stats.matches.to_string());
+                                                ui.label(stats.wins.to_string());
+                                                ui.label(team_performance_percent(stats.wins, stats.matches));
+                                                ui.label(stats.kills.to_string());
+                                                ui.label(stats.deaths.to_string());
+                                                ui.label(stats.assists.to_string());
+                                                ui.label(team_performance_kda(
+                                                    stats.kills,
+                                                    stats.deaths,
+                                                    stats.assists,
+                                                ));
+                                                ui.label(stats.mvp.to_string());
+                                                ui.label(team_performance_average(stats.rating, stats.matches));
+                                                ui.label(team_performance_average(stats.gold, stats.matches));
+                                                ui.label(team_performance_average(stats.dealing, stats.matches));
+                                                ui.label(team_performance_average(stats.healing, stats.matches));
+                                                ui.label(team_performance_average(stats.tanking, stats.matches));
+                                                ui.label(stats.solo_kill.to_string());
+                                                ui.label(stats.solo_killed.to_string());
+                                                ui.end_row();
+                                            }
+                                        });
+                                });
+                        }
+
+                        ui.add_space(14.0);
+                        ui.separator();
+                        ui.strong(self.localization.tr("team_performance.champions"));
+                        ui.weak(self.localization.tr("team_performance.champion_help"));
+                        ui.add_space(4.0);
+                        if champion_stats.is_empty() {
+                            ui.weak(self.localization.tr("team_performance.no_champion_stats"));
+                        } else {
+                            egui::ScrollArea::horizontal()
+                                .id_salt("team_performance_champions_horizontal_v0517")
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    egui::Grid::new("team_performance_champions_grid_v0517")
+                                        .striped(true)
+                                        .num_columns(8)
+                                        .spacing(egui::vec2(22.0, 5.0))
+                                        .show(ui, |ui| {
+                                            for key in [
+                                                "team_champion_setup.champion",
+                                                "team_performance.picks",
+                                                "team_standings.wins",
+                                                "team_competition.win_rate",
+                                                "team_performance.avg_rating",
+                                                "team_performance.avg_damage",
+                                                "team_performance.avg_healing",
+                                                "team_performance.avg_tanking",
+                                            ] {
+                                                ui.strong(self.localization.tr(key));
+                                            }
+                                            ui.end_row();
+
+                                            for champion in champion_stats {
+                                                ui.label(champion_display_name(&champion.champion_id));
+                                                ui.label(champion.matches.to_string());
+                                                ui.label(champion.wins.to_string());
+                                                ui.label(team_performance_percent(
+                                                    champion.wins,
+                                                    champion.matches,
+                                                ));
+                                                ui.label(team_performance_average(
+                                                    champion.rating,
+                                                    champion.matches,
+                                                ));
+                                                ui.label(team_performance_average(
+                                                    champion.dealing,
+                                                    champion.matches,
+                                                ));
+                                                ui.label(team_performance_average(
+                                                    champion.healing,
+                                                    champion.matches,
+                                                ));
+                                                ui.label(team_performance_average(
+                                                    champion.tanking,
+                                                    champion.matches,
+                                                ));
+                                                ui.end_row();
+                                            }
+                                        });
+                                });
+                        }
+                    });
+            });
+
+        self.team_performance_window_open = open;
+        if refresh_requested {
+            self.refresh_team_league_standings();
+        }
+    }
+
+    fn render_team_contract_center_window(&mut self, ctx: &egui::Context) {
+        if !self.team_contract_center_window_open {
+            return;
+        }
+
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.team_contract_center_window_open = false;
+            return;
+        };
+
+        let mut players = self
+            .players
+            .iter()
+            .filter(|player| summary_belongs_to_team(&player.team, &team))
+            .cloned()
+            .collect::<Vec<_>>();
+        players.sort_by(|left, right| {
+            contract_sort_key(&left.contract_end)
+                .cmp(&contract_sort_key(&right.contract_end))
+                .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+
+        let mut staffs = self
+            .staffs
+            .iter()
+            .filter(|staff| summary_belongs_to_team(&staff.team, &team))
+            .cloned()
+            .collect::<Vec<_>>();
+        staffs.sort_by(|left, right| {
+            contract_sort_key(&left.contract_end)
+                .cmp(&contract_sort_key(&right.contract_end))
+                .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+
+        let player_salary_total = players
+            .iter()
+            .filter_map(|player| parse_display_to_internal(&player.salary).ok())
+            .sum::<f64>();
+        let staff_salary_total = staffs
+            .iter()
+            .filter_map(|staff| parse_display_to_internal(&staff.annual_salary).ok())
+            .sum::<f64>();
+        let combined_salary_total = player_salary_total + staff_salary_total;
+        let player_count_text = players.len().to_string();
+        let staff_count_text = staffs.len().to_string();
+        let player_salary_text = format_internal_amount(&player_salary_total.to_string());
+        let staff_salary_text = format_internal_amount(&staff_salary_total.to_string());
+        let combined_salary_text = format_internal_amount(&combined_salary_total.to_string());
+        let salary_budget_text = format_internal_amount(&team.salary_budget.to_string());
+
+        let mut open = self.team_contract_center_window_open;
+        let mut refresh_requested = false;
+        let mut open_recruitment = false;
+        let mut edit_player_contract_id = None;
+        let mut move_player_id = None;
+        let mut edit_staff_contract_id = None;
+        let mut move_staff_id = None;
+        let title = self.localization.tr_with(
+            "team_contract_center.window_title",
+            &[("team", team.display_name.as_str())],
+        );
+
+        egui::Window::new(title)
+            .id(egui::Id::new("team_contract_center_window_v0519"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size(egui::vec2(1120.0, 620.0))
+            .min_size(egui::vec2(760.0, 400.0))
+            .constrain(false)
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(self.localization.tr("common.refresh")).clicked() {
+                        refresh_requested = true;
+                    }
+                    if ui
+                        .button(self.localization.tr("team_contract_center.open_recruitment"))
+                        .clicked()
+                    {
+                        open_recruitment = true;
+                    }
+                    ui.separator();
+                });
+
+                ui.add_space(5.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(self.localization.tr_with(
+                        "team_contract_center.roster_count",
+                        &[("count", player_count_text.as_str())],
+                    ));
+                    ui.separator();
+                    ui.label(self.localization.tr_with(
+                        "team_contract_center.staff_count",
+                        &[("count", staff_count_text.as_str())],
+                    ));
+                    ui.separator();
+                    ui.label(self.localization.tr_with(
+                        "team_contract_center.player_salary_total",
+                        &[("amount", player_salary_text.as_str())],
+                    ));
+                    ui.separator();
+                    ui.label(self.localization.tr_with(
+                        "team_contract_center.staff_salary_total",
+                        &[("amount", staff_salary_text.as_str())],
+                    ));
+                    ui.separator();
+                    ui.label(self.localization.tr_with(
+                        "team_contract_center.combined_salary_total",
+                        &[("amount", combined_salary_text.as_str())],
+                    ));
+                    ui.separator();
+                    ui.label(self.localization.tr_with(
+                        "team_contract_center.salary_budget",
+                        &[("amount", salary_budget_text.as_str())],
+                    ));
+                });
+                ui.weak(self.localization.tr("team_contract_center.sort_note"));
+                ui.separator();
+
+                let contract_scroll_height = (ui.available_height() - 28.0).max(140.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("team_contract_center_scroll_v0535")
+                    .auto_shrink([false, true])
+                    .max_height(contract_scroll_height)
+                    .show(ui, |ui| {
+                        ui.strong(self.localization.tr("team_contract_center.players"));
+                        ui.add_space(4.0);
+                        if players.is_empty() {
+                            ui.weak(self.localization.tr("team_contract_center.no_players"));
+                        } else {
+                            egui::Grid::new("team_contract_center_players_grid_v0519")
+                                .striped(true)
+                                .num_columns(7)
+                                .spacing(egui::vec2(18.0, 5.0))
+                                .show(ui, |ui| {
+                                    for key in [
+                                        "common.name",
+                                        "common.id",
+                                        "search.players.position",
+                                        "search.columns.salary",
+                                        "contract.end",
+                                        "contract.transfer_fee",
+                                        "common.actions",
+                                    ] {
+                                        ui.strong(self.localization.tr(key));
+                                    }
+                                    ui.end_row();
+
+                                    for player in &players {
+                                        ui.label(&player.name);
+                                        ui.label(player.id.to_string());
+                                        ui.label(localized_position_summary(
+                                            &self.localization,
+                                            &player.position,
+                                        ));
+                                        ui.label(value_or_dash(&player.salary));
+                                        ui.label(value_or_dash(&display_contract_date(
+                                            &player.contract_end,
+                                        )));
+                                        ui.label(value_or_dash(&player.transfer_fee));
+                                        ui.horizontal(|ui| {
+                                            if ui
+                                                .small_button(self.localization.tr("contract.edit"))
+                                                .clicked()
+                                            {
+                                                edit_player_contract_id = Some(player.id);
+                                            }
+                                            if ui
+                                                .small_button(
+                                                    self.localization.tr("team_move.move_player"),
+                                                )
+                                                .clicked()
+                                            {
+                                                move_player_id = Some(player.id);
+                                            }
+                                        });
+                                        ui.end_row();
+                                    }
+                                });
+                        }
+
+                        ui.add_space(16.0);
+                        ui.separator();
+                        ui.strong(self.localization.tr("team_contract_center.staff"));
+                        ui.add_space(4.0);
+                        if staffs.is_empty() {
+                            ui.weak(self.localization.tr("team_contract_center.no_staff"));
+                        } else {
+                            egui::Grid::new("team_contract_center_staff_grid_v0519")
+                                .striped(true)
+                                .num_columns(6)
+                                .spacing(egui::vec2(18.0, 5.0))
+                                .show(ui, |ui| {
+                                    for key in [
+                                        "common.name",
+                                        "common.id",
+                                        "common.role",
+                                        "search.columns.salary",
+                                        "contract.end",
+                                        "common.actions",
+                                    ] {
+                                        ui.strong(self.localization.tr(key));
+                                    }
+                                    ui.end_row();
+
+                                    for staff in &staffs {
+                                        ui.label(&staff.name);
+                                        ui.label(staff.id.to_string());
+                                        ui.label(localized_staff_role(
+                                            &self.localization,
+                                            &staff.role,
+                                        ));
+                                        ui.label(value_or_dash(&staff.annual_salary));
+                                        ui.label(value_or_dash(&display_contract_date(
+                                            &staff.contract_end,
+                                        )));
+                                        ui.horizontal(|ui| {
+                                            if ui
+                                                .small_button(self.localization.tr("contract.edit"))
+                                                .clicked()
+                                            {
+                                                edit_staff_contract_id = Some(staff.id);
+                                            }
+                                            if ui
+                                                .small_button(
+                                                    self.localization.tr("team_move.move_staff"),
+                                                )
+                                                .clicked()
+                                            {
+                                                move_staff_id = Some(staff.id);
+                                            }
+                                        });
+                                        ui.end_row();
+                                    }
+                                });
+                        }
+                    });
+
+                ui.separator();
+            });
+
+        self.team_contract_center_window_open = open;
+
+        if refresh_requested {
+            self.refresh_players();
+            self.refresh_staff();
+        }
+        if open_recruitment {
+            self.team_recruitment_window_open = true;
+            self.recruitment_team_id = Some(team.id);
+            self.recruitment_team_search.clear();
+        }
+        if let Some(player_id) = edit_player_contract_id {
+            self.selected_player_id = Some(player_id);
+            self.refresh_selected_player();
+            if self.selected_player.is_some() {
+                self.open_player_contract_editor();
+            }
+        }
+        if let Some(player_id) = move_player_id {
+            self.team_move_player_id = Some(player_id);
+            self.team_move_player_team_id = None;
+            self.team_move_player_window_open = true;
+        }
+        if let Some(staff_id) = edit_staff_contract_id {
+            self.selected_staff_id = Some(staff_id);
+            self.refresh_selected_staff();
+            if self.selected_staff.is_some() {
+                self.open_staff_contract_editor();
+            }
+        }
+        if let Some(staff_id) = move_staff_id {
+            self.open_team_move_staff_window(staff_id);
+        }
+    }
+
+    fn render_team_finance_center_window(&mut self, ctx: &egui::Context) {
+        if !self.team_finance_center_window_open {
+            return;
+        }
+
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.team_finance_center_window_open = false;
+            return;
+        };
+
+        if self.team_finance_last_team_id != Some(team.id) {
+            if team.is_player_team {
+                self.economy.money = format_internal_amount(&team.total_balance.to_string());
+                self.economy.transfer_budget =
+                    format_internal_amount(&team.transfer_budget.to_string());
+                self.economy.salary_budget =
+                    format_internal_amount(&team.salary_budget.to_string());
+            }
+            self.team_finance_last_team_id = Some(team.id);
+        }
+
+        if self.team_fans_edit_team_id != Some(team.id) {
+            self.team_fans_edit_team_id = Some(team.id);
+            self.team_fans_popularity = team.popularity.clone();
+            self.team_fans_count = team.fan_count.clone();
+            self.team_fans_expectation = team.fan_expectation.clone();
+            self.team_fans_satisfaction = team.fan_satisfaction.clone();
+            self.team_fans_momentum = team.fan_momentum.clone();
+            self.team_fans_edit_status.clear();
+            self.reset_dev_fan_momentum_probe_state();
+        }
+        let mut fan_popularity = self.team_fans_popularity.clone();
+        let mut fan_count = self.team_fans_count.clone();
+        let mut fan_expectation = self.team_fans_expectation.clone();
+        let mut fan_satisfaction = self.team_fans_satisfaction.clone();
+        let mut fan_momentum = self.team_fans_momentum.clone();
+        let fan_expectation_options = order_observed_team_fan_expectations(
+            self.teams
+                .iter()
+                .map(|candidate| candidate.fan_expectation.clone()),
+        );
+        let fan_satisfaction_options = self
+            .teams
+            .iter()
+            .map(|candidate| candidate.fan_satisfaction.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let mut reload_fans_requested = false;
+        let mut apply_fans_requested = false;
+        let mut probe_fan_momentum_requested = false;
+
+        let finance_management_data = self
+            .team_management_data
+            .as_ref()
+            .filter(|data| data.team_id == team.id)
+            .cloned();
+        if let Some(data) = finance_management_data.as_ref() {
+            if self.team_merchandise_edit_team_id != Some(team.id) {
+                self.team_merchandise_edit_team_id = Some(team.id);
+                self.team_merchandise_edit_entries =
+                    team_merchandise_edit_rows(&data.merchandise);
+                self.team_merchandise_edit_status.clear();
+            }
+        }
+        let mut merchandise_edit_entries = self.team_merchandise_edit_entries.clone();
+        let merchandise_edit_status = self.team_merchandise_edit_status.clone();
+        let mut merchandise_apply_row = None;
+        let mut merchandise_reload_requested = false;
+
+        let players = self
+            .players
+            .iter()
+            .filter(|player| summary_belongs_to_team(&player.team, &team))
+            .cloned()
+            .collect::<Vec<_>>();
+        let staffs = self
+            .staffs
+            .iter()
+            .filter(|staff| summary_belongs_to_team(&staff.team, &team))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let player_payroll = players
+            .iter()
+            .filter_map(|player| parse_display_to_internal(&player.salary).ok())
+            .sum::<f64>();
+        let staff_payroll = staffs
+            .iter()
+            .filter_map(|staff| parse_display_to_internal(&staff.annual_salary).ok())
+            .sum::<f64>();
+        let combined_payroll = player_payroll + staff_payroll;
+        let roster_transfer_fees = players
+            .iter()
+            .filter_map(|player| parse_display_to_internal(&player.transfer_fee).ok())
+            .sum::<f64>();
+        let payroll_share = team_finance_percentage(combined_payroll, team.salary_budget);
+
+        let home_matches = team.home_match_count.trim().parse::<usize>().unwrap_or(0);
+        let average_gate_income = team_finance_average(team.total_entrance_income, home_matches);
+
+        let money_text = format_internal_amount(&team.total_balance.to_string());
+        let transfer_budget_text = format_internal_amount(&team.transfer_budget.to_string());
+        let salary_budget_text = format_internal_amount(&team.salary_budget.to_string());
+        let player_payroll_text = format_internal_amount(&player_payroll.to_string());
+        let staff_payroll_text = format_internal_amount(&staff_payroll.to_string());
+        let combined_payroll_text = format_internal_amount(&combined_payroll.to_string());
+        let roster_transfer_text = format_internal_amount(&roster_transfer_fees.to_string());
+        let entrance_income_text = format_internal_amount(&team.total_entrance_income.to_string());
+        let average_gate_income_text = average_gate_income
+            .map(|value| format_internal_amount(&value.to_string()))
+            .unwrap_or_else(|| "-".to_string());
+        let average_attendance_text = team
+            .average_home_attendance()
+            .map(|value| format!("{value:.0}"))
+            .unwrap_or_else(|| "-".to_string());
+
+        let mut open = self.team_finance_center_window_open;
+        let mut refresh_requested = false;
+        let mut reload_economy_requested = false;
+        let mut apply_economy_requested = false;
+        let mut open_contracts = false;
+        let mut open_recruitment = false;
+        let mut open_economy_tab = false;
+        let title = self.localization.tr_with(
+            "team_finance_center.window_title",
+            &[("team", team.display_name.as_str())],
+        );
+
+        egui::Window::new(title)
+            .id(egui::Id::new("team_finance_center_window_v0520"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size(egui::vec2(980.0, 690.0))
+            .min_size(egui::vec2(720.0, 520.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(self.localization.tr("common.refresh")).clicked() {
+                        refresh_requested = true;
+                    }
+                    if ui
+                        .button(self.localization.tr("team_finance_center.open_contracts"))
+                        .clicked()
+                    {
+                        open_contracts = true;
+                    }
+                    if ui
+                        .button(self.localization.tr("team_finance_center.open_recruitment"))
+                        .clicked()
+                    {
+                        open_recruitment = true;
+                    }
+                    if team.is_player_team
+                        && ui
+                            .button(self.localization.tr("team_finance_center.open_economy"))
+                            .clicked()
+                    {
+                        open_economy_tab = true;
+                    }
+                });
+                ui.weak(self.localization.tr("team_finance_center.help"));
+                ui.separator();
+
+                egui::ScrollArea::vertical()
+                    .id_salt("team_finance_center_scroll_v0520")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.strong(self.localization.tr("team_finance_center.overview"));
+                        ui.add_space(4.0);
+                        egui::Grid::new("team_finance_overview_grid_v0520")
+                            .num_columns(4)
+                            .spacing(egui::vec2(18.0, 7.0))
+                            .show(ui, |ui| {
+                                ui.label(self.localization.tr("economy.money"));
+                                ui.strong(&money_text);
+                                ui.label(self.localization.tr("economy.transfer_budget"));
+                                ui.strong(&transfer_budget_text);
+                                ui.end_row();
+
+                                ui.label(self.localization.tr("economy.salary_budget"));
+                                ui.strong(&salary_budget_text);
+                                ui.label(self.localization.tr("team_finance_center.roster_transfer_value"));
+                                ui.strong(&roster_transfer_text);
+                                ui.end_row();
+                            });
+
+                        ui.add_space(14.0);
+                        ui.strong(self.localization.tr("team_finance_center.payroll"));
+                        ui.add_space(4.0);
+                        egui::Grid::new("team_finance_payroll_grid_v0520")
+                            .num_columns(4)
+                            .spacing(egui::vec2(18.0, 7.0))
+                            .show(ui, |ui| {
+                                ui.label(self.localization.tr("team_finance_center.player_payroll"));
+                                ui.strong(&player_payroll_text);
+                                ui.label(self.localization.tr("team_finance_center.staff_payroll"));
+                                ui.strong(&staff_payroll_text);
+                                ui.end_row();
+
+                                ui.label(self.localization.tr("team_finance_center.combined_payroll"));
+                                ui.strong(&combined_payroll_text);
+                                ui.label(self.localization.tr("team_finance_center.payroll_share"));
+                                ui.strong(format!("{payroll_share:.1}%"));
+                                ui.end_row();
+                            });
+                        ui.add(
+                            egui::ProgressBar::new((payroll_share / 100.0).clamp(0.0, 1.0) as f32)
+                                .text(format!("{payroll_share:.1}%")),
+                        );
+
+                        ui.add_space(14.0);
+                        ui.strong(self.localization.tr("team_finance_center.home_operations"));
+                        ui.add_space(4.0);
+                        egui::Grid::new("team_finance_home_grid_v0520")
+                            .num_columns(4)
+                            .spacing(egui::vec2(18.0, 7.0))
+                            .show(ui, |ui| {
+                                ui.label(self.localization.tr("team_finance_center.home_matches"));
+                                ui.strong(value_or_dash(&team.home_match_count));
+                                ui.label(self.localization.tr("team_finance_center.total_attendance"));
+                                ui.strong(value_or_dash(&team.total_home_attendance));
+                                ui.end_row();
+
+                                ui.label(self.localization.tr("team_finance_center.average_attendance"));
+                                ui.strong(&average_attendance_text);
+                                ui.label(self.localization.tr("team_finance_center.total_gate_income"));
+                                ui.strong(&entrance_income_text);
+                                ui.end_row();
+
+                                ui.label(self.localization.tr("team_finance_center.average_gate_income"));
+                                ui.strong(&average_gate_income_text);
+                                ui.label(self.localization.tr("team_workspace.stadium_capacity"));
+                                ui.strong(value_or_dash(&team.stadium_capacity));
+                                ui.end_row();
+                            });
+
+                        ui.add_space(14.0);
+                        ui.strong(self.localization.tr("team_finance_center.fan_base"));
+                        ui.add_space(4.0);
+                        if team.is_player_team {
+                            egui::Grid::new("team_finance_fans_editor_grid_v0532")
+                                .num_columns(2)
+                                .spacing(egui::vec2(18.0, 7.0))
+                                .show(ui, |ui| {
+                                    ui.label(self.localization.tr("team_workspace.fan_count"));
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut fan_count)
+                                            .desired_width(160.0),
+                                    )
+                                    .on_hover_text(self.localization.tr("team_finance_center.fan_count_help"));
+                                    ui.end_row();
+
+                                    ui.label(self.localization.tr("team_finance_center.popularity_level"));
+                                    egui::ComboBox::from_id_salt(
+                                        "team_finance_popularity_level_v0532",
+                                    )
+                                    .selected_text(value_or_dash(&fan_popularity))
+                                    .width(160.0)
+                                    .show_ui(ui, |ui| {
+                                        for level in TEAM_POPULARITY_LEVELS {
+                                            ui.selectable_value(
+                                                &mut fan_popularity,
+                                                level.to_string(),
+                                                level.to_string(),
+                                            );
+                                        }
+                                    })
+                                    .response
+                                    .on_hover_text(self.localization.tr("team_finance_center.popularity_help"));
+                                    ui.end_row();
+
+                                    ui.label(self.localization.tr("team_workspace.fan_expectation"));
+                                    egui::ComboBox::from_id_salt(
+                                        "team_finance_fan_expectation_v0533",
+                                    )
+                                    .selected_text(if fan_expectation.trim().is_empty() {
+                                        "—".to_string()
+                                    } else {
+                                        team_fan_expectation_display_label(&fan_expectation)
+                                    })
+                                    .width(160.0)
+                                    .show_ui(ui, |ui| {
+                                        for option in &fan_expectation_options {
+                                            ui.selectable_value(
+                                                &mut fan_expectation,
+                                                option.clone(),
+                                                team_fan_expectation_display_label(option),
+                                            );
+                                        }
+                                    })
+                                    .response
+                                    .on_hover_text(self.localization.tr("team_finance_center.fan_expectation_help"));
+                                    ui.end_row();
+
+                                    ui.label(self.localization.tr("team_workspace.fan_satisfaction"));
+                                    egui::ComboBox::from_id_salt(
+                                        "team_finance_fan_satisfaction_v0532",
+                                    )
+                                    .selected_text(value_or_dash(&fan_satisfaction))
+                                    .width(160.0)
+                                    .show_ui(ui, |ui| {
+                                        for option in &fan_satisfaction_options {
+                                            ui.selectable_value(
+                                                &mut fan_satisfaction,
+                                                option.clone(),
+                                                option,
+                                            );
+                                        }
+                                    });
+                                    ui.end_row();
+
+                                    ui.label(self.localization.tr("team_workspace.fan_momentum"));
+                                    egui::ComboBox::from_id_salt(
+                                        "team_finance_fan_momentum_v0534",
+                                    )
+                                    .selected_text(value_or_dash(&fan_momentum))
+                                    .width(160.0)
+                                    .show_ui(ui, |ui| {
+                                        for level in TEAM_FAN_MOMENTUM_LEVELS {
+                                            ui.selectable_value(
+                                                &mut fan_momentum,
+                                                level.to_string(),
+                                                level.to_string(),
+                                            );
+                                        }
+                                    })
+                                    .response
+                                    .on_hover_text(self.localization.tr("team_finance_center.fan_momentum_help"));
+                                    ui.end_row();
+                                });
+                            ui.horizontal_wrapped(|ui| {
+                                if ui.button(self.localization.tr("team_finance_center.reload_fans")).clicked() {
+                                    reload_fans_requested = true;
+                                }
+                                if ui
+                                    .add_enabled(
+                                        self.connected,
+                                        egui::Button::new(self.localization.tr("team_finance_center.apply_fans")),
+                                    )
+                                    .clicked()
+                                {
+                                    apply_fans_requested = true;
+                                }
+                                if self.render_dev_fan_momentum_probe_button(ui, true) {
+                                    probe_fan_momentum_requested = true;
+                                }
+                            });
+                            if !self.team_fans_edit_status.is_empty() {
+                                ui.weak(self.team_fans_edit_status.as_str());
+                            }
+                        } else {
+                            egui::Grid::new("team_finance_fans_read_only_grid_v0532")
+                                .num_columns(4)
+                                .spacing(egui::vec2(18.0, 7.0))
+                                .show(ui, |ui| {
+                                    ui.label(self.localization.tr("team_workspace.fan_count"));
+                                    ui.strong(value_or_dash(&team.fan_count));
+                                    ui.label(self.localization.tr("team_finance_center.popularity_level"));
+                                    ui.strong(value_or_dash(&team.popularity));
+                                    ui.end_row();
+                                    ui.label(self.localization.tr("team_workspace.fan_expectation"));
+                                    ui.strong(value_or_dash(&team.fan_expectation));
+                                    ui.label(self.localization.tr("team_workspace.fan_satisfaction"));
+                                    ui.strong(value_or_dash(&team.fan_satisfaction));
+                                    ui.end_row();
+                                    ui.label(self.localization.tr("team_workspace.fan_momentum"));
+                                    ui.strong(value_or_dash(&team.fan_momentum));
+                                    ui.end_row();
+                                });
+                            ui.weak(self.localization.tr("team_finance_center.fans_read_only_ai"));
+                            if self.render_dev_fan_momentum_probe_button(ui, false) {
+                                probe_fan_momentum_requested = true;
+                            }
+                        }
+
+                        ui.add_space(14.0);
+                        ui.strong(self.localization.tr("team_finance_center.merchandise"));
+                        ui.add_space(4.0);
+                        if let Some(data) = finance_management_data.as_ref() {
+                            let total_stock = data
+                                .merchandise
+                                .iter()
+                                .map(|entry| parse_usize_value(&entry.stock))
+                                .sum::<usize>();
+                            let yearly_sales = data
+                                .merchandise
+                                .iter()
+                                .map(|entry| parse_usize_value(&entry.yearly_sales))
+                                .sum::<usize>();
+                            let yearly_revenue = data
+                                .merchandise
+                                .iter()
+                                .map(|entry| parse_f64_value(&entry.yearly_revenue))
+                                .sum::<f64>();
+                            let merchandise_product_count_text =
+                                data.merchandise.len().to_string();
+                            let merchandise_total_stock_text = total_stock.to_string();
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(self.localization.tr_with(
+                                    "team_merchandise.product_count",
+                                    &[("count", merchandise_product_count_text.as_str())],
+                                ));
+                                ui.separator();
+                                ui.label(self.localization.tr_with(
+                                    "team_merchandise.total_stock",
+                                    &[("count", merchandise_total_stock_text.as_str())],
+                                ));
+                                ui.separator();
+                                let yearly_sales_text = yearly_sales.to_string();
+                                ui.label(self.localization.tr_with(
+                                    "team_merchandise.yearly_sales_summary",
+                                    &[("count", yearly_sales_text.as_str())],
+                                ));
+                                ui.separator();
+                                let yearly_revenue_text =
+                                    format_internal_amount(&yearly_revenue.to_string());
+                                ui.label(self.localization.tr_with(
+                                    "team_merchandise.yearly_revenue_summary",
+                                    &[("amount", yearly_revenue_text.as_str())],
+                                ));
+                            });
+                            if team.is_player_team {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.weak(self.localization.tr("team_merchandise.edit_help"));
+                                    if ui.button(self.localization.tr("team_merchandise.reload_values")).clicked() {
+                                        merchandise_reload_requested = true;
+                                    }
+                                });
+                                if !merchandise_edit_status.is_empty() {
+                                    ui.weak(merchandise_edit_status.as_str());
+                                }
+                            } else {
+                                ui.weak(self.localization.tr("team_merchandise.read_only_ai"));
+                            }
+
+                            if merchandise_edit_entries.is_empty() {
+                                ui.weak(self.localization.tr("team_merchandise.empty"));
+                            } else {
+                                let widths = if team.is_player_team {
+                                    vec![90.0, 170.0, 65.0, 105.0, 110.0, 100.0, 100.0, 120.0, 100.0, 120.0, 95.0]
+                                } else {
+                                    vec![90.0, 180.0, 70.0, 80.0, 105.0, 105.0, 125.0, 105.0, 125.0, 100.0]
+                                };
+                                egui::ScrollArea::horizontal()
+                                    .id_salt("team_finance_merchandise_horizontal_v0535")
+                                    .auto_shrink([false, true])
+                                    .show(ui, |ui| {
+                                        let table_min_width =
+                                            widths.iter().copied().sum::<f32>() + 60.0;
+                                        ui.set_min_width(table_min_width);
+                                        let mut table = TableBuilder::new(ui)
+                                            .id_salt("team_finance_merchandise_table_v0535")
+                                            .striped(true)
+                                            .resizable(true)
+                                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                            .min_scrolled_height(0.0)
+                                            .max_scroll_height(300.0)
+                                            .auto_shrink([false, true]);
+                                        for width in widths {
+                                            table = table.column(
+                                                Column::initial(width)
+                                                    .at_least(58.0)
+                                                    .clip(true)
+                                                    .resizable(true),
+                                            );
+                                        }
+                                        table
+                                            .header(26.0, |mut header| {
+                                                for key in [
+                                                    "team_merchandise.product_type",
+                                                    "common.player",
+                                                    "common.id",
+                                                    "team_merchandise.stock",
+                                                    "team_merchandise.sell_price",
+                                                    "team_merchandise.yearly_sales",
+                                                    "team_merchandise.yearly_revenue",
+                                                    "team_merchandise.total_sales",
+                                                    "team_merchandise.total_revenue",
+                                                    "team_merchandise.daily_rate",
+                                                ] {
+                                                    header.col(|ui| {
+                                                        ui.strong(self.localization.tr(key));
+                                                    });
+                                                }
+                                                if team.is_player_team {
+                                                    header.col(|ui| {
+                                                        ui.strong("Apply");
+                                                    });
+                                                }
+                                            })
+                                            .body(|body| {
+                                                body.rows(28.0, merchandise_edit_entries.len(), |mut row| {
+                                                    let row_index = row.index();
+                                                    let entry = &mut merchandise_edit_entries[row_index];
+                                                    row.col(|ui| {
+                                                        ui.label(self.localization.tr_with(
+                                                            "team_merchandise.type_value",
+                                                            &[("type", entry.product_type.as_str())],
+                                                        ));
+                                                    });
+                                                    row.col(|ui| {
+                                                        ui.label(value_or_dash(&entry.athlete_name));
+                                                    });
+                                                    row.col(|ui| {
+                                                        ui.label(entry.athlete_id.to_string());
+                                                    });
+                                                    row.col(|ui| {
+                                                        if team.is_player_team {
+                                                            ui.add(egui::TextEdit::singleline(&mut entry.stock).desired_width(90.0));
+                                                        } else {
+                                                            ui.label(value_or_dash(&entry.stock));
+                                                        }
+                                                    });
+                                                    row.col(|ui| {
+                                                        if team.is_player_team {
+                                                            ui.add(egui::TextEdit::singleline(&mut entry.sell_price).desired_width(95.0));
+                                                        } else {
+                                                            ui.label(format_internal_amount(&entry.sell_price));
+                                                        }
+                                                    });
+                                                    row.col(|ui| { ui.label(value_or_dash(&entry.yearly_sales)); });
+                                                    row.col(|ui| { ui.label(format_internal_amount(&entry.yearly_revenue)); });
+                                                    row.col(|ui| { ui.label(value_or_dash(&entry.total_sales)); });
+                                                    row.col(|ui| { ui.label(format_internal_amount(&entry.total_revenue)); });
+                                                    row.col(|ui| { ui.label(value_or_dash(&entry.daily_purchase_rate)); });
+                                                    if team.is_player_team {
+                                                        row.col(|ui| {
+                                                            if ui.button("Apply").clicked() {
+                                                                merchandise_apply_row = Some(row_index);
+                                                            }
+                                                        });
+                                                    }
+                                                });
+                                            });
+                                    });
+                            }
+                        } else {
+                            ui.weak("Loading Merchandise data...");
+                        }
+
+                        ui.add_space(14.0);
+                        ui.separator();
+                        if team.is_player_team {
+                            ui.strong(self.localization.tr("team_finance_center.budget_editor"));
+                            ui.weak(self.localization.tr("team_finance_center.budget_editor_help"));
+                            ui.add_space(6.0);
+                            egui::Grid::new("team_finance_budget_editor_grid_v0520")
+                                .num_columns(2)
+                                .spacing(egui::vec2(18.0, 8.0))
+                                .show(ui, |ui| {
+                                    ui.label(self.localization.tr("economy.money"));
+                                    money_text_edit_with_preview(
+                                        ui,
+                                        &self.localization,
+                                        &mut self.economy.money,
+                                        190.0,
+                                        true,
+                                    );
+                                    ui.end_row();
+
+                                    ui.label(self.localization.tr("economy.transfer_budget"));
+                                    money_text_edit_with_preview(
+                                        ui,
+                                        &self.localization,
+                                        &mut self.economy.transfer_budget,
+                                        190.0,
+                                        true,
+                                    );
+                                    ui.end_row();
+
+                                    ui.label(self.localization.tr("economy.salary_budget"));
+                                    money_text_edit_with_preview(
+                                        ui,
+                                        &self.localization,
+                                        &mut self.economy.salary_budget,
+                                        190.0,
+                                        true,
+                                    );
+                                    ui.end_row();
+                                });
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .button(self.localization.tr("team_finance_center.reload_budgets"))
+                                    .clicked()
+                                {
+                                    reload_economy_requested = true;
+                                }
+                                if ui
+                                    .add_enabled(
+                                        self.connected,
+                                        egui::Button::new(
+                                            self.localization.tr("team_finance_center.apply_budgets"),
+                                        ),
+                                    )
+                                    .clicked()
+                                {
+                                    apply_economy_requested = true;
+                                }
+                            });
+                        } else {
+                            ui.weak(self.localization.tr("team_finance_center.read_only_ai"));
+                        }
+                    });
+            });
+
+        self.team_finance_center_window_open = open;
+        self.team_merchandise_edit_entries = merchandise_edit_entries;
+        self.team_fans_popularity = fan_popularity;
+        self.team_fans_count = fan_count;
+        self.team_fans_expectation = fan_expectation;
+        self.team_fans_satisfaction = fan_satisfaction;
+        self.team_fans_momentum = fan_momentum;
+
+        if merchandise_reload_requested {
+            if let Some(data) = finance_management_data.as_ref() {
+                self.team_merchandise_edit_entries =
+                    team_merchandise_edit_rows(&data.merchandise);
+                self.team_merchandise_edit_team_id = Some(team.id);
+                self.team_merchandise_edit_status =
+                    "Reloaded Merchandise values from current Team data.".to_string();
+            }
+        }
+        if let Some(row_index) = merchandise_apply_row {
+            self.apply_team_merchandise_edit(row_index);
+        }
+
+        if reload_fans_requested {
+            self.refresh_teams();
+            self.sync_team_fans_edit_from_loaded_team(team.id);
+            self.team_fans_edit_status = "Reloaded Fan Base values from current Team data.".to_string();
+            self.reset_dev_fan_momentum_probe_state();
+        }
+        if apply_fans_requested {
+            self.apply_team_fans_edit();
+        }
+        self.handle_dev_fan_momentum_probe_request(probe_fan_momentum_requested);
+
+        if refresh_requested {
+            self.refresh_players();
+            self.refresh_staff();
+            self.refresh_teams();
+            self.refresh_team_management_data();
+            self.team_merchandise_edit_team_id = None;
+            self.team_finance_last_team_id = None;
+            self.sync_team_fans_edit_from_loaded_team(team.id);
+            self.team_fans_edit_status =
+                "Refreshed Team Finance and Fan Base values from the current save.".to_string();
+            self.reset_dev_fan_momentum_probe_state();
+        }
+        if reload_economy_requested && team.is_player_team {
+            self.refresh_economy();
+            self.refresh_teams();
+            self.team_finance_last_team_id = None;
+        }
+        if apply_economy_requested && team.is_player_team && self.apply_economy() {
+            self.refresh_teams();
+            self.team_finance_last_team_id = None;
+            self.status = format!("Team economy updated: {}", team.display_name);
+        }
+        if open_contracts {
+            self.team_contract_center_window_open = true;
+        }
+        if open_recruitment {
+            self.team_recruitment_window_open = true;
+            self.recruitment_team_id = Some(team.id);
+            self.recruitment_team_search.clear();
+        }
+        if open_economy_tab && team.is_player_team {
+            self.active_tab = AppTab::Economy;
+        }
+    }
+
     #[cfg(feature = "dev")]
+    fn render_team_fan_momentum_probe_window(&mut self, ctx: &egui::Context) {
+        if !self.team_fan_momentum_probe_window_open {
+            return;
+        }
+
+        let team_label = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .map(|team| format!("{} · Team ID {}", team.display_name, team.id))
+            .unwrap_or_else(|| "No Team selected".to_string());
+        let raw = self.team_fan_momentum_probe_raw.clone();
+        let mut open = self.team_fan_momentum_probe_window_open;
+
+        egui::Window::new(format!("Fan Momentum Probe — {team_label}"))
+            .id(egui::Id::new("team_fan_momentum_probe_window_v0532"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size(egui::vec2(700.0, 480.0))
+            .min_size(egui::vec2(500.0, 320.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                ui.weak(
+                    "Read-only Development evidence. Fan Momentum writes remain disabled until this runtime representation is reviewed.",
+                );
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_salt("team_fan_momentum_probe_scroll_v0532")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        if raw.trim().is_empty() {
+                            ui.weak("No probe result is available.");
+                            return;
+                        }
+
+                        let mut observed_teams = Vec::new();
+                        egui::Grid::new("team_fan_momentum_probe_fields_v0532")
+                            .num_columns(2)
+                            .spacing(egui::vec2(20.0, 6.0))
+                            .show(ui, |ui| {
+                                for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+                                    let fields = line.split('\t').collect::<Vec<_>>();
+                                    if fields.first().copied() == Some("observed_team")
+                                        && fields.len() >= 3
+                                    {
+                                        observed_teams.push((fields[1].to_string(), fields[2].to_string()));
+                                        continue;
+                                    }
+                                    let key = fields.first().copied().unwrap_or("unknown");
+                                    let value = fields.get(1).copied().unwrap_or("");
+                                    ui.label(key.replace('_', " "));
+                                    if value.trim().is_empty() {
+                                        ui.weak("Unknown / Not established");
+                                    } else {
+                                        ui.monospace(value);
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+
+                        if !observed_teams.is_empty() {
+                            ui.add_space(10.0);
+                            ui.strong("Observed Teams");
+                            egui::Grid::new("team_fan_momentum_probe_teams_v0532")
+                                .num_columns(2)
+                                .spacing(egui::vec2(20.0, 4.0))
+                                .show(ui, |ui| {
+                                    ui.strong("Team ID");
+                                    ui.strong("Raw Momentum");
+                                    ui.end_row();
+                                    for (team_id, value) in observed_teams {
+                                        ui.monospace(team_id);
+                                        ui.monospace(value);
+                                        ui.end_row();
+                                    }
+                                });
+                        }
+                    });
+            });
+
+        self.team_fan_momentum_probe_window_open = open;
+    }
+
+    fn render_team_recruitment_window(&mut self, ctx: &egui::Context) {
+        if !self.team_recruitment_window_open {
+            return;
+        }
+
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.team_recruitment_window_open = false;
+            return;
+        };
+
+        // Team Recruitment is a front-end integration over the already validated
+        // Recruitment move/contract paths. The selected Team is always the
+        // destination, including when the workspace switches between player/AI teams.
+        self.recruitment_team_id = Some(team.id);
+
+        let mut open = self.team_recruitment_window_open;
+        let mut open_player_editor_id = None;
+        let mut open_staff_editor_id = None;
+        let mut recruit_player_id = None;
+        let mut recruit_staff_id = None;
+        let mut open_full_recruitment = false;
+        let title = self.localization.tr_with(
+            "team_recruitment.window_title",
+            &[("team", team.display_name.as_str())],
+        );
+
+        egui::Window::new(title)
+            .id(egui::Id::new("team_recruitment_center_window_v0517"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size(egui::vec2(900.0, 610.0))
+            .min_size(egui::vec2(700.0, 460.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.strong(self.localization.tr("team_recruitment.destination"));
+                    ui.label(format!("{} (ID {})", team.display_name, team.id));
+                    ui.separator();
+                    if ui
+                        .button(self.localization.tr("team_recruitment.open_full_recruitment"))
+                        .clicked()
+                    {
+                        open_full_recruitment = true;
+                    }
+                });
+                ui.weak(self.localization.tr("team_recruitment.help"));
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    for tab in RecruitmentManagementTab::ALL {
+                        ui.selectable_value(
+                            &mut self.recruitment_management_tab,
+                            tab,
+                            self.localization.tr(tab.label_key()),
+                        );
+                    }
+                });
+                ui.add_space(8.0);
+
+                match self.recruitment_management_tab {
+                    RecruitmentManagementTab::Players => {
+                        ui.horizontal(|ui| {
+                            ui.label(self.localization.tr("common.search"));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.recruitment_player_search)
+                                    .desired_width(300.0)
+                                    .hint_text(self.localization.tr("recruitment.search_player_hint")),
+                            );
+                            if ui.button(self.localization.tr("common.clear")).clicked() {
+                                self.recruitment_player_search.clear();
+                            }
+                            if ui.button(self.localization.tr("editor.refresh_players")).clicked() {
+                                self.refresh_players();
+                            }
+                        });
+
+                        let query = self.recruitment_player_search.trim().to_lowercase();
+                        let candidates = self
+                            .players
+                            .iter()
+                            .filter(|player| !summary_belongs_to_team(&player.team, &team))
+                            .filter(|player| Self::recruitment_player_matches_search(&player.name, player.id, &query))
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        if self
+                            .recruitment_player_id
+                            .is_some_and(|id| !candidates.iter().any(|player| player.id == id))
+                        {
+                            self.recruitment_player_id = None;
+                        }
+
+                        let selected_text = self
+                            .recruitment_player_id
+                            .and_then(|id| candidates.iter().find(|player| player.id == id))
+                            .map(|player| format!("{} · {} · ID {}", player.name, player.team, player.id))
+                            .unwrap_or_else(|| self.localization.tr("editor.select_player"));
+
+                        ui.horizontal(|ui| {
+                            ui.label(self.localization.tr("common.player"));
+                            egui::ComboBox::from_id_salt("team_recruitment_player_v0517")
+                                .selected_text(selected_text)
+                                .width(500.0)
+                                .show_ui(ui, |ui| {
+                                    for player in &candidates {
+                                        ui.selectable_value(
+                                            &mut self.recruitment_player_id,
+                                            Some(player.id),
+                                            format!("{} · {} · ID {}", player.name, player.team, player.id),
+                                        );
+                                    }
+                                });
+                            let count = candidates.len().to_string();
+                            ui.label(self.localization.tr_with(
+                                "common.matches",
+                                &[("count", count.as_str())],
+                            ));
+                        });
+
+                        if let Some(player) = self
+                            .recruitment_player_id
+                            .and_then(|id| candidates.iter().find(|player| player.id == id))
+                            .cloned()
+                        {
+                            ui.add_space(10.0);
+                            egui::Grid::new("team_recruitment_player_info_v0517")
+                                .num_columns(2)
+                                .spacing(egui::vec2(24.0, 6.0))
+                                .show(ui, |ui| {
+                                    ui.label(self.localization.tr("common.team"));
+                                    ui.label(value_or_dash(&player.team));
+                                    ui.end_row();
+                                    ui.label(self.localization.tr("search.players.position"));
+                                    ui.label(localized_position_summary(
+                                        &self.localization,
+                                        &player.position,
+                                    ));
+                                    ui.end_row();
+                                    ui.label(self.localization.tr("search.columns.actual_rating"));
+                                    ui.label(value_or_dash(&player.actual_rating));
+                                    ui.end_row();
+                                    ui.label(self.localization.tr("contract.end"));
+                                    ui.label(value_or_dash(&player.contract_end));
+                                    ui.end_row();
+                                    ui.label(self.localization.tr("contract.transfer_fee"));
+                                    ui.label(value_or_dash(&player.transfer_fee));
+                                    ui.end_row();
+                                });
+
+                            let selected_is_free_agent = player.team == "Free Agent";
+                            let action_label = if selected_is_free_agent {
+                                self.localization
+                                    .tr("recruitment.player_management.create_contract_move")
+                            } else {
+                                self.localization
+                                    .tr("recruitment.player_management.move_contracted")
+                            };
+                            ui.add_space(10.0);
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .button(self.localization.tr("search.open_in_player_editor"))
+                                    .clicked()
+                                {
+                                    open_player_editor_id = Some(player.id);
+                                }
+                                if ui
+                                    .add_enabled(self.connected, egui::Button::new(action_label))
+                                    .clicked()
+                                {
+                                    recruit_player_id = Some(player.id);
+                                }
+                            });
+                            if selected_is_free_agent {
+                                ui.weak(self.localization.tr("team_recruitment.free_agent_contract_note"));
+                            } else {
+                                ui.weak(self.localization.tr("team_recruitment.contracted_move_note"));
+                            }
+                        }
+                    }
+                    RecruitmentManagementTab::Staff => {
+                        ui.horizontal(|ui| {
+                            ui.label(self.localization.tr("common.search"));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.recruitment_staff_search)
+                                    .desired_width(300.0)
+                                    .hint_text(self.localization.tr("recruitment.search_staff_hint")),
+                            );
+                            if ui.button(self.localization.tr("common.clear")).clicked() {
+                                self.recruitment_staff_search.clear();
+                            }
+                            if ui.button(self.localization.tr("editor.refresh_staff")).clicked() {
+                                self.refresh_staff();
+                            }
+                        });
+
+                        let query = self.recruitment_staff_search.trim().to_lowercase();
+                        let candidates = self
+                            .staffs
+                            .iter()
+                            .filter(|staff| !summary_belongs_to_team(&staff.team, &team))
+                            .filter(|staff| staff.matches_search(&query))
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        if self
+                            .recruitment_staff_id
+                            .is_some_and(|id| !candidates.iter().any(|staff| staff.id == id))
+                        {
+                            self.recruitment_staff_id = None;
+                        }
+
+                        let selected_text = self
+                            .recruitment_staff_id
+                            .and_then(|id| candidates.iter().find(|staff| staff.id == id))
+                            .map(|staff| staff.localized_label(&self.localization))
+                            .unwrap_or_else(|| self.localization.tr("editor.select_staff"));
+
+                        ui.horizontal(|ui| {
+                            ui.label(self.localization.tr("common.staff"));
+                            egui::ComboBox::from_id_salt("team_recruitment_staff_v0517")
+                                .selected_text(selected_text)
+                                .width(500.0)
+                                .show_ui(ui, |ui| {
+                                    for staff in &candidates {
+                                        ui.selectable_value(
+                                            &mut self.recruitment_staff_id,
+                                            Some(staff.id),
+                                            staff.localized_label(&self.localization),
+                                        );
+                                    }
+                                });
+                            let count = candidates.len().to_string();
+                            ui.label(self.localization.tr_with(
+                                "common.matches",
+                                &[("count", count.as_str())],
+                            ));
+                        });
+
+                        if let Some(staff) = self
+                            .recruitment_staff_id
+                            .and_then(|id| candidates.iter().find(|staff| staff.id == id))
+                            .cloned()
+                        {
+                            ui.add_space(10.0);
+                            egui::Grid::new("team_recruitment_staff_info_v0517")
+                                .num_columns(2)
+                                .spacing(egui::vec2(24.0, 6.0))
+                                .show(ui, |ui| {
+                                    ui.label(self.localization.tr("common.team"));
+                                    ui.label(value_or_dash(&staff.team));
+                                    ui.end_row();
+                                    ui.label(self.localization.tr("common.role"));
+                                    ui.label(localized_staff_role(&self.localization, &staff.role));
+                                    ui.end_row();
+                                    ui.label(self.localization.tr("staff.attributes.negotiation"));
+                                    ui.label(value_or_dash(&staff.negotiation));
+                                    ui.end_row();
+                                    ui.label(self.localization.tr("contract.end"));
+                                    ui.label(value_or_dash(&staff.contract_end));
+                                    ui.end_row();
+                                    ui.label(self.localization.tr("contract.annual_salary"));
+                                    ui.label(value_or_dash(&staff.annual_salary));
+                                    ui.end_row();
+                                });
+
+                            let selected_is_free_agent = staff.team == "Free Agent";
+                            let action_label = if selected_is_free_agent {
+                                self.localization
+                                    .tr("recruitment.staff_management.create_contract_move")
+                            } else {
+                                self.localization
+                                    .tr("recruitment.staff_management.move_contracted")
+                            };
+                            ui.add_space(10.0);
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .button(self.localization.tr("search.open_in_staff_editor"))
+                                    .clicked()
+                                {
+                                    open_staff_editor_id = Some(staff.id);
+                                }
+                                if ui
+                                    .add_enabled(self.connected, egui::Button::new(action_label))
+                                    .clicked()
+                                {
+                                    recruit_staff_id = Some(staff.id);
+                                }
+                            });
+                            if selected_is_free_agent {
+                                ui.weak(self.localization.tr("team_recruitment.free_agent_contract_note"));
+                            } else {
+                                ui.weak(self.localization.tr("team_recruitment.contracted_move_note"));
+                            }
+                        }
+                    }
+                }
+
+                ui.add_space(12.0);
+                ui.separator();
+            });
+
+        self.team_recruitment_window_open = open;
+
+        if open_full_recruitment {
+            self.recruitment_team_id = Some(team.id);
+            self.recruitment_team_search.clear();
+            self.active_tab = AppTab::Recruitment;
+        }
+        if let Some(player_id) = open_player_editor_id {
+            self.open_player_in_editor(player_id);
+        }
+        if let Some(staff_id) = open_staff_editor_id {
+            self.open_staff_in_editor(staff_id);
+        }
+        if let Some(player_id) = recruit_player_id {
+            self.recruitment_player_id = Some(player_id);
+            self.recruitment_team_id = Some(team.id);
+            self.move_recruitment_player_to_team();
+        }
+        if let Some(staff_id) = recruit_staff_id {
+            self.recruitment_staff_id = Some(staff_id);
+            self.recruitment_team_id = Some(team.id);
+            self.move_recruitment_staff_to_team();
+        }
+    }
+
+    fn render_team_competition_window(&mut self, ctx: &egui::Context) {
+        if !self.team_competition_window_open {
+            return;
+        }
+
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.team_competition_window_open = false;
+            return;
+        };
+        let data = self
+            .team_competition_data
+            .as_ref()
+            .filter(|data| data.team_id == team.id)
+            .cloned();
+
+        let mut open = self.team_competition_window_open;
+        let mut refresh_requested = false;
+        let title = self.localization.tr_with(
+            "team_competition.window_title",
+            &[("team", team.display_name.as_str())],
+        );
+
+        egui::Window::new(title)
+            .id(egui::Id::new("team_competition_center_window_v0515"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size(egui::vec2(1080.0, 720.0))
+            .min_size(egui::vec2(760.0, 460.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(self.localization.tr("common.refresh")).clicked() {
+                        refresh_requested = true;
+                    }
+                    ui.weak(self.localization.tr("team_competition.help"));
+                });
+                ui.separator();
+
+                let Some(data) = data.as_ref() else {
+                    ui.weak(self.localization.tr("team_competition.loading"));
+                    return;
+                };
+
+                let (official_wins, official_losses) = data.record_for(false);
+                let (practice_wins, practice_losses) = data.record_for(true);
+                let (set_wins, set_losses) = data.official_set_record();
+                let upcoming_count = data.upcoming_count();
+                let official_wins_text = official_wins.to_string();
+                let official_losses_text = official_losses.to_string();
+                let practice_wins_text = practice_wins.to_string();
+                let practice_losses_text = practice_losses.to_string();
+                let set_wins_text = set_wins.to_string();
+                let set_losses_text = set_losses.to_string();
+                let upcoming_count_text = upcoming_count.to_string();
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(self.localization.tr_with(
+                        "team_competition.official_record",
+                        &[
+                            ("wins", official_wins_text.as_str()),
+                            ("losses", official_losses_text.as_str()),
+                        ],
+                    ));
+                    ui.separator();
+                    ui.label(self.localization.tr_with(
+                        "team_competition.set_record",
+                        &[
+                            ("wins", set_wins_text.as_str()),
+                            ("losses", set_losses_text.as_str()),
+                        ],
+                    ));
+                    ui.separator();
+                    ui.label(self.localization.tr_with(
+                        "team_competition.practice_record",
+                        &[
+                            ("wins", practice_wins_text.as_str()),
+                            ("losses", practice_losses_text.as_str()),
+                        ],
+                    ));
+                    ui.separator();
+                    ui.label(self.localization.tr_with(
+                        "team_competition.upcoming_count",
+                        &[("count", upcoming_count_text.as_str())],
+                    ));
+                });
+
+                if let Some(next) = data.next_match() {
+                    ui.add_space(8.0);
+                    ui.group(|ui| {
+                        ui.strong(self.localization.tr("team_competition.next_match"));
+                        let match_type = if next.is_practice {
+                            self.localization.tr("team_history.practice")
+                        } else {
+                            self.localization.tr("team_history.official")
+                        };
+                        let state = if next.status == TeamCompetitionMatchStatus::Running {
+                            self.localization.tr("team_competition.running")
+                        } else {
+                            self.localization.tr("team_competition.upcoming")
+                        };
+                        let opponent = next
+                            .opponent_id
+                            .map(|id| format!("{} (ID {id})", next.opponent_name))
+                            .unwrap_or_else(|| next.opponent_name.clone());
+                        ui.label(format!(
+                            "{} · {} · {} · {} · Match {}",
+                            next.date, match_type, opponent, state, next.match_id
+                        ));
+                    });
+                }
+
+                ui.add_space(8.0);
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_salt("team_competition_center_scroll_v0515")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.strong(self.localization.tr("team_competition.upcoming_matches"));
+                        ui.add_space(4.0);
+                        let upcoming = data
+                            .matches
+                            .iter()
+                            .filter(|entry| {
+                                entry.status != TeamCompetitionMatchStatus::Completed
+                            })
+                            .take(30)
+                            .collect::<Vec<_>>();
+                        if upcoming.is_empty() {
+                            ui.weak(self.localization.tr("team_competition.no_upcoming"));
+                        } else {
+                            egui::Grid::new("team_competition_upcoming_grid_v0515")
+                                .striped(true)
+                                .num_columns(5)
+                                .spacing(egui::vec2(22.0, 5.0))
+                                .show(ui, |ui| {
+                                    for key in [
+                                        "team_competition.date",
+                                        "team_history.match_type",
+                                        "team_history.opponent",
+                                        "team_competition.status",
+                                        "team_history.match_id",
+                                    ] {
+                                        ui.strong(self.localization.tr(key));
+                                    }
+                                    ui.end_row();
+                                    for entry in upcoming {
+                                        ui.label(value_or_dash(&entry.date));
+                                        ui.label(if entry.is_practice {
+                                            self.localization.tr("team_history.practice")
+                                        } else {
+                                            self.localization.tr("team_history.official")
+                                        });
+                                        ui.label(
+                                            entry
+                                                .opponent_id
+                                                .map(|id| format!(
+                                                    "{} ({id})",
+                                                    entry.opponent_name
+                                                ))
+                                                .unwrap_or_else(|| entry.opponent_name.clone()),
+                                        );
+                                        ui.label(if entry.status == TeamCompetitionMatchStatus::Running {
+                                            self.localization.tr("team_competition.running")
+                                        } else {
+                                            self.localization.tr("team_competition.upcoming")
+                                        });
+                                        ui.label(entry.match_id.to_string());
+                                        ui.end_row();
+                                    }
+                                });
+                        }
+
+                        ui.add_space(16.0);
+                        ui.separator();
+                        ui.strong(self.localization.tr("team_competition.recent_results"));
+                        ui.add_space(4.0);
+                        let recent = data
+                            .matches
+                            .iter()
+                            .rev()
+                            .filter(|entry| {
+                                entry.status == TeamCompetitionMatchStatus::Completed
+                            })
+                            .take(30)
+                            .collect::<Vec<_>>();
+                        if recent.is_empty() {
+                            ui.weak(self.localization.tr("team_competition.no_results"));
+                        } else {
+                            egui::Grid::new("team_competition_results_grid_v0515")
+                                .striped(true)
+                                .num_columns(6)
+                                .spacing(egui::vec2(22.0, 5.0))
+                                .show(ui, |ui| {
+                                    for key in [
+                                        "team_competition.date",
+                                        "team_history.match_type",
+                                        "team_history.opponent",
+                                        "team_competition.result",
+                                        "team_competition.score",
+                                        "team_history.match_id",
+                                    ] {
+                                        ui.strong(self.localization.tr(key));
+                                    }
+                                    ui.end_row();
+                                    for entry in recent {
+                                        ui.label(value_or_dash(&entry.date));
+                                        ui.label(if entry.is_practice {
+                                            self.localization.tr("team_history.practice")
+                                        } else {
+                                            self.localization.tr("team_history.official")
+                                        });
+                                        ui.label(
+                                            entry
+                                                .opponent_id
+                                                .map(|id| format!(
+                                                    "{} ({id})",
+                                                    entry.opponent_name
+                                                ))
+                                                .unwrap_or_else(|| entry.opponent_name.clone()),
+                                        );
+                                        ui.label(match entry.is_win {
+                                            Some(true) => self.localization.tr("team_history.win"),
+                                            Some(false) => self.localization.tr("team_history.loss"),
+                                            None => "—".to_string(),
+                                        });
+                                        ui.label(match (entry.my_score, entry.enemy_score) {
+                                            (Some(my_score), Some(enemy_score)) => {
+                                                format!("{my_score}-{enemy_score}")
+                                            }
+                                            _ => "—".to_string(),
+                                        });
+                                        ui.label(entry.match_id.to_string());
+                                        ui.end_row();
+                                    }
+                                });
+                        }
+
+                        ui.add_space(16.0);
+                        ui.separator();
+                        ui.strong(self.localization.tr("team_competition.head_to_head"));
+                        ui.add_space(4.0);
+                        let head_to_head = data.head_to_head();
+                        if head_to_head.is_empty() {
+                            ui.weak(self.localization.tr("team_competition.no_head_to_head"));
+                        } else {
+                            egui::Grid::new("team_competition_h2h_grid_v0515")
+                                .striped(true)
+                                .num_columns(7)
+                                .spacing(egui::vec2(22.0, 5.0))
+                                .show(ui, |ui| {
+                                    for key in [
+                                        "team_history.opponent",
+                                        "team_competition.played",
+                                        "team_standings.wins",
+                                        "team_standings.losses",
+                                        "team_standings.set_wins",
+                                        "team_standings.set_losses",
+                                        "team_competition.win_rate",
+                                    ] {
+                                        ui.strong(self.localization.tr(key));
+                                    }
+                                    ui.end_row();
+                                    for entry in head_to_head {
+                                        ui.label(format!(
+                                            "{} ({})",
+                                            entry.opponent_name, entry.opponent_id
+                                        ));
+                                        ui.label(entry.matches.to_string());
+                                        ui.label(entry.wins.to_string());
+                                        ui.label(entry.losses.to_string());
+                                        ui.label(entry.set_wins.to_string());
+                                        ui.label(entry.set_losses.to_string());
+                                        let win_rate = if entry.matches == 0 {
+                                            0.0
+                                        } else {
+                                            entry.wins as f64 / entry.matches as f64 * 100.0
+                                        };
+                                        ui.label(format!("{win_rate:.0}%"));
+                                        ui.end_row();
+                                    }
+                                });
+                        }
+                    });
+            });
+
+        self.team_competition_window_open = open;
+        if refresh_requested {
+            self.refresh_team_competition_data();
+        }
+    }
+
     fn render_team_strategy_window(&mut self, ctx: &egui::Context) {
         if !self.team_strategy_window_open {
             return;
@@ -11343,91 +19692,472 @@ Bridge TFM2 target: v{}",
             return;
         };
 
+        if team.is_player_team && self.team_strategy_edit_team_id != Some(team.id) {
+            self.team_strategy_edit_team_id = Some(team.id);
+            self.team_strategy_edit_values = data.current_strategy.clone();
+            self.team_strategy_split_player_ids = [None, None];
+            self.team_strategy_edit_status.clear();
+        }
+        if team.is_player_team && !self.team_strategy_options_attempted {
+            self.refresh_team_strategy_options();
+        }
+
+        let mut team_roster = if team.is_player_team {
+            self.players
+                .iter()
+                .filter(|player| summary_belongs_to_team(&player.team, &team))
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        team_roster.sort_by_key(|player| player.name.to_lowercase());
+
+        let mut edit_values = self.team_strategy_edit_values.clone();
+        let strategy_options = self.team_strategy_options.clone();
+        let mut split_player_ids = self.team_strategy_split_player_ids;
         let mut open = self.team_strategy_window_open;
+        let mut select_preset: Option<String> = None;
+        let mut save_preset = false;
+        let mut edit_preset = false;
+        let mut delete_preset = false;
+        let mut apply_preset = false;
+        let mut reload_current_strategy = false;
+        let mut refresh_strategy_choices = false;
+        let mut apply_strategy_editor = false;
         let title = self.localization.tr_with(
             "team_strategy.window_title",
             &[("team", team.display_name.as_str())],
         );
 
         egui::Window::new(title)
-            .id(egui::Id::new("team_strategy_window_v056"))
+            .id(egui::Id::new("team_strategy_window_v0523_resizable_fixed_layout"))
             .open(&mut open)
+            // The default size is only used for the first open of this Window Id.
+            // After that, the user owns the size. There is intentionally no max_size
+            // and no per-frame size assignment from Strategy content dimensions.
             .resizable(true)
-            .default_size(egui::vec2(900.0, 500.0))
-            .min_size(egui::vec2(680.0, 340.0))
-            .constrain(true)
+            .default_size(egui::vec2(1080.0, 720.0))
+            .min_size(egui::vec2(720.0, 440.0))
+            .constrain(false)
             .show(ctx, |ui| {
-                ui.weak(self.localization.tr("team_strategy.help"));
-                ui.separator();
+                let player_controls_visible = team_strategy_presets_visible(team.is_player_team);
+                // Keep the fixed Strategy columns structurally adjacent. UI Bulk 1 adds an
+                // internal overflow viewport only so the user can own a smaller outer window.
+                let show_team_color = cfg!(feature = "dev");
+                let area_column_width = 116.0;
+                let current_column_width = 252.0;
+                let read_only_column_width = 136.0;
+                let preset_column_width = 288.0;
+                let column_spacing = 8.0;
+                let strategy_column_count = if show_team_color { 4.0 } else { 3.0 };
+                let strategy_columns_width = area_column_width
+                    + current_column_width
+                    + read_only_column_width
+                    + if show_team_color {
+                        read_only_column_width
+                    } else {
+                        0.0
+                    }
+                    + column_spacing * (strategy_column_count - 1.0);
+                let content_height = ui.available_height().max(420.0);
 
-                let widths = [190.0, 210.0, 210.0, 210.0];
-                let table_min_width = widths.iter().copied().sum::<f32>() + 40.0;
-                render_team_member_table_viewport(
-                    ui,
-                    "team_strategy_horizontal_v056",
-                    table_min_width,
-                    |ui, table_height| {
-                        let mut table = TableBuilder::new(ui)
-                            .id_salt("team_strategy_table_v056")
-                            .striped(true)
-                            .resizable(true)
-                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                            .min_scrolled_height(0.0)
-                            .max_scroll_height(table_height)
-                            .auto_shrink([false, false]);
-                        for width in widths {
-                            table = table.column(
-                                Column::initial(width)
-                                    .at_least(110.0)
-                                    .clip(true)
-                                    .resizable(true),
-                            );
-                        }
+                egui::ScrollArea::both()
+                    .id_salt("team_strategy_content_viewport_v0535")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                ui.horizontal_top(|ui| {
+                    // No flexible spacer is inserted between this fixed Strategy
+                    // block and the preset column. Extra OS-window width stays empty
+                    // after the final fixed column.
+                    ui.spacing_mut().item_spacing.x = column_spacing;
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(strategy_columns_width, content_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_width(strategy_columns_width);
 
-                        table
-                            .header(26.0, |mut header| {
-                                header.col(|ui| {
-                                    ui.strong(self.localization.tr("team_strategy.area"));
-                                });
-                                header.col(|ui| {
-                                    ui.strong(self.localization.tr("team_strategy.current"));
-                                });
-                                header.col(|ui| {
-                                    ui.strong(self.localization.tr("team_strategy.last"));
-                                });
-                                header.col(|ui| {
-                                    ui.strong(self.localization.tr("team_strategy.team_color"));
-                                });
-                            })
-                            .body(|body| {
-                                body.rows(26.0, TEAM_STRATEGY_KEYS.len(), |mut row| {
-                                    let key = TEAM_STRATEGY_KEYS[row.index()];
-                                    let label_key = format!("team_strategy.{key}");
-                                    row.col(|ui| {
-                                        ui.label(self.localization.tr(&label_key));
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(team_strategy_value(&data.current_strategy, key));
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(team_strategy_value(&data.last_strategy, key));
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(team_strategy_value(
-                                            &data.team_color_strategy,
-                                            key,
-                                        ));
-                                    });
-                                });
+                            // Use one explicit horizontal row per Strategy Area instead of
+                            // egui::Grid. Each row measures its tallest fixed-width child UI,
+                            // so Morgard may grow vertically without overlapping the next row.
+                            // The fixed widths also prevent any child from stretching when the
+                            // user manually enlarges the Team Strategy window.
+                            ui.horizontal_top(|ui| {
+                                ui.spacing_mut().item_spacing.x = column_spacing;
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(area_column_width, 24.0),
+                                    egui::Layout::top_down(egui::Align::Min),
+                                    |ui| {
+                                        ui.set_width(area_column_width);
+                                        ui.strong(self.localization.tr("team_strategy.area"));
+                                    },
+                                );
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(current_column_width, 24.0),
+                                    egui::Layout::top_down(egui::Align::Min),
+                                    |ui| {
+                                        ui.set_width(current_column_width);
+                                        ui.strong(self.localization.tr("team_strategy.current"));
+                                    },
+                                );
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(read_only_column_width, 24.0),
+                                    egui::Layout::top_down(egui::Align::Min),
+                                    |ui| {
+                                        ui.set_width(read_only_column_width);
+                                        ui.strong(self.localization.tr("team_strategy.last"));
+                                    },
+                                );
+                                if show_team_color {
+                                    ui.allocate_ui_with_layout(
+                                        egui::vec2(read_only_column_width, 24.0),
+                                        egui::Layout::top_down(egui::Align::Min),
+                                        |ui| {
+                                            ui.set_width(read_only_column_width);
+                                            ui.strong(
+                                                self.localization.tr("team_strategy.team_color"),
+                                            );
+                                        },
+                                    );
+                                }
                             });
-                    },
-                );
+                            ui.separator();
+
+                            for key in TEAM_STRATEGY_KEYS {
+                                let label_key = format!("team_strategy.{key}");
+                                ui.horizontal_top(|ui| {
+                                    ui.spacing_mut().item_spacing.x = column_spacing;
+
+                                    ui.allocate_ui_with_layout(
+                                        egui::vec2(area_column_width, 28.0),
+                                        egui::Layout::top_down(egui::Align::Min),
+                                        |ui| {
+                                            ui.set_width(area_column_width);
+                                            ui.add(
+                                                egui::Label::new(
+                                                    self.localization.tr(&label_key),
+                                                )
+                                                .wrap(),
+                                            );
+                                        },
+                                    );
+
+                                    ui.allocate_ui_with_layout(
+                                        egui::vec2(current_column_width, 28.0),
+                                        egui::Layout::top_down(egui::Align::Min),
+                                        |ui| {
+                                            ui.set_width(current_column_width);
+                                            if team.is_player_team {
+                                                if let Some(entry) = edit_values
+                                                    .iter_mut()
+                                                    .find(|entry| entry.key == key)
+                                                {
+                                                    let raw_options = strategy_options
+                                                        .get(key)
+                                                        .map(Vec::as_slice)
+                                                        .unwrap_or(&[]);
+                                                    render_team_strategy_current_editor_cell(
+                                                        ui,
+                                                        key,
+                                                        entry,
+                                                        raw_options,
+                                                        &data.lineup,
+                                                        &team_roster,
+                                                        &mut split_player_ids,
+                                                    );
+                                                } else {
+                                                    ui.weak("Missing value");
+                                                }
+                                            } else {
+                                                ui.add(
+                                                    egui::Label::new(team_strategy_value(
+                                                        &data.current_strategy,
+                                                        key,
+                                                    ))
+                                                    .wrap(),
+                                                );
+                                            }
+                                        },
+                                    );
+
+                                    ui.allocate_ui_with_layout(
+                                        egui::vec2(read_only_column_width, 28.0),
+                                        egui::Layout::top_down(egui::Align::Min),
+                                        |ui| {
+                                            ui.set_width(read_only_column_width);
+                                            ui.add(
+                                                egui::Label::new(team_strategy_value(
+                                                    &data.last_strategy,
+                                                    key,
+                                                ))
+                                                .wrap(),
+                                            );
+                                        },
+                                    );
+
+                                    if show_team_color {
+                                        ui.allocate_ui_with_layout(
+                                            egui::vec2(read_only_column_width, 28.0),
+                                            egui::Layout::top_down(egui::Align::Min),
+                                            |ui| {
+                                                ui.set_width(read_only_column_width);
+                                                ui.add(
+                                                    egui::Label::new(team_strategy_value(
+                                                        &data.team_color_strategy,
+                                                        key,
+                                                    ))
+                                                    .wrap(),
+                                                );
+                                            },
+                                        );
+                                    }
+                                });
+                                ui.add_space(3.0);
+                            }
+
+                            if player_controls_visible {
+                                let has_strategy_changes = !team_strategy_entries_equal(
+                                    &edit_values,
+                                    &data.current_strategy,
+                                );
+                                ui.add_space(6.0);
+                                ui.horizontal_wrapped(|ui| {
+                                    if ui.button("Reload Current").clicked() {
+                                        reload_current_strategy = true;
+                                    }
+                                    if ui.button("Refresh Choices").clicked() {
+                                        refresh_strategy_choices = true;
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            self.connected && has_strategy_changes,
+                                            egui::Button::new("Apply Strategy"),
+                                        )
+                                        .on_hover_text(
+                                            "Write the edited Current Strategy directly to the player-controlled Team.",
+                                        )
+                                        .clicked()
+                                    {
+                                        apply_strategy_editor = true;
+                                    }
+                                });
+                                if !self.team_strategy_edit_status.is_empty() {
+                                    ui.label(self.team_strategy_edit_status.clone());
+                                }
+                            }
+
+                            if cfg!(feature = "dev") {
+                                ui.add_space(8.0);
+                                ui.separator();
+                                ui.strong(self.localization.tr("team_strategy.safe_write_probe"));
+                                ui.add(
+                                    egui::Label::new(
+                                        "Development research tool. Reversibly swaps Current Strategy and Last Strategy. Keep this probe for later AI Strategy-lock research; normal editing remains player-team only.",
+                                    )
+                                    .wrap(),
+                                );
+
+                                let active_probe_for_this_team = self
+                                    .team_strategy_probe_backup
+                                    .as_ref()
+                                    .is_some_and(|backup| backup.team_id == team.id);
+                                let probe_for_other_team = self
+                                    .team_strategy_probe_backup
+                                    .as_ref()
+                                    .is_some_and(|backup| backup.team_id != team.id);
+                                let current_equals_last = team_strategy_entries_equal(
+                                    &data.current_strategy,
+                                    &data.last_strategy,
+                                );
+
+                                let label = if active_probe_for_this_team {
+                                    self.localization.tr("team_strategy.probe_restore")
+                                } else {
+                                    self.localization.tr("team_strategy.probe_swap")
+                                };
+                                let enabled = active_probe_for_this_team
+                                    || (!probe_for_other_team && !current_equals_last);
+                                if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+                                    self.run_team_strategy_safe_write_probe();
+                                }
+
+                                if !active_probe_for_this_team && current_equals_last {
+                                    ui.weak(self.localization.tr("team_strategy.probe_identical"));
+                                }
+                                if probe_for_other_team {
+                                    if let Some(backup) = self.team_strategy_probe_backup.as_ref() {
+                                        let team_id_text = backup.team_id.to_string();
+                                        ui.weak(self.localization.tr_with(
+                                            "team_strategy.probe_restore_other_team",
+                                            &[("team_id", team_id_text.as_str())],
+                                        ));
+                                    }
+                                }
+                                if !self.team_strategy_probe_status.is_empty() {
+                                    ui.label(self.team_strategy_probe_status.clone());
+                                }
+                            }
+                        },
+                    );
+
+                    if player_controls_visible {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(preset_column_width, content_height),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.set_width(preset_column_width);
+                                ui.strong("Strategy Presets");
+                                ui.add_space(4.0);
+
+                                let has_selected = self.team_strategy_selected_preset.is_some();
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .button("Save")
+                                        .on_hover_text(
+                                            "Save the player team's current live Strategy as a named preset.",
+                                        )
+                                        .clicked()
+                                    {
+                                        save_preset = true;
+                                    }
+                                    if ui
+                                        .add_enabled(has_selected, egui::Button::new("Edit"))
+                                        .on_hover_text(
+                                            "Rename the selected preset and update it from the player team's current live Strategy.",
+                                        )
+                                        .clicked()
+                                    {
+                                        edit_preset = true;
+                                    }
+                                    if ui
+                                        .add_enabled(has_selected, egui::Button::new("Delete"))
+                                        .clicked()
+                                    {
+                                        delete_preset = true;
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            has_selected && self.connected,
+                                            egui::Button::new("Apply to Team"),
+                                        )
+                                        .on_hover_text(
+                                            "Apply the selected preset directly to the player-controlled Team.",
+                                        )
+                                        .clicked()
+                                    {
+                                        apply_preset = true;
+                                    }
+                                });
+
+                                ui.add_space(5.0);
+                                ui.label("Preset name:");
+                                ui.add_sized(
+                                    [preset_column_width, 24.0],
+                                    egui::TextEdit::singleline(
+                                        &mut self.team_strategy_preset_name,
+                                    ),
+                                );
+
+                                ui.add_space(6.0);
+                                ui.separator();
+                                let preset_names = self
+                                    .team_strategy_presets
+                                    .iter()
+                                    .map(|preset| preset.name.clone())
+                                    .collect::<Vec<_>>();
+                                // Preset-list scrolling remains vertical-only inside the fixed preset column.
+                                let preset_list_height =
+                                    (ui.available_height() - 28.0).max(220.0);
+                                egui::ScrollArea::vertical()
+                                    .id_salt("team_strategy_presets_v0523_fixed_columns")
+                                    .auto_shrink([false, false])
+                                    .max_height(preset_list_height)
+                                    .show(ui, |ui| {
+                                        ui.set_width(preset_column_width);
+                                        if preset_names.is_empty() {
+                                            ui.weak("No saved strategy presets.");
+                                        } else {
+                                            for name in preset_names {
+                                                let selected = self
+                                                    .team_strategy_selected_preset
+                                                    .as_ref()
+                                                    .is_some_and(|value| {
+                                                        value.eq_ignore_ascii_case(&name)
+                                                    });
+                                                ui.allocate_ui_with_layout(
+                                                    egui::vec2(
+                                                        preset_column_width,
+                                                        22.0,
+                                                    ),
+                                                    egui::Layout::left_to_right(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| {
+                                                        ui.set_width(preset_column_width);
+                                                        if ui
+                                                            .selectable_label(selected, &name)
+                                                            .clicked()
+                                                        {
+                                                            select_preset = Some(name.clone());
+                                                        }
+                                                    },
+                                                );
+                                            }
+                                        }
+                                    });
+
+                                if !self.team_strategy_preset_status.is_empty() {
+                                    ui.add(
+                                        egui::Label::new(
+                                            self.team_strategy_preset_status.clone(),
+                                        )
+                                        .wrap(),
+                                    );
+                                }
+                            },
+                        );
+                    }
+                });
+                    });
             });
+
+        if team.is_player_team {
+            self.team_strategy_edit_values = edit_values;
+            self.team_strategy_split_player_ids = split_player_ids;
+        }
+        if reload_current_strategy {
+            self.team_strategy_edit_team_id = Some(team.id);
+            self.team_strategy_edit_values = data.current_strategy.clone();
+            self.team_strategy_split_player_ids = [None, None];
+            self.team_strategy_edit_status = "Reloaded Current Strategy.".to_string();
+        }
+        if refresh_strategy_choices {
+            self.refresh_team_strategy_options();
+        }
+        if apply_strategy_editor {
+            self.apply_team_strategy_editor_values();
+        }
+        if let Some(name) = select_preset {
+            self.team_strategy_selected_preset = Some(name.clone());
+            self.team_strategy_preset_name = name;
+            self.team_strategy_preset_status.clear();
+        }
+        if save_preset {
+            self.save_current_team_strategy_preset();
+        }
+        if edit_preset {
+            self.edit_selected_team_strategy_preset();
+        }
+        if delete_preset {
+            self.delete_selected_team_strategy_preset();
+        }
+        if apply_preset {
+            self.apply_selected_team_strategy_preset();
+        }
 
         self.team_strategy_window_open = open;
     }
 
-    #[cfg(feature = "dev")]
     fn render_team_merchandise_window(&mut self, ctx: &egui::Context) {
         if !self.team_merchandise_window_open {
             return;
@@ -11438,31 +20168,21 @@ Bridge TFM2 target: v{}",
             return;
         };
 
-        let total_stock = data
-            .merchandise
-            .iter()
-            .map(|entry| parse_usize_value(&entry.stock))
-            .sum::<usize>();
-        let yearly_sales = data
-            .merchandise
-            .iter()
-            .map(|entry| parse_usize_value(&entry.yearly_sales))
-            .sum::<usize>();
-        let yearly_revenue = data
-            .merchandise
-            .iter()
-            .map(|entry| parse_f64_value(&entry.yearly_revenue))
-            .sum::<f64>();
-        let total_sales = data
-            .merchandise
-            .iter()
-            .map(|entry| parse_usize_value(&entry.total_sales))
-            .sum::<usize>();
-        let total_revenue = data
-            .merchandise
-            .iter()
-            .map(|entry| parse_f64_value(&entry.total_revenue))
-            .sum::<f64>();
+        if self.team_merchandise_edit_team_id != Some(team.id) {
+            self.team_merchandise_edit_team_id = Some(team.id);
+            self.team_merchandise_edit_entries = team_merchandise_edit_rows(&data.merchandise);
+            self.team_merchandise_edit_status.clear();
+        }
+        let mut edit_entries = self.team_merchandise_edit_entries.clone();
+        let edit_status = self.team_merchandise_edit_status.clone();
+        let mut apply_row = None;
+        let mut reload_requested = false;
+
+        let total_stock = data.merchandise.iter().map(|entry| parse_usize_value(&entry.stock)).sum::<usize>();
+        let yearly_sales = data.merchandise.iter().map(|entry| parse_usize_value(&entry.yearly_sales)).sum::<usize>();
+        let yearly_revenue = data.merchandise.iter().map(|entry| parse_f64_value(&entry.yearly_revenue)).sum::<f64>();
+        let total_sales = data.merchandise.iter().map(|entry| parse_usize_value(&entry.total_sales)).sum::<usize>();
+        let total_revenue = data.merchandise.iter().map(|entry| parse_f64_value(&entry.total_revenue)).sum::<f64>();
         let product_count_text = data.merchandise.len().to_string();
         let total_stock_text = total_stock.to_string();
         let yearly_sales_text = yearly_sales.to_string();
@@ -11480,135 +20200,107 @@ Bridge TFM2 target: v{}",
             .id(egui::Id::new("team_merchandise_window_v056"))
             .open(&mut open)
             .resizable(true)
-            .default_size(egui::vec2(1120.0, 560.0))
+            .default_size(egui::vec2(1180.0, 580.0))
             .min_size(egui::vec2(720.0, 360.0))
             .constrain(true)
             .show(ctx, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(self.localization.tr_with(
-                        "team_merchandise.product_count",
-                        &[("count", product_count_text.as_str())],
-                    ));
+                    ui.label(self.localization.tr_with("team_merchandise.product_count", &[("count", product_count_text.as_str())]));
                     ui.separator();
-                    ui.label(self.localization.tr_with(
-                        "team_merchandise.total_stock",
-                        &[("count", total_stock_text.as_str())],
-                    ));
+                    ui.label(self.localization.tr_with("team_merchandise.total_stock", &[("count", total_stock_text.as_str())]));
                     ui.separator();
-                    ui.label(self.localization.tr_with(
-                        "team_merchandise.yearly_sales_summary",
-                        &[("count", yearly_sales_text.as_str())],
-                    ));
+                    ui.label(self.localization.tr_with("team_merchandise.yearly_sales_summary", &[("count", yearly_sales_text.as_str())]));
                     ui.separator();
-                    ui.label(self.localization.tr_with(
-                        "team_merchandise.yearly_revenue_summary",
-                        &[("amount", yearly_revenue_text.as_str())],
-                    ));
+                    ui.label(self.localization.tr_with("team_merchandise.yearly_revenue_summary", &[("amount", yearly_revenue_text.as_str())]));
                     ui.separator();
-                    ui.label(self.localization.tr_with(
-                        "team_merchandise.total_sales_summary",
-                        &[("count", total_sales_text.as_str())],
-                    ));
+                    ui.label(self.localization.tr_with("team_merchandise.total_sales_summary", &[("count", total_sales_text.as_str())]));
                     ui.separator();
-                    ui.label(self.localization.tr_with(
-                        "team_merchandise.total_revenue_summary",
-                        &[("amount", total_revenue_text.as_str())],
-                    ));
+                    ui.label(self.localization.tr_with("team_merchandise.total_revenue_summary", &[("amount", total_revenue_text.as_str())]));
                 });
-                ui.weak(self.localization.tr("team_merchandise.help"));
+                if team.is_player_team {
+                    ui.horizontal(|ui| {
+                        ui.weak(self.localization.tr("team_merchandise.edit_help"));
+                        if ui.button(self.localization.tr("team_merchandise.reload_values")).clicked() { reload_requested = true; }
+                    });
+                    if !edit_status.is_empty() { ui.weak(edit_status.as_str()); }
+                } else {
+                    ui.weak(self.localization.tr("team_merchandise.read_only_ai"));
+                }
                 ui.separator();
 
-                let widths = [90.0, 180.0, 70.0, 80.0, 105.0, 105.0, 125.0, 105.0, 125.0, 100.0];
+                let widths = if team.is_player_team {
+                    vec![90.0, 170.0, 65.0, 105.0, 110.0, 100.0, 100.0, 120.0, 100.0, 120.0, 95.0]
+                } else {
+                    vec![90.0, 180.0, 70.0, 80.0, 105.0, 105.0, 125.0, 105.0, 125.0, 100.0]
+                };
                 let table_min_width = widths.iter().copied().sum::<f32>() + 60.0;
                 render_team_member_table_viewport(
                     ui,
-                    "team_merchandise_horizontal_v056",
+                    "team_merchandise_horizontal_v0532",
                     table_min_width,
                     |ui, table_height| {
-                        if data.merchandise.is_empty() {
+                        if edit_entries.is_empty() {
                             ui.weak(self.localization.tr("team_merchandise.empty"));
                             return;
                         }
-
                         let mut table = TableBuilder::new(ui)
-                            .id_salt("team_merchandise_table_v056")
+                            .id_salt("team_merchandise_table_v0532")
                             .striped(true)
                             .resizable(true)
                             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                             .min_scrolled_height(0.0)
                             .max_scroll_height(table_height)
                             .auto_shrink([false, false]);
-                        for width in widths {
-                            table = table.column(
-                                Column::initial(width)
-                                    .at_least(58.0)
-                                    .clip(true)
-                                    .resizable(true),
-                            );
-                        }
-
+                        for width in widths { table = table.column(Column::initial(width).at_least(58.0).clip(true).resizable(true)); }
                         table
                             .header(26.0, |mut header| {
                                 for key in [
-                                    "team_merchandise.product_type",
-                                    "common.player",
-                                    "common.id",
-                                    "team_merchandise.stock",
-                                    "team_merchandise.sell_price",
-                                    "team_merchandise.yearly_sales",
-                                    "team_merchandise.yearly_revenue",
-                                    "team_merchandise.total_sales",
-                                    "team_merchandise.total_revenue",
+                                    "team_merchandise.product_type", "common.player", "common.id",
+                                    "team_merchandise.stock", "team_merchandise.sell_price", "team_merchandise.yearly_sales",
+                                    "team_merchandise.yearly_revenue", "team_merchandise.total_sales", "team_merchandise.total_revenue",
                                     "team_merchandise.daily_rate",
-                                ] {
-                                    header.col(|ui| {
-                                        ui.strong(self.localization.tr(key));
-                                    });
-                                }
+                                ] { header.col(|ui| { ui.strong(self.localization.tr(key)); }); }
+                                if team.is_player_team { header.col(|ui| { ui.strong("Apply"); }); }
                             })
                             .body(|body| {
-                                body.rows(26.0, data.merchandise.len(), |mut row| {
-                                    let entry = &data.merchandise[row.index()];
+                                body.rows(28.0, edit_entries.len(), |mut row| {
+                                    let row_index = row.index();
+                                    let entry = &mut edit_entries[row_index];
+                                    row.col(|ui| { ui.label(self.localization.tr_with("team_merchandise.type_value", &[("type", entry.product_type.as_str())])); });
+                                    row.col(|ui| { ui.label(value_or_dash(&entry.athlete_name)); });
+                                    row.col(|ui| { ui.label(entry.athlete_id.to_string()); });
                                     row.col(|ui| {
-                                        ui.label(self.localization.tr_with(
-                                            "team_merchandise.type_value",
-                                            &[("type", entry.product_type.as_str())],
-                                        ));
+                                        if team.is_player_team { ui.add(egui::TextEdit::singleline(&mut entry.stock).desired_width(90.0)); }
+                                        else { ui.label(value_or_dash(&entry.stock)); }
                                     });
                                     row.col(|ui| {
-                                        ui.label(value_or_dash(&entry.athlete_name));
+                                        if team.is_player_team { ui.add(egui::TextEdit::singleline(&mut entry.sell_price).desired_width(95.0)); }
+                                        else { ui.label(format_internal_amount(&entry.sell_price)); }
                                     });
-                                    row.col(|ui| {
-                                        ui.label(entry.athlete_id.to_string());
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(value_or_dash(&entry.stock));
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(format_internal_amount(&entry.sell_price));
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(value_or_dash(&entry.yearly_sales));
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(format_internal_amount(&entry.yearly_revenue));
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(value_or_dash(&entry.total_sales));
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(format_internal_amount(&entry.total_revenue));
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(value_or_dash(&entry.daily_purchase_rate));
-                                    });
+                                    row.col(|ui| { ui.label(value_or_dash(&entry.yearly_sales)); });
+                                    row.col(|ui| { ui.label(format_internal_amount(&entry.yearly_revenue)); });
+                                    row.col(|ui| { ui.label(value_or_dash(&entry.total_sales)); });
+                                    row.col(|ui| { ui.label(format_internal_amount(&entry.total_revenue)); });
+                                    row.col(|ui| { ui.label(value_or_dash(&entry.daily_purchase_rate)); });
+                                    if team.is_player_team {
+                                        row.col(|ui| { if ui.button("Apply").clicked() { apply_row = Some(row_index); } });
+                                    }
                                 });
                             });
                     },
                 );
             });
 
+        self.team_merchandise_edit_entries = edit_entries;
         self.team_merchandise_window_open = open;
+        if reload_requested {
+            self.team_merchandise_edit_entries = team_merchandise_edit_rows(&data.merchandise);
+            self.team_merchandise_edit_status =
+                "Reloaded Merchandise values from current Team data.".to_string();
+        }
+        if let Some(row_index) = apply_row {
+            self.apply_team_merchandise_edit(row_index);
+        }
     }
 
     #[cfg(feature = "dev")]
@@ -11710,7 +20402,6 @@ Bridge TFM2 target: v{}",
         self.team_champion_setup_window_open = open;
     }
 
-    #[cfg(feature = "dev")]
     fn render_team_gaming_house_window(&mut self, ctx: &egui::Context) {
         if !self.team_gaming_house_window_open {
             return;
@@ -11774,7 +20465,6 @@ Bridge TFM2 target: v{}",
         self.team_gaming_house_window_open = open;
     }
 
-    #[cfg(feature = "dev")]
     fn render_team_condition_window(&mut self, ctx: &egui::Context) {
         if !self.team_condition_window_open {
             return;
@@ -11808,7 +20498,7 @@ Bridge TFM2 target: v{}",
         let editor_help = self.localization.tr("team_condition.editor_help");
         let selected_label = self.localization.tr("team_condition.selected");
         let changed_label = self.localization.tr("team_condition.changed");
-        let select_all_label = self.localization.tr("lists.select_all_visible");
+        let select_all_label = "Select All".to_string();
         let clear_selection_label = self.localization.tr("lists.clear_selection");
         let stamina_label = self.localization.tr("team_condition.stamina");
         let condition_label = self.localization.tr("team_condition.condition");
@@ -12050,6 +20740,17 @@ Bridge TFM2 target: v{}",
     }
 
     fn render_team_search_page(&mut self, ui: &mut egui::Ui) {
+        let resolved_league_labels = self
+            .team_leagues
+            .iter()
+            .map(|league| (league.id, league.display_label(&self.localization)))
+            .collect::<HashMap<_, _>>();
+        let resolved_league_search = self
+            .team_leagues
+            .iter()
+            .map(|league| (league.id, league.search_blob(&self.localization)))
+            .collect::<HashMap<_, _>>();
+
         ui.group(|ui| {
             ui.set_min_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
@@ -12068,14 +20769,18 @@ Bridge TFM2 target: v{}",
                 let selected_league = self
                     .team_search_league_filter
                     .map(|id| {
+                        if let Some(label) = resolved_league_labels.get(&id) {
+                            return label.clone();
+                        }
                         let id = id.to_string();
                         self.localization
                             .tr_with("common.league_number", &[("id", id.as_str())])
                     })
                     .unwrap_or_else(|| self.localization.tr("search.teams.any_league"));
+                let league_filter_width = 190.0;
                 egui::ComboBox::from_id_salt("search_team_league_filter")
                     .selected_text(selected_league)
-                    .width(135.0)
+                    .width(league_filter_width)
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut self.team_search_league_filter,
@@ -12089,12 +20794,18 @@ Bridge TFM2 target: v{}",
                             .collect::<Vec<_>>();
                         league_ids.sort_unstable();
                         league_ids.dedup();
+                        sort_team_league_ids_by_catalog(&mut league_ids, &self.team_leagues);
                         for league_id in league_ids {
-                            let id = league_id.to_string();
-                            let label = self.localization.tr_with(
-                                "common.league_number",
-                                &[("id", id.as_str())],
-                            );
+                            let label = resolved_league_labels
+                                .get(&league_id)
+                                .cloned()
+                                .unwrap_or_else(|| {
+                                    let id = league_id.to_string();
+                                    self.localization.tr_with(
+                                        "common.league_number",
+                                        &[("id", id.as_str())],
+                                    )
+                                });
                             ui.selectable_value(
                                 &mut self.team_search_league_filter,
                                 Some(league_id),
@@ -12155,8 +20866,14 @@ Bridge TFM2 target: v{}",
             .teams
             .iter()
             .filter(|team| {
-                if !query.is_empty() && !team.matches_search(&query) {
-                    return false;
+                if !query.is_empty() {
+                    let matches = team.matches_search(&query)
+                        || resolved_league_search
+                            .get(&team.league_id)
+                            .is_some_and(|search| search.contains(&query));
+                    if !matches {
+                        return false;
+                    }
                 }
                 if selected_league.is_some_and(|league| team.league_id != league) {
                     return false;
@@ -12193,7 +20910,6 @@ Bridge TFM2 target: v{}",
         let mut refresh_requested = false;
         let mut reset_columns_requested = false;
         let mut select_all_visible_requested = false;
-        #[cfg(feature = "dev")]
         let mut open_team_id: Option<usize> = None;
         let available_height = ui.available_height().max(180.0);
         ui.allocate_ui_with_layout(
@@ -12362,11 +21078,17 @@ Bridge TFM2 target: v{}",
                                         });
                                         row.col(|ui| { ui.label(team.id.to_string()); });
                                         row.col(|ui| {
-                                            let id = team.league_id.to_string();
-                                            ui.label(self.localization.tr_with(
-                                                "common.league_number",
-                                                &[("id", id.as_str())],
-                                            ));
+                                            let label = resolved_league_labels
+                                                .get(&team.league_id)
+                                                .cloned()
+                                                .unwrap_or_else(|| {
+                                                    let id = team.league_id.to_string();
+                                                    self.localization.tr_with(
+                                                        "common.league_number",
+                                                        &[("id", id.as_str())],
+                                                    )
+                                                });
+                                            ui.label(label);
                                         });
                                         row.col(|ui| { ui.label(value_or_dash(&team.manager_name)); });
                                         row.col(|ui| {
@@ -12453,10 +21175,7 @@ Bridge TFM2 target: v{}",
                                             team_shift_drag_start_id = None;
                                             team_shift_drag_target_selected = None;
                                             team_shift_drag_base_ids = None;
-                                            #[cfg(feature = "dev")]
-                                            {
-                                                open_team_id = Some(team.id);
-                                            }
+                                            open_team_id = Some(team.id);
                                         } else if row_response.clicked()
                                             && !selection_checkbox_clicked
                                             && !shift_drag_active
@@ -12484,7 +21203,6 @@ Bridge TFM2 target: v{}",
                                                 team_selection_anchor_id = Some(team.id);
                                             }
                                         }
-                                        #[cfg(feature = "dev")]
                                         row_response.context_menu(|ui| {
                                             if ui
                                                 .button(self.localization.tr("team_workspace.open_in_team"))
@@ -12520,7 +21238,6 @@ Bridge TFM2 target: v{}",
         if refresh_requested {
             self.refresh_teams();
         }
-        #[cfg(feature = "dev")]
         if let Some(team_id) = open_team_id {
             self.open_team_workspace(team_id);
         }
@@ -14599,7 +23316,6 @@ impl eframe::App for ModifierApp {
                         AppTab::Economy => self.render_economy_tab(ui),
                         AppTab::PlayerEditor => self.render_player_editor_tab(ui),
                         AppTab::StaffEditor => self.render_staff_editor_tab(ui),
-                        #[cfg(feature = "dev")]
                         AppTab::Team => self.render_team_workspace_tab(ui),
                         AppTab::Recruitment => self.render_recruitment_tab(ui),
                         AppTab::Search => unreachable!(),
@@ -14612,27 +23328,37 @@ impl eframe::App for ModifierApp {
 
         self.render_champion_mastery_window(ctx);
 
-        #[cfg(feature = "dev")]
         self.render_team_roster_window(ctx);
-        #[cfg(feature = "dev")]
         self.render_team_staff_window(ctx);
-        #[cfg(feature = "dev")]
+        self.render_team_contract_extension_confirmation_window(ctx);
+        self.render_team_move_player_window(ctx);
+        self.render_team_move_staff_window(ctx);
         self.render_team_condition_window(ctx);
+        self.render_team_tactics_window(ctx);
+        #[cfg(feature = "dev")]
+        self.render_team_own_strategy_history_probe_window(ctx);
+        self.render_team_synergy_explorer_window(ctx);
+        #[cfg(feature = "dev")]
+        self.render_team_scouting_evidence_window(ctx);
+        #[cfg(feature = "dev")]
+        self.render_team_performance_context_window(ctx);
         #[cfg(feature = "dev")]
         self.render_team_data_probe_window(ctx);
+        self.render_team_league_standings_window(ctx);
+        self.render_team_performance_window(ctx);
+        self.render_team_contract_center_window(ctx);
+        self.render_team_finance_center_window(ctx);
         #[cfg(feature = "dev")]
+        self.render_team_fan_momentum_probe_window(ctx);
+        self.render_team_recruitment_window(ctx);
+        self.render_team_competition_window(ctx);
         self.render_team_strategy_window(ctx);
-        #[cfg(feature = "dev")]
         self.render_team_merchandise_window(ctx);
         #[cfg(feature = "dev")]
         self.render_team_champion_setup_window(ctx);
-        #[cfg(feature = "dev")]
         self.render_team_gaming_house_window(ctx);
-        #[cfg(feature = "dev")]
         self.render_team_match_history_window(ctx);
-        #[cfg(feature = "dev")]
         self.render_team_pre_match_analysis_window(ctx);
-        #[cfg(feature = "dev")]
         self.render_team_history_summary_window(ctx);
 
         self.render_player_contract_window(ctx);
@@ -15590,7 +24316,6 @@ fn parse_contract_defaults_response(response: &str) -> Result<(String, String, S
     ))
 }
 
-#[cfg(feature = "dev")]
 fn extract_debug_blocks(source: &str, marker: &str) -> Vec<String> {
     let mut blocks = Vec::new();
     let mut offset = 0usize;
@@ -15645,7 +24370,6 @@ fn extract_debug_blocks(source: &str, marker: &str) -> Vec<String> {
     blocks
 }
 
-#[cfg(feature = "dev")]
 fn debug_field_expression(source: &str, field: &str) -> Option<String> {
     let prefix = format!("{field}:");
     let mut line_start = 0usize;
@@ -15710,7 +24434,6 @@ fn debug_field_expression(source: &str, field: &str) -> Option<String> {
     None
 }
 
-#[cfg(feature = "dev")]
 fn debug_unquote(value: &str) -> String {
     let trimmed = value.trim();
     if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
@@ -15722,17 +24445,14 @@ fn debug_unquote(value: &str) -> String {
     }
 }
 
-#[cfg(feature = "dev")]
 fn debug_parse_usize(source: &str, field: &str) -> Option<usize> {
     debug_field_expression(source, field)?.parse::<usize>().ok()
 }
 
-#[cfg(feature = "dev")]
 fn debug_parse_i64(source: &str, field: &str) -> Option<i64> {
     debug_field_expression(source, field)?.parse::<i64>().ok()
 }
 
-#[cfg(feature = "dev")]
 fn debug_parse_bool(source: &str, field: &str) -> Option<bool> {
     match debug_field_expression(source, field)?.as_str() {
         "true" => Some(true),
@@ -15741,7 +24461,6 @@ fn debug_parse_bool(source: &str, field: &str) -> Option<bool> {
     }
 }
 
-#[cfg(feature = "dev")]
 fn debug_quoted_values(source: &str) -> Vec<String> {
     let mut values = Vec::new();
     let mut current = String::new();
@@ -15770,7 +24489,6 @@ fn debug_quoted_values(source: &str) -> Vec<String> {
     values
 }
 
-#[cfg(feature = "dev")]
 fn debug_bind_pairs(source: &str) -> Vec<(String, String)> {
     let values = debug_quoted_values(source);
     values
@@ -15779,7 +24497,6 @@ fn debug_bind_pairs(source: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-#[cfg(feature = "dev")]
 fn humanize_debug_value(value: &str) -> String {
     let mut text = debug_unquote(value);
     if let Some(rest) = text.strip_prefix("Some(") {
@@ -15828,7 +24545,6 @@ fn humanize_debug_value(value: &str) -> String {
         .replace(" )", ")")
 }
 
-#[cfg(feature = "dev")]
 fn debug_position_name(position: usize) -> String {
     match position {
         0 => "Top",
@@ -15841,7 +24557,6 @@ fn debug_position_name(position: usize) -> String {
     .to_string()
 }
 
-#[cfg(feature = "dev")]
 fn debug_list_identifiers(expression: &str) -> Vec<String> {
     expression
         .trim()
@@ -15854,7 +24569,6 @@ fn debug_list_identifiers(expression: &str) -> Vec<String> {
         .collect()
 }
 
-#[cfg(feature = "dev")]
 fn team_name_from_lookup(teams: &[TeamSummary], team_id: usize) -> String {
     teams
         .iter()
@@ -15864,7 +24578,6 @@ fn team_name_from_lookup(teams: &[TeamSummary], team_id: usize) -> String {
         .unwrap_or_else(|| format!("Team {team_id}"))
 }
 
-#[cfg(feature = "dev")]
 fn player_name_from_lookup(players: &[PlayerSummary], player_id: usize) -> String {
     players
         .iter()
@@ -15874,7 +24587,6 @@ fn player_name_from_lookup(players: &[PlayerSummary], player_id: usize) -> Strin
         .unwrap_or_else(|| format!("Player {player_id}"))
 }
 
-#[cfg(feature = "dev")]
 fn parse_team_history_probe(
     raw: &str,
     team_id: usize,
@@ -15959,6 +24671,7 @@ fn parse_team_history_probe(
                 is_win,
                 my_score,
                 enemy_score,
+                replay_ids: Vec::new(),
                 article_pattern,
                 sets,
             });
@@ -16112,7 +24825,714 @@ fn parse_team_history_probe(
     })
 }
 
-#[cfg(feature = "dev")]
+fn parse_global_leagues_response(response: &str) -> Result<Vec<LeagueSummary>, String> {
+    if let Some(error) = response.strip_prefix("ERR|") {
+        return Err(error.to_string());
+    }
+
+    let fields = response.split('|').collect::<Vec<_>>();
+    if fields.len() != 7 || fields[0] != "OK" || fields[1] != "GLOBAL_LEAGUES" {
+        return Err(format!("Unexpected global League response: {response}"));
+    }
+    if !matches!(
+        compare_semver(fields[2], REQUIRED_BRIDGE_VERSION),
+        Some(Ordering::Equal | Ordering::Greater)
+    ) {
+        return Err(format!(
+            "Bridge global-history source version mismatch: expected {REQUIRED_BRIDGE_VERSION} or newer compatible Bridge, received {}",
+            fields[2]
+        ));
+    }
+    if fields[3] != SUPPORTED_TFM2_VERSION {
+        return Err(format!(
+            "Bridge global-history TFM2 target mismatch: expected {SUPPORTED_TFM2_VERSION}, received {}",
+            fields[3]
+        ));
+    }
+
+    let expected_count = fields[5]
+        .parse::<usize>()
+        .map_err(|_| "Invalid global League record count".to_string())?;
+    let encoded_records = if fields[6].is_empty() {
+        Vec::new()
+    } else {
+        fields[6].split(';').collect::<Vec<_>>()
+    };
+    if encoded_records.len() != expected_count {
+        return Err(format!(
+            "Global League record count mismatch: expected {expected_count}, received {}",
+            encoded_records.len()
+        ));
+    }
+
+    let mut leagues = Vec::with_capacity(encoded_records.len());
+    for encoded in encoded_records {
+        let json = hex_decode(encoded)?;
+        let record: serde_json::Value = serde_json::from_str(&json)
+            .map_err(|error| format!("Invalid global League JSON: {error}"))?;
+        let id = record
+            .get("id")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| "Global League is missing a valid ID".to_string())?;
+        let region_id = record
+            .get("region_id")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(id % 6);
+        let division = record
+            .get("division")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(0);
+        let name = record
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        leagues.push(LeagueSummary {
+            id,
+            name,
+            region_id,
+            division,
+        });
+    }
+    leagues.sort_by_key(|league| league.id);
+    Ok(leagues)
+}
+
+fn parse_global_league_competition_response(
+    response: &str,
+    league_id: usize,
+    teams: &[TeamSummary],
+) -> Result<TeamLeagueStandingsData, String> {
+    if let Some(error) = response.strip_prefix("ERR|") {
+        return Err(error.to_string());
+    }
+
+    let fields = response.split('|').collect::<Vec<_>>();
+    if fields.len() != 7 || fields[0] != "OK" || fields[1] != "GLOBAL_LEAGUE_COMPETITION" {
+        return Err(format!("Unexpected global LeagueCompetition response: {response}"));
+    }
+    if !matches!(
+        compare_semver(fields[2], REQUIRED_BRIDGE_VERSION),
+        Some(Ordering::Equal | Ordering::Greater)
+    ) {
+        return Err(format!(
+            "Bridge global-history source version mismatch: expected {REQUIRED_BRIDGE_VERSION} or newer compatible Bridge, received {}",
+            fields[2]
+        ));
+    }
+    if fields[3] != SUPPORTED_TFM2_VERSION {
+        return Err(format!(
+            "Bridge global-history TFM2 target mismatch: expected {SUPPORTED_TFM2_VERSION}, received {}",
+            fields[3]
+        ));
+    }
+
+    let response_league_id = fields[5]
+        .parse::<usize>()
+        .map_err(|_| "Invalid global LeagueCompetition league ID".to_string())?;
+    if response_league_id != league_id {
+        return Err(format!(
+            "Global LeagueCompetition response was for league {response_league_id}, expected {league_id}"
+        ));
+    }
+
+    let json = hex_decode(fields[6])?;
+    let record: serde_json::Value = serde_json::from_str(&json)
+        .map_err(|error| format!("Invalid global LeagueCompetition JSON: {error}"))?;
+    let record_id = record
+        .get("id")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| "Global LeagueCompetition is missing a valid ID".to_string())?;
+    if record_id != league_id {
+        return Err(format!(
+            "Global LeagueCompetition record ID {record_id} did not match league {league_id}"
+        ));
+    }
+
+    let league_type = record
+        .get("league_type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let finalized = record
+        .get("finalized")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let standings = record
+        .get("standings")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "Global LeagueCompetition is missing standings".to_string())?;
+
+    let mut rows = Vec::with_capacity(standings.len());
+    for (team_id_text, values) in standings {
+        let team_id = team_id_text
+            .parse::<usize>()
+            .map_err(|_| "Global LeagueCompetition contains an invalid team ID".to_string())?;
+        let read_usize = |key: &str| {
+            values
+                .get(key)
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or(0)
+        };
+        let team_name = teams
+            .iter()
+            .find(|team| team.id == team_id)
+            .map(|team| team.display_name.clone())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| format!("Team {team_id}"));
+        rows.push(TeamLeagueStandingEntry {
+            team_id,
+            team_name,
+            wins: read_usize("win"),
+            losses: read_usize("lose"),
+            set_wins: read_usize("set_win"),
+            set_losses: read_usize("set_lose"),
+            kills: read_usize("kill"),
+            deaths: read_usize("death"),
+            assists: read_usize("assist"),
+        });
+    }
+
+    let mut player_performance = Vec::new();
+    if let Some(statistics) = record
+        .get("statistics")
+        .and_then(serde_json::Value::as_object)
+    {
+        for (player_id_text, values) in statistics {
+            let player_id = player_id_text
+                .parse::<usize>()
+                .map_err(|_| "Global LeagueCompetition contains an invalid player ID".to_string())?;
+            let read_usize = |key: &str| {
+                values
+                    .get(key)
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|value| usize::try_from(value).ok())
+                    .unwrap_or(0)
+            };
+
+            let mut champions = Vec::new();
+            if let Some(champion_detail) = values
+                .get("champion_detail")
+                .and_then(serde_json::Value::as_object)
+            {
+                for (champion_id, champion_values) in champion_detail {
+                    let read_champion_usize = |key: &str| {
+                        champion_values
+                            .get(key)
+                            .and_then(serde_json::Value::as_u64)
+                            .and_then(|value| usize::try_from(value).ok())
+                            .unwrap_or(0)
+                    };
+                    champions.push(TeamLeagueChampionPerformance {
+                        champion_id: champion_id.clone(),
+                        matches: read_champion_usize("matches"),
+                        wins: read_champion_usize("wins"),
+                        rating: read_champion_usize("rating"),
+                        dealing: read_champion_usize("dealing"),
+                        healing: read_champion_usize("healing"),
+                        tanking: read_champion_usize("tanking"),
+                    });
+                }
+            }
+            champions.sort_by(|left, right| {
+                right
+                    .matches
+                    .cmp(&left.matches)
+                    .then_with(|| right.wins.cmp(&left.wins))
+                    .then_with(|| left.champion_id.cmp(&right.champion_id))
+            });
+
+            player_performance.push(TeamLeaguePlayerPerformance {
+                player_id,
+                matches: read_usize("matches"),
+                wins: read_usize("wins"),
+                kills: read_usize("kills"),
+                deaths: read_usize("deaths"),
+                assists: read_usize("assists"),
+                mvp: read_usize("mvp"),
+                rating: read_usize("rating"),
+                gold: read_usize("gold"),
+                dealing: read_usize("dealing"),
+                healing: read_usize("healing"),
+                tanking: read_usize("tanking"),
+                solo_kill: read_usize("solo_kill"),
+                solo_killed: read_usize("solo_killed"),
+                champions,
+            });
+        }
+    }
+    player_performance.sort_by_key(|entry| entry.player_id);
+
+    rows.sort_by(|left, right| {
+        let left_diff = left.set_wins as isize - left.set_losses as isize;
+        let right_diff = right.set_wins as isize - right.set_losses as isize;
+        right
+            .wins
+            .cmp(&left.wins)
+            .then_with(|| left.losses.cmp(&right.losses))
+            .then_with(|| right_diff.cmp(&left_diff))
+            .then_with(|| right.set_wins.cmp(&left.set_wins))
+            .then_with(|| right.kills.cmp(&left.kills))
+            .then_with(|| left.team_id.cmp(&right.team_id))
+    });
+
+    Ok(TeamLeagueStandingsData {
+        league_id,
+        league_type,
+        finalized,
+        rows,
+        player_performance,
+    })
+}
+
+fn team_performance_percent(wins: usize, matches: usize) -> String {
+    if matches == 0 {
+        "—".to_string()
+    } else {
+        format!("{:.1}%", wins as f64 * 100.0 / matches as f64)
+    }
+}
+
+fn team_performance_average(total: usize, matches: usize) -> String {
+    if matches == 0 {
+        "—".to_string()
+    } else {
+        format!("{:.1}", total as f64 / matches as f64)
+    }
+}
+
+fn team_performance_kda(kills: usize, deaths: usize, assists: usize) -> String {
+    if deaths == 0 {
+        if kills == 0 && assists == 0 {
+            "0.00".to_string()
+        } else {
+            format!("{:.2}", (kills + assists) as f64)
+        }
+    } else {
+        format!("{:.2}", (kills + assists) as f64 / deaths as f64)
+    }
+}
+
+fn aggregate_team_champion_performance(
+    player_stats: &[TeamLeaguePlayerPerformance],
+) -> Vec<TeamLeagueChampionPerformance> {
+    let mut aggregated: HashMap<String, TeamLeagueChampionPerformance> = HashMap::new();
+    for player in player_stats {
+        for champion in &player.champions {
+            let entry = aggregated
+                .entry(champion.champion_id.clone())
+                .or_insert_with(|| TeamLeagueChampionPerformance {
+                    champion_id: champion.champion_id.clone(),
+                    matches: 0,
+                    wins: 0,
+                    rating: 0,
+                    dealing: 0,
+                    healing: 0,
+                    tanking: 0,
+                });
+            entry.matches = entry.matches.saturating_add(champion.matches);
+            entry.wins = entry.wins.saturating_add(champion.wins);
+            entry.rating = entry.rating.saturating_add(champion.rating);
+            entry.dealing = entry.dealing.saturating_add(champion.dealing);
+            entry.healing = entry.healing.saturating_add(champion.healing);
+            entry.tanking = entry.tanking.saturating_add(champion.tanking);
+        }
+    }
+
+    let mut rows = aggregated.into_values().collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        right
+            .matches
+            .cmp(&left.matches)
+            .then_with(|| right.wins.cmp(&left.wins))
+            .then_with(|| right.rating.cmp(&left.rating))
+            .then_with(|| left.champion_id.cmp(&right.champion_id))
+    });
+    rows
+}
+
+fn parse_global_team_schedule_response(
+    response: &str,
+    team_id: usize,
+    teams: &[TeamSummary],
+) -> Result<TeamCompetitionData, String> {
+    if let Some(error) = response.strip_prefix("ERR|") {
+        return Err(error.to_string());
+    }
+
+    let fields = response.split('|').collect::<Vec<_>>();
+    if fields.len() != 9 || fields[0] != "OK" || fields[1] != "GLOBAL_TEAM_SCHEDULE" {
+        return Err(format!("Unexpected global Team schedule response: {response}"));
+    }
+    if !matches!(
+        compare_semver(fields[2], REQUIRED_BRIDGE_VERSION),
+        Some(Ordering::Equal | Ordering::Greater)
+    ) {
+        return Err(format!(
+            "Bridge global-history source version mismatch: expected {REQUIRED_BRIDGE_VERSION} or newer compatible Bridge, received {}",
+            fields[2]
+        ));
+    }
+    if fields[3] != SUPPORTED_TFM2_VERSION {
+        return Err(format!(
+            "Bridge global-history TFM2 target mismatch: expected {SUPPORTED_TFM2_VERSION}, received {}",
+            fields[3]
+        ));
+    }
+
+    let response_team_id = fields[6]
+        .parse::<usize>()
+        .map_err(|_| "Invalid global Team schedule team ID".to_string())?;
+    if response_team_id != team_id {
+        return Err(format!(
+            "Global Team schedule response was for team {response_team_id}, expected {team_id}"
+        ));
+    }
+
+    let expected_count = fields[7]
+        .parse::<usize>()
+        .map_err(|_| "Invalid global Team schedule record count".to_string())?;
+    let encoded_records = if fields[8].is_empty() {
+        Vec::new()
+    } else {
+        fields[8].split(';').collect::<Vec<_>>()
+    };
+    if encoded_records.len() != expected_count {
+        return Err(format!(
+            "Global Team schedule record count mismatch: expected {expected_count}, received {}",
+            encoded_records.len()
+        ));
+    }
+
+    let mut matches = Vec::with_capacity(encoded_records.len());
+    for encoded in encoded_records {
+        let json = hex_decode(encoded)?;
+        let record: serde_json::Value = serde_json::from_str(&json)
+            .map_err(|error| format!("Invalid global MatchInfo JSON: {error}"))?;
+        let match_id = record
+            .get("id")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| "Global MatchInfo is missing a valid ID".to_string())?;
+        let date = record
+            .get("date")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let is_practice = record
+            .get("is_practice")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let team1_id = global_normal_team_id(&record, "team1");
+        let team2_id = global_normal_team_id(&record, "team2");
+        let (is_team1, opponent_id) = if team1_id == Some(team_id) {
+            (true, team2_id)
+        } else if team2_id == Some(team_id) {
+            (false, team1_id)
+        } else {
+            return Err(format!(
+                "Global MatchInfo {match_id} does not contain requested team {team_id}"
+            ));
+        };
+        let opponent_name = opponent_id
+            .map(|id| team_name_from_lookup(teams, id))
+            .unwrap_or_else(|| "TBD".to_string());
+
+        let running_state = record.get("running_state");
+        let end = running_state.and_then(|value| value.get("End"));
+        let (status, is_win, my_score, enemy_score) = if let Some(end) = end {
+            let team1_score = global_json_usize(end, "team1_score").unwrap_or(0);
+            let team2_score = global_json_usize(end, "team2_score").unwrap_or(0);
+            let winner = global_json_usize(end, "winner");
+            let (my_score, enemy_score) = if is_team1 {
+                (team1_score, team2_score)
+            } else {
+                (team2_score, team1_score)
+            };
+            (
+                TeamCompetitionMatchStatus::Completed,
+                Some(winner.map_or(my_score > enemy_score, |winner_id| winner_id == team_id)),
+                Some(my_score),
+                Some(enemy_score),
+            )
+        } else if running_state.and_then(serde_json::Value::as_str) == Some("Running") {
+            (TeamCompetitionMatchStatus::Running, None, None, None)
+        } else {
+            (TeamCompetitionMatchStatus::Upcoming, None, None, None)
+        };
+
+        matches.push(TeamCompetitionMatchEntry {
+            date,
+            match_id,
+            opponent_id,
+            opponent_name,
+            is_practice,
+            status,
+            is_win,
+            my_score,
+            enemy_score,
+        });
+    }
+
+    matches.sort_by(|left, right| {
+        left.date
+            .cmp(&right.date)
+            .then_with(|| left.match_id.cmp(&right.match_id))
+    });
+    Ok(TeamCompetitionData { team_id, matches })
+}
+
+fn parse_global_team_history_response(
+    response: &str,
+    team_id: usize,
+    teams: &[TeamSummary],
+) -> Result<Vec<TeamMatchHistoryEntry>, String> {
+    if let Some(error) = response.strip_prefix("ERR|") {
+        return Err(error.to_string());
+    }
+
+    let fields = response.split('|').collect::<Vec<_>>();
+    if fields.len() != 9 || fields[0] != "OK" || fields[1] != "GLOBAL_TEAM_HISTORY" {
+        return Err(format!("Unexpected global Team history response: {response}"));
+    }
+    if !matches!(
+        compare_semver(fields[2], REQUIRED_BRIDGE_VERSION),
+        Some(Ordering::Equal | Ordering::Greater)
+    ) {
+        return Err(format!(
+            "Bridge global-history source version mismatch: expected {REQUIRED_BRIDGE_VERSION} or newer compatible Bridge, received {}",
+            fields[2]
+        ));
+    }
+    if fields[3] != SUPPORTED_TFM2_VERSION {
+        return Err(format!(
+            "Bridge global-history TFM2 target mismatch: expected {SUPPORTED_TFM2_VERSION}, received {}",
+            fields[3]
+        ));
+    }
+
+    let response_team_id = fields[6]
+        .parse::<usize>()
+        .map_err(|_| "Invalid global Team history team ID".to_string())?;
+    if response_team_id != team_id {
+        return Err(format!(
+            "Global Team history response was for team {response_team_id}, expected {team_id}"
+        ));
+    }
+
+    let expected_count = fields[7]
+        .parse::<usize>()
+        .map_err(|_| "Invalid global Team history record count".to_string())?;
+    let encoded_records = if fields[8].is_empty() {
+        Vec::new()
+    } else {
+        fields[8].split(';').collect::<Vec<_>>()
+    };
+    if encoded_records.len() != expected_count {
+        return Err(format!(
+            "Global Team history record count mismatch: expected {expected_count}, received {}",
+            encoded_records.len()
+        ));
+    }
+
+    let mut matches = Vec::with_capacity(encoded_records.len());
+    for encoded in encoded_records {
+        let json = hex_decode(encoded)?;
+        let record: serde_json::Value = serde_json::from_str(&json)
+            .map_err(|error| format!("Invalid global MatchInfo JSON: {error}"))?;
+
+        let match_id = record
+            .get("id")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| "Global MatchInfo is missing a valid ID".to_string())?;
+        let date = record
+            .get("date")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let is_practice = record
+            .get("is_practice")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let replay_ids = record
+            .get("replays")
+            .and_then(serde_json::Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(serde_json::Value::as_u64)
+                    .filter_map(|value| usize::try_from(value).ok())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let team1_id = global_normal_team_id(&record, "team1")
+            .ok_or_else(|| format!("Global MatchInfo {match_id} has no normal Team 1"))?;
+        let team2_id = global_normal_team_id(&record, "team2")
+            .ok_or_else(|| format!("Global MatchInfo {match_id} has no normal Team 2"))?;
+        let end = record
+            .get("running_state")
+            .and_then(|value| value.get("End"))
+            .ok_or_else(|| format!("Global MatchInfo {match_id} is not completed"))?;
+        let team1_score = global_json_usize(end, "team1_score")
+            .ok_or_else(|| format!("Global MatchInfo {match_id} has no Team 1 score"))?;
+        let team2_score = global_json_usize(end, "team2_score")
+            .ok_or_else(|| format!("Global MatchInfo {match_id} has no Team 2 score"))?;
+        let winner = global_json_usize(end, "winner");
+
+        let (opponent_id, my_score, enemy_score) = if team1_id == team_id {
+            (team2_id, team1_score, team2_score)
+        } else if team2_id == team_id {
+            (team1_id, team2_score, team1_score)
+        } else {
+            return Err(format!(
+                "Global MatchInfo {match_id} does not contain requested team {team_id}"
+            ));
+        };
+
+        matches.push(TeamMatchHistoryEntry {
+            date,
+            match_id,
+            opponent_id,
+            opponent_name: team_name_from_lookup(teams, opponent_id),
+            is_practice,
+            is_win: winner.map_or(my_score > enemy_score, |winner_id| winner_id == team_id),
+            my_score,
+            enemy_score,
+            replay_ids,
+            article_pattern: String::new(),
+            sets: Vec::new(),
+        });
+    }
+
+    matches.sort_by(|left, right| {
+        left.date
+            .cmp(&right.date)
+            .then_with(|| left.match_id.cmp(&right.match_id))
+    });
+    Ok(matches)
+}
+
+fn global_normal_team_id(record: &serde_json::Value, field: &str) -> Option<usize> {
+    record
+        .get(field)?
+        .get("Normal")?
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())
+}
+
+fn global_json_usize(value: &serde_json::Value, field: &str) -> Option<usize> {
+    value
+        .get(field)?
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())
+}
+
+fn merge_global_match_history(
+    history: &mut TeamHistoryData,
+    global_matches: Vec<TeamMatchHistoryEntry>,
+) -> usize {
+    let mut added = 0usize;
+    for global_match in global_matches {
+        if let Some(existing) = history
+            .matches
+            .iter_mut()
+            .find(|existing| existing.match_id == global_match.match_id)
+        {
+            if existing.replay_ids.is_empty() && !global_match.replay_ids.is_empty() {
+                existing.replay_ids = global_match.replay_ids;
+            }
+            continue;
+        }
+        history.matches.push(global_match);
+        added = added.saturating_add(1);
+    }
+    history.matches.sort_by(|left, right| {
+        left.date
+            .cmp(&right.date)
+            .then_with(|| left.match_id.cmp(&right.match_id))
+    });
+    added
+}
+
+fn parse_replay_strategy_snapshot(raw: &str) -> Result<Vec<TeamStrategyEntry>, String> {
+    let mut entries = Vec::new();
+    for pair in raw.split(';').filter(|pair| !pair.trim().is_empty()) {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| "Invalid replay Strategy snapshot from bridge".to_string())?;
+        if !TEAM_STRATEGY_KEYS.contains(&key.trim()) {
+            continue;
+        }
+        entries.push(TeamStrategyEntry {
+            key: key.trim().to_string(),
+            value: value.trim().to_string(),
+        });
+    }
+    if TEAM_STRATEGY_KEYS
+        .iter()
+        .any(|key| entries.iter().all(|entry| entry.key != *key))
+    {
+        return Err("Replay Strategy snapshot is missing one or more Strategy areas".to_string());
+    }
+    Ok(entries)
+}
+
+fn parse_team_replay_strategies_response(
+    response: &str,
+) -> Result<HashMap<usize, TeamReplayStrategySnapshot>, String> {
+    if let Some(error) = response.strip_prefix("ERR|") {
+        return Err(error.to_string());
+    }
+    let parts = response.split('|').collect::<Vec<_>>();
+    if parts.len() != 3 || parts[0] != "OK" || parts[1] != "TEAM_REPLAY_STRATEGIES" {
+        return Err(format!("Unexpected Team replay Strategy response: {response}"));
+    }
+    let raw = hex_decode(parts[2])?;
+    let mut snapshots = HashMap::new();
+    for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+        let cells = line.split('\t').collect::<Vec<_>>();
+        if cells.len() != 7 {
+            return Err("Invalid Team replay Strategy row from bridge".to_string());
+        }
+        let replay_id = cells[0]
+            .parse::<usize>()
+            .map_err(|_| "Invalid replay ID from bridge".to_string())?;
+        let status = cells[1].to_string();
+        let set_is_win = if status == "OK" {
+            match cells[5] {
+                "1" => Some(true),
+                "0" => Some(false),
+                _ => return Err("Invalid Team replay set result from bridge".to_string()),
+            }
+        } else {
+            None
+        };
+        let strategy = if status == "OK" {
+            parse_replay_strategy_snapshot(cells[6])?
+        } else {
+            Vec::new()
+        };
+        snapshots.insert(
+            replay_id,
+            TeamReplayStrategySnapshot {
+                status,
+                side: cells[2].to_string(),
+                blue_team_id: parse_optional_usize(cells[3])?,
+                red_team_id: parse_optional_usize(cells[4])?,
+                set_is_win,
+                strategy,
+            },
+        );
+    }
+    Ok(snapshots)
+}
+
 fn parse_team_strategy_section(section: &str) -> Result<Vec<TeamStrategyEntry>, String> {
     let mut entries = Vec::new();
     for line in section.lines().filter(|line| !line.trim().is_empty()) {
@@ -16128,7 +25548,75 @@ fn parse_team_strategy_section(section: &str) -> Result<Vec<TeamStrategyEntry>, 
     Ok(entries)
 }
 
+fn parse_team_strategy_options_response(
+    response: &str,
+) -> Result<HashMap<String, Vec<String>>, String> {
+    let parts = response.split('|').collect::<Vec<_>>();
+    if parts.first() == Some(&"ERR") {
+        return Err(parts.get(1).unwrap_or(&"UNKNOWN_ERROR").to_string());
+    }
+    if parts.len() != 3 || parts[0] != "OK" || parts[1] != "TEAM_STRATEGY_OPTIONS" {
+        return Err(format!("Unexpected Strategy options response: {response}"));
+    }
+
+    let raw = hex_decode(parts[2])?;
+    let mut options = HashMap::<String, Vec<String>>::new();
+    for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+        let mut cells = line.splitn(2, '\t');
+        let key = cells.next().unwrap_or_default().trim();
+        let value = cells.next().unwrap_or_default().trim();
+        if !TEAM_STRATEGY_KEYS.contains(&key) || value.is_empty() {
+            continue;
+        }
+        options
+            .entry(key.to_string())
+            .or_default()
+            .push(value.to_string());
+    }
+
+    for (key, values) in &mut options {
+        values.sort_by(|left, right| {
+            team_strategy_option_rank(key, left)
+                .cmp(&team_strategy_option_rank(key, right))
+                .then_with(|| left.cmp(right))
+        });
+        values.dedup();
+    }
+    if TEAM_STRATEGY_KEYS
+        .iter()
+        .any(|key| options.get(*key).is_none_or(|values| values.is_empty()))
+    {
+        return Err("Bridge did not return complete Strategy choices.".to_string());
+    }
+    Ok(options)
+}
+
+fn validate_team_champion_setup_section(raw: &str) -> Result<(), String> {
+    for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+        if line.split('\t').count() != 5 {
+            return Err("Invalid Team champion setup row from bridge".to_string());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(feature = "dev")]
+fn parse_team_champion_setup_section(raw: &str) -> Vec<TeamChampionSetupEntry> {
+    raw.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let fields = line.split('\t').collect::<Vec<_>>();
+            TeamChampionSetupEntry {
+                champion_id: fields[0].to_string(),
+                tier: fields[1].to_string(),
+                tactic_1: fields[2].to_string(),
+                tactic_2: fields[3].to_string(),
+                tactic_3: fields[4].to_string(),
+            }
+        })
+        .collect()
+}
+
 fn parse_team_management_response(response: &str) -> Result<TeamManagementData, String> {
     if let Some(error) = response.strip_prefix("ERR|") {
         return Err(error.to_string());
@@ -16265,23 +25753,7 @@ fn parse_team_management_response(response: &str) -> Result<TeamManagementData, 
         });
     }
 
-    let mut champion_setup = Vec::new();
-    for line in champion_setup_raw
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-    {
-        let fields = line.split('\t').collect::<Vec<_>>();
-        if fields.len() != 5 {
-            return Err("Invalid Team champion setup row from bridge".to_string());
-        }
-        champion_setup.push(TeamChampionSetupEntry {
-            champion_id: fields[0].to_string(),
-            tier: fields[1].to_string(),
-            tactic_1: fields[2].to_string(),
-            tactic_2: fields[3].to_string(),
-            tactic_3: fields[4].to_string(),
-        });
-    }
+    validate_team_champion_setup_section(&champion_setup_raw)?;
 
     let mut gaming_house = TeamGamingHouseSummary::default();
     for line in gaming_house_raw.lines().filter(|line| !line.trim().is_empty()) {
@@ -16331,7 +25803,8 @@ fn parse_team_management_response(response: &str) -> Result<TeamManagementData, 
         last_strategy: parse_team_strategy_section(&last_strategy_raw)?,
         team_color_strategy: parse_team_strategy_section(&team_color_strategy_raw)?,
         merchandise,
-        champion_setup,
+        #[cfg(feature = "dev")]
+        champion_setup: parse_team_champion_setup_section(&champion_setup_raw),
         gaming_house,
     })
 }
@@ -16988,6 +26461,60 @@ fn display_contract_date(raw: &str) -> String {
     }
 }
 
+fn parse_contract_extension_years(raw: &str) -> Result<u32, String> {
+    let years = raw
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| "Contract extension Years must be a positive whole number.".to_string())?;
+    if years == 0 {
+        return Err("Contract extension Years must be greater than 0.".to_string());
+    }
+    Ok(years)
+}
+
+fn extend_contract_end_date(raw: &str, years: u32) -> Result<String, String> {
+    let displayed = display_contract_date(raw);
+    if !is_iso_date_shape(&displayed) {
+        return Err("No active contract end date is available.".to_string());
+    }
+    let current_year = displayed[..4]
+        .parse::<u32>()
+        .map_err(|_| "Invalid contract end year.".to_string())?;
+    let extended_year = current_year
+        .checked_add(years)
+        .ok_or_else(|| "Contract extension year overflow.".to_string())?;
+    if extended_year > 9999 {
+        return Err("Contract extension year overflow.".to_string());
+    }
+    Ok(format!("{extended_year:04}{}", &displayed[4..]))
+}
+
+fn parse_simple_bridge_ok(response: &str, expected: &str) -> Result<(), String> {
+    if response == expected {
+        Ok(())
+    } else if let Some(reason) = response.strip_prefix("ERR|") {
+        Err(human_error(reason))
+    } else {
+        Err(format!("Unexpected bridge response: {response}"))
+    }
+}
+
+#[cfg(feature = "dev")]
+fn parse_team_fan_momentum_probe_response(response: &str) -> Result<String, String> {
+    let mut parts = response.split('|');
+    if parts.next() != Some("OK") || parts.next() != Some("TEAM_FAN_MOMENTUM_PROBE") {
+        if let Some(reason) = response.strip_prefix("ERR|") {
+            return Err(human_error(reason));
+        }
+        return Err("Invalid Team Fan Momentum probe response".to_string());
+    }
+    hex_decode(
+        parts
+            .next()
+            .ok_or_else(|| "Missing Fan Momentum probe payload".to_string())?,
+    )
+}
+
 fn is_iso_date_shape(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() == 10
@@ -17032,6 +26559,22 @@ fn human_error(error: &str) -> String {
         "STAFF_FREE_AGENT_NEEDS_CONTRACT" => "Free-agent staff must be signed through Edit Contract".to_string(),
         "STAFF_ALREADY_FREE_AGENT" => "The selected staff member is already a free agent".to_string(),
         "TEAM_NOT_FOUND" => "Could not find the selected team in the active career".to_string(),
+        "PLAYER_TEAM_ONLY" => "This Team field is writable only for the Player Team".to_string(),
+        "INVALID_MERCHANDISE_TYPE" => "Merchandise product type is missing".to_string(),
+        "INVALID_MERCHANDISE_STOCK" => "Merchandise Stock must be a non-negative whole number".to_string(),
+        "INVALID_MERCHANDISE_SELL_PRICE" => "Merchandise Sell Price must be numeric".to_string(),
+        "MERCHANDISE_SELL_PRICE_OUT_OF_RANGE" => "Merchandise Sell Price must be a non-negative finite value".to_string(),
+        "MERCHANDISE_PRODUCT_NOT_FOUND" => "The selected Merchandise product no longer exists".to_string(),
+        "MERCHANDISE_STOCK_TYPE_ERROR" => "TFM2 rejected the Merchandise Stock value type".to_string(),
+        "MERCHANDISE_SELL_PRICE_TYPE_ERROR" => "TFM2 rejected the Merchandise Sell Price value type".to_string(),
+        "INVALID_FAN_POPULARITY" => "Fan Popularity cannot be empty".to_string(),
+        "INVALID_FAN_COUNT" => "Fan Count must be a non-negative whole number".to_string(),
+        "INVALID_FAN_SATISFACTION" => "Fan Satisfaction cannot be empty".to_string(),
+        "UNKNOWN_FAN_SATISFACTION" => "Fan Satisfaction must use an observed TFM2 game state".to_string(),
+        "FAN_POPULARITY_TYPE_ERROR" => "TFM2 rejected the Fan Popularity value type".to_string(),
+        "FAN_COUNT_TYPE_ERROR" => "TFM2 rejected the Fan Count value type".to_string(),
+        "FAN_COUNT_BELOW_PLAYER_FANS" => "Fan Count cannot be lower than the current roster Players' combined fans".to_string(),
+        "FAN_COUNT_OVERFLOW" => "Fan Count overflowed the supported numeric representation".to_string(),
         "PLAYER_FREE_AGENT" => "The selected player is a free agent and has no active salary".to_string(),
         "PLAYER_ALREADY_FREE_AGENT" => "The selected player is already a free agent".to_string(),
         "STAFF_FREE_AGENT" => "The selected staff member is a free agent and has no active salary".to_string(),
@@ -17057,6 +26600,31 @@ fn human_error(error: &str) -> String {
 mod compatibility_tests {
     use super::*;
 
+    #[cfg(not(feature = "dev"))]
+    #[test]
+    fn community_release_identity_is_v0_5_0() {
+        assert_eq!(APP_VERSION, "0.5.0");
+        assert_eq!(display_version(), "v0.5.0");
+        assert_eq!(window_title(), "TFM2 Editor v0.5.0");
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn development_identity_remains_v0_5_4_dev() {
+        assert_eq!(APP_VERSION, "0.5.4");
+        assert_eq!(display_version(), "v0.5.4-dev");
+        assert_eq!(window_title(), "TFM2 Editor v0.5.4-dev");
+    }
+
+    fn future_bridge_version() -> String {
+        let mut parts = REQUIRED_BRIDGE_VERSION.split('.');
+        let major = parts.next().and_then(|value| value.parse::<u32>().ok()).unwrap();
+        let minor = parts.next().and_then(|value| value.parse::<u32>().ok()).unwrap();
+        let patch = parts.next().and_then(|value| value.parse::<u32>().ok()).unwrap();
+        assert!(parts.next().is_none());
+        format!("{major}.{minor}.{}", patch + 1)
+    }
+
     #[cfg(feature = "dev")]
     fn test_hex_encode(value: &str) -> String {
         value
@@ -17065,6 +26633,34 @@ mod compatibility_tests {
             .map(|byte| format!("{byte:02X}"))
             .collect::<Vec<_>>()
             .join("")
+    }
+
+    #[cfg(feature = "dev")]
+    fn tactics_history_filter_row(
+        match_id: usize,
+        set_number: usize,
+        replay_id: usize,
+        is_practice: bool,
+        opponent: &str,
+    ) -> TeamOwnStrategyProbeRow {
+        TeamOwnStrategyProbeRow {
+            match_id,
+            date: "2026-03-23T15:30:00".to_string(),
+            opponent_name: opponent.to_string(),
+            result: "W 2-0".to_string(),
+            is_practice,
+            replay_id,
+            set_number,
+            side: "Blue".to_string(),
+            status: "OK".to_string(),
+            blue_team_id: Some(85),
+            red_team_id: Some(80),
+            set_is_win: Some(true),
+            strategy: vec![TeamStrategyEntry {
+                key: "game_finish".to_string(),
+                value: "Aggressive".to_string(),
+            }],
+        }
     }
 
     fn test_player(age: u8, actual_potential: u8) -> PlayerSummary {
@@ -17555,7 +27151,8 @@ mod compatibility_tests {
 
     #[test]
     fn unknown_future_bridge_without_protocol_is_unverified_warning() {
-        let issue = ModifierApp::compatibility_issue_for("0.2.50", None, None).unwrap();
+        let future_bridge = future_bridge_version();
+        let issue = ModifierApp::compatibility_issue_for(&future_bridge, None, None).unwrap();
         assert_eq!(issue.severity, CompatibilitySeverity::Warning);
         assert_eq!(issue.action, CompatibilityAction::EditorUpdate);
         assert_eq!(issue.reason, CompatibilityReason::UnverifiedLegacyBridge);
@@ -17587,6 +27184,62 @@ mod compatibility_tests {
         assert_eq!(issue.reason, CompatibilityReason::KnownUnsupportedCombination);
     }
 
+    #[cfg(feature = "dev")]
+    #[test]
+    fn previous_bridge_without_replay_strategy_probe_is_hard_blocked() {
+        let issue = ModifierApp::compatibility_issue_for(
+            "0.2.53",
+            Some(13),
+            Some(SUPPORTED_TFM2_VERSION),
+        )
+        .unwrap();
+        assert_eq!(issue.severity, CompatibilitySeverity::NotSupported);
+        assert_eq!(issue.action, CompatibilityAction::BridgeUpdate);
+        assert_eq!(issue.reason, CompatibilityReason::KnownUnsupportedCombination);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn previous_bridge_without_strategy_choice_discovery_is_hard_blocked() {
+        let issue = ModifierApp::compatibility_issue_for(
+            "0.2.52",
+            Some(12),
+            Some(SUPPORTED_TFM2_VERSION),
+        )
+        .unwrap();
+        assert_eq!(issue.severity, CompatibilitySeverity::NotSupported);
+        assert_eq!(issue.action, CompatibilityAction::BridgeUpdate);
+        assert_eq!(issue.reason, CompatibilityReason::KnownUnsupportedCombination);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn previous_bridge_without_team_quick_edit_commands_is_hard_blocked() {
+        let issue = ModifierApp::compatibility_issue_for(
+            "0.2.55",
+            Some(15),
+            Some(SUPPORTED_TFM2_VERSION),
+        )
+        .unwrap();
+        assert_eq!(issue.severity, CompatibilitySeverity::NotSupported);
+        assert_eq!(issue.action, CompatibilityAction::BridgeUpdate);
+        assert_eq!(issue.reason, CompatibilityReason::KnownUnsupportedCombination);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn previous_bridge_without_strategy_apply_is_hard_blocked() {
+        let issue = ModifierApp::compatibility_issue_for(
+            "0.2.51",
+            Some(11),
+            Some(SUPPORTED_TFM2_VERSION),
+        )
+        .unwrap();
+        assert_eq!(issue.severity, CompatibilitySeverity::NotSupported);
+        assert_eq!(issue.action, CompatibilityAction::BridgeUpdate);
+        assert_eq!(issue.reason, CompatibilityReason::KnownUnsupportedCombination);
+    }
+
     #[test]
     fn known_old_bridge_is_not_supported_even_without_protocol_data() {
         let issue = ModifierApp::compatibility_issue_for("0.2.30", None, None).unwrap();
@@ -17596,6 +27249,19 @@ mod compatibility_tests {
             issue.reason,
             CompatibilityReason::KnownUnsupportedCombination
         );
+    }
+
+    #[test]
+    fn last_protocol_18_bridge_is_hard_blocked_by_0_5_5_migration_boundary() {
+        let issue = ModifierApp::compatibility_issue_for(
+            "0.2.58",
+            Some(18),
+            Some("0.5.4"),
+        )
+        .unwrap();
+        assert_eq!(issue.severity, CompatibilitySeverity::NotSupported);
+        assert_eq!(issue.action, CompatibilityAction::BridgeUpdate);
+        assert_eq!(issue.reason, CompatibilityReason::KnownUnsupportedCombination);
     }
 
     #[cfg(not(feature = "dev"))]
@@ -17625,8 +27291,9 @@ mod compatibility_tests {
     #[cfg(feature = "dev")]
     #[test]
     fn future_development_bridge_with_current_protocol_is_warning_only() {
+        let future_bridge = future_bridge_version();
         let issue = ModifierApp::compatibility_issue_for(
-            "0.2.50",
+            &future_bridge,
             Some(BRIDGE_PROTOCOL_VERSION),
             Some(SUPPORTED_TFM2_VERSION),
         )
@@ -17663,14 +27330,27 @@ mod compatibility_tests {
     }
 
     #[test]
-    fn wrong_tfm2_target_has_separate_warning() {
+    fn tfm2_0_5_4_target_is_hard_blocked_for_current_release() {
+        let issue = ModifierApp::compatibility_issue_for(
+            REQUIRED_BRIDGE_VERSION,
+            Some(BRIDGE_PROTOCOL_VERSION),
+            Some("0.5.4"),
+        )
+        .unwrap();
+        assert_eq!(issue.severity, CompatibilitySeverity::NotSupported);
+        assert_eq!(issue.action, CompatibilityAction::GameVersionMismatch);
+        assert_eq!(issue.reason, CompatibilityReason::GameTargetMismatch);
+    }
+
+    #[test]
+    fn wrong_tfm2_target_is_hard_blocked() {
         let issue = ModifierApp::compatibility_issue_for(
             REQUIRED_BRIDGE_VERSION,
             Some(BRIDGE_PROTOCOL_VERSION),
             Some("0.5.3"),
         )
         .unwrap();
-        assert_eq!(issue.severity, CompatibilitySeverity::Warning);
+        assert_eq!(issue.severity, CompatibilitySeverity::NotSupported);
         assert_eq!(issue.action, CompatibilityAction::GameVersionMismatch);
         assert_eq!(issue.reason, CompatibilityReason::GameTargetMismatch);
     }
@@ -17801,6 +27481,1826 @@ Team {
 
     #[cfg(feature = "dev")]
     #[test]
+    fn global_league_parser_reads_runtime_names_regions_and_divisions() {
+        let korea = r#"{"division":0,"id":0,"name":"TACK","region_id":0}"#;
+        let korea_two = r#"{"division":1,"id":6,"name":"TACK2","region_id":0}"#;
+        let response = format!(
+            "OK|GLOBAL_LEAGUES|0.2.59|0.5.5|1|2|{};{}",
+            hex_encode(korea),
+            hex_encode(korea_two)
+        );
+        let parsed = parse_global_leagues_response(&response).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].id, 0);
+        assert_eq!(parsed[0].name, "TACK");
+        assert_eq!(parsed[0].region_id, 0);
+        assert_eq!(parsed[0].division, 0);
+        assert_eq!(parsed[1].id, 6);
+        assert_eq!(parsed[1].name, "TACK2");
+        assert_eq!(parsed[1].division, 1);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_league_dropdown_groups_divisions_by_region() {
+        let leagues = vec![
+            LeagueSummary { id: 0, name: "TACK".to_string(), region_id: 0, division: 0 },
+            LeagueSummary { id: 1, name: "TACC".to_string(), region_id: 1, division: 0 },
+            LeagueSummary { id: 6, name: "TACK2".to_string(), region_id: 0, division: 1 },
+            LeagueSummary { id: 7, name: "TACC2".to_string(), region_id: 1, division: 1 },
+        ];
+        let mut ids = vec![0, 1, 6, 7];
+        sort_team_league_ids_by_catalog(&mut ids, &leagues);
+        assert_eq!(ids, vec![0, 6, 1, 7]);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn global_league_competition_parser_orders_standings_and_keeps_totals() {
+        let competition = r#"{"finalized":false,"id":0,"league_type":"Spring","standings":{"0":{"assist":275,"death":110,"kill":152,"lose":1,"set_lose":2,"set_win":8,"win":4},"1":{"assist":387,"death":130,"kill":210,"lose":1,"set_lose":4,"set_win":8,"win":4},"2":{"assist":279,"death":73,"kill":162,"lose":1,"set_lose":2,"set_win":8,"win":4}}}"#;
+        let response = format!(
+            "OK|GLOBAL_LEAGUE_COMPETITION|0.2.59|0.5.5|1|0|{}",
+            hex_encode(competition)
+        );
+        let parsed = parse_global_league_competition_response(&response, 0, &[]).unwrap();
+        assert_eq!(parsed.league_id, 0);
+        assert_eq!(parsed.league_type, "Spring");
+        assert!(!parsed.finalized);
+        assert_eq!(parsed.rows.len(), 3);
+        assert_eq!(parsed.rows[0].team_id, 2);
+        assert_eq!(parsed.rows[0].set_wins, 8);
+        assert_eq!(parsed.rows[1].team_id, 0);
+        assert_eq!(parsed.rows[2].team_id, 1);
+        assert_eq!(parsed.rows[2].kills, 210);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn global_league_competition_parser_reads_player_and_champion_performance() {
+        let competition = r#"{"finalized":false,"id":0,"league_type":"Spring","standings":{"0":{"assist":20,"death":5,"kill":12,"lose":0,"set_lose":0,"set_win":2,"win":1}},"statistics":{"11":{"assists":8,"champion_detail":{"archer":{"dealing":12000,"healing":0,"matches":2,"rating":160,"tanking":4000,"wins":2}},"dealing":12000,"deaths":1,"gold":15000,"healing":0,"kills":7,"matches":2,"mvp":1,"rating":160,"solo_kill":2,"solo_killed":0,"tanking":4000,"wins":2}}}"#;
+        let response = format!(
+            "OK|GLOBAL_LEAGUE_COMPETITION|0.2.59|0.5.5|1|0|{}",
+            hex_encode(competition)
+        );
+        let parsed = parse_global_league_competition_response(&response, 0, &[]).unwrap();
+        assert_eq!(parsed.player_performance.len(), 1);
+        let player = &parsed.player_performance[0];
+        assert_eq!(player.player_id, 11);
+        assert_eq!(player.matches, 2);
+        assert_eq!(player.kills, 7);
+        assert_eq!(player.mvp, 1);
+        assert_eq!(player.champions.len(), 1);
+        assert_eq!(player.champions[0].champion_id, "archer");
+        assert_eq!(player.champions[0].wins, 2);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_performance_helpers_calculate_percent_kda_and_champion_totals() {
+        assert_eq!(team_performance_percent(3, 4), "75.0%");
+        assert_eq!(team_performance_kda(5, 2, 7), "6.00");
+        let rows = aggregate_team_champion_performance(&[
+            TeamLeaguePlayerPerformance {
+                player_id: 1,
+                matches: 2,
+                wins: 2,
+                kills: 0,
+                deaths: 0,
+                assists: 0,
+                mvp: 0,
+                rating: 0,
+                gold: 0,
+                dealing: 0,
+                healing: 0,
+                tanking: 0,
+                solo_kill: 0,
+                solo_killed: 0,
+                champions: vec![TeamLeagueChampionPerformance {
+                    champion_id: "archer".to_string(),
+                    matches: 2,
+                    wins: 1,
+                    rating: 150,
+                    dealing: 1000,
+                    healing: 0,
+                    tanking: 500,
+                }],
+            },
+            TeamLeaguePlayerPerformance {
+                player_id: 2,
+                matches: 1,
+                wins: 1,
+                kills: 0,
+                deaths: 0,
+                assists: 0,
+                mvp: 0,
+                rating: 0,
+                gold: 0,
+                dealing: 0,
+                healing: 0,
+                tanking: 0,
+                solo_kill: 0,
+                solo_killed: 0,
+                champions: vec![TeamLeagueChampionPerformance {
+                    champion_id: "archer".to_string(),
+                    matches: 1,
+                    wins: 1,
+                    rating: 90,
+                    dealing: 700,
+                    healing: 10,
+                    tanking: 300,
+                }],
+            },
+        ]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].matches, 3);
+        assert_eq!(rows[0].wins, 2);
+        assert_eq!(rows[0].rating, 240);
+        assert_eq!(rows[0].dealing, 1700);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn global_team_schedule_parser_reads_completed_running_and_upcoming_matches() {
+        let completed = r#"{"date":"2026-02-15T16:30:00","id":799,"is_practice":false,"running_state":{"End":{"loser":81,"team1_score":0,"team2_score":2,"winner":85}},"team1":{"Normal":81},"team2":{"Normal":85}}"#;
+        let running = r#"{"date":"2026-02-20T16:30:00","id":805,"is_practice":false,"running_state":"Running","team1":{"Normal":85},"team2":{"Normal":82}}"#;
+        let upcoming = r#"{"date":"2026-02-22T16:30:00","id":809,"is_practice":false,"running_state":"Wait","team1":{"Normal":85},"team2":{"Normal":84}}"#;
+        let response = format!(
+            "OK|GLOBAL_TEAM_SCHEDULE|0.2.59|0.5.5|1|85|85|3|{};{};{}",
+            hex_encode(completed),
+            hex_encode(running),
+            hex_encode(upcoming)
+        );
+
+        let parsed = parse_global_team_schedule_response(&response, 85, &[]).unwrap();
+        assert_eq!(parsed.team_id, 85);
+        assert_eq!(parsed.matches.len(), 3);
+        assert_eq!(parsed.matches[0].match_id, 799);
+        assert_eq!(parsed.matches[0].status, TeamCompetitionMatchStatus::Completed);
+        assert_eq!(parsed.matches[0].my_score, Some(2));
+        assert_eq!(parsed.matches[1].status, TeamCompetitionMatchStatus::Running);
+        assert_eq!(parsed.matches[2].status, TeamCompetitionMatchStatus::Upcoming);
+        assert_eq!(parsed.upcoming_count(), 2);
+        assert_eq!(parsed.record_for(false), (1, 0));
+        assert_eq!(parsed.official_set_record(), (2, 0));
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_competition_head_to_head_aggregates_official_matches_only() {
+        let data = TeamCompetitionData {
+            team_id: 85,
+            matches: vec![
+                TeamCompetitionMatchEntry {
+                    date: "2026-02-07T16:30:00".to_string(),
+                    match_id: 787,
+                    opponent_id: Some(89),
+                    opponent_name: "Team 89".to_string(),
+                    is_practice: false,
+                    status: TeamCompetitionMatchStatus::Completed,
+                    is_win: Some(true),
+                    my_score: Some(2),
+                    enemy_score: Some(0),
+                },
+                TeamCompetitionMatchEntry {
+                    date: "2026-02-14T16:30:00".to_string(),
+                    match_id: 788,
+                    opponent_id: Some(89),
+                    opponent_name: "Team 89".to_string(),
+                    is_practice: false,
+                    status: TeamCompetitionMatchStatus::Completed,
+                    is_win: Some(false),
+                    my_score: Some(1),
+                    enemy_score: Some(2),
+                },
+                TeamCompetitionMatchEntry {
+                    date: "2026-02-01T11:00:00".to_string(),
+                    match_id: 1188,
+                    opponent_id: Some(89),
+                    opponent_name: "Team 89".to_string(),
+                    is_practice: true,
+                    status: TeamCompetitionMatchStatus::Completed,
+                    is_win: Some(true),
+                    my_score: Some(1),
+                    enemy_score: Some(0),
+                },
+            ],
+        };
+        let rows = data.head_to_head();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].opponent_id, 89);
+        assert_eq!(rows[0].matches, 2);
+        assert_eq!(rows[0].wins, 1);
+        assert_eq!(rows[0].losses, 1);
+        assert_eq!(rows[0].set_wins, 3);
+        assert_eq!(rows[0].set_losses, 2);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn global_team_history_parser_reads_completed_official_and_practice_records() {
+        let official = r#"{"date":"2026-02-07T16:30:00","id":787,"is_practice":false,"replays":[87,88],"running_state":{"End":{"loser":89,"team1_score":0,"team2_score":2,"winner":85}},"team1":{"Normal":89},"team2":{"Normal":85}}"#;
+        let practice = r#"{"date":"2026-01-07T11:00:00","id":1176,"is_practice":true,"replays":[301],"running_state":{"End":{"loser":85,"team1_score":0,"team2_score":1,"winner":87}},"team1":{"Normal":85},"team2":{"Normal":87}}"#;
+        let response = format!(
+            "OK|GLOBAL_TEAM_HISTORY|0.2.59|0.5.5|1|85|85|2|{};{}",
+            hex_encode(official),
+            hex_encode(practice)
+        );
+
+        let parsed = parse_global_team_history_response(&response, 85, &[]).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].match_id, 1176);
+        assert!(parsed[0].is_practice);
+        assert!(!parsed[0].is_win);
+        assert_eq!(parsed[0].replay_ids, vec![301]);
+        assert_eq!(parsed[0].opponent_id, 87);
+        assert_eq!(parsed[1].match_id, 787);
+        assert!(parsed[1].is_win);
+        assert_eq!(parsed[1].my_score, 2);
+        assert_eq!(parsed[1].enemy_score, 0);
+        assert_eq!(parsed[1].replay_ids, vec![87, 88]);
+        assert!(parsed[1].sets.is_empty());
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn global_team_history_parser_rejects_companion_version_mismatch() {
+        let response = "OK|GLOBAL_TEAM_HISTORY|0.2.58|0.5.5|1|85|85|0|";
+        let error = parse_global_team_history_response(response, 85, &[]).unwrap_err();
+        assert!(error.contains("version mismatch"));
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn global_history_merge_preserves_enriched_team_report() {
+        let enriched = TeamMatchHistoryEntry {
+            date: "2026-02-07T16:30:00".to_string(),
+            match_id: 787,
+            opponent_id: 89,
+            opponent_name: "Team 89".to_string(),
+            is_practice: false,
+            is_win: true,
+            my_score: 2,
+            enemy_score: 0,
+            replay_ids: Vec::new(),
+            article_pattern: "Clean Sweep".to_string(),
+            sets: vec![TeamMatchSetEntry {
+                set_number: 1,
+                pattern: "Dominant Win".to_string(),
+                team1_kills: 24,
+                team2_kills: 5,
+                team1_gold: 49_198,
+                team2_gold: 37_418,
+                mvp_player_id: 43,
+                mvp_player_name: "Player 43".to_string(),
+                mvp_champion_id: "cavalry_knight".to_string(),
+                mvp_kills: 7,
+                mvp_deaths: 0,
+                mvp_assists: 6,
+                was_comeback: false,
+                was_blue_side: false,
+            }],
+        };
+        let global_duplicate = TeamMatchHistoryEntry {
+            replay_ids: vec![87, 88],
+            article_pattern: String::new(),
+            sets: Vec::new(),
+            ..enriched.clone()
+        };
+        let global_new = TeamMatchHistoryEntry {
+            date: "2026-02-09T16:30:00".to_string(),
+            match_id: 791,
+            opponent_id: 84,
+            opponent_name: "Team 84".to_string(),
+            is_practice: false,
+            is_win: true,
+            my_score: 2,
+            enemy_score: 1,
+            replay_ids: vec![167, 168, 169],
+            article_pattern: String::new(),
+            sets: Vec::new(),
+        };
+        let mut history = TeamHistoryData {
+            team_id: 85,
+            matches: vec![enriched],
+            analyses: Vec::new(),
+            latest_rating: None,
+            latest_rank: None,
+            latest_rating_date: String::new(),
+        };
+
+        let added = merge_global_match_history(&mut history, vec![global_new, global_duplicate]);
+        assert_eq!(added, 1);
+        assert_eq!(history.matches.len(), 2);
+        assert_eq!(history.matches[0].match_id, 787);
+        assert_eq!(history.matches[0].article_pattern, "Clean Sweep");
+        assert_eq!(history.matches[0].sets.len(), 1);
+        assert_eq!(history.matches[0].replay_ids, vec![87, 88]);
+        assert_eq!(history.matches[1].match_id, 791);
+        assert_eq!(history.matches[1].replay_ids, vec![167, 168, 169]);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_contract_center_contract_sort_key_orders_dates_and_blanks_last() {
+        let mut values = vec![
+            "".to_string(),
+            "2030-12-31".to_string(),
+            "2027-01-15".to_string(),
+        ];
+        values.sort_by_key(|value| contract_sort_key(value));
+        assert_eq!(values, vec!["2027-01-15", "2030-12-31", ""]);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_move_staff_role_list_matches_supported_bridge_values() {
+        assert_eq!(
+            TEAM_MOVE_STAFF_ROLES,
+            ["HeadCoach", "TrainingCoach", "Scouter", "Analyst"]
+        );
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn strategy_presets_are_visible_only_for_player_team() {
+        assert!(team_strategy_presets_visible(true));
+        assert!(!team_strategy_presets_visible(false));
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_finance_helpers_handle_budget_share_and_empty_home_schedule() {
+        assert!((team_finance_percentage(250.0, 1_000.0) - 25.0).abs() < f64::EPSILON);
+        assert_eq!(team_finance_percentage(250.0, 0.0), 0.0);
+        assert_eq!(team_finance_average(900.0, 3), Some(300.0));
+        assert_eq!(team_finance_average(900.0, 0), None);
+    }
+
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_strategy_options_parser_keeps_complete_runtime_choices() {
+        let raw = [
+            "focused\tTop",
+            "focused\tBottom",
+            "early_jungle\tGrowthAndCover",
+            "early_serpen\tMust",
+            "early_serpen_top\tFlexible",
+            "object_buildup\tSplit { position: Top }",
+            "object_battle\tPoking",
+            "morgard_use\tSplit131 { position1: Top, position2: Mid }",
+            "tower_press\tDive",
+            "morgard_defense\tBattle",
+            "object_finish\tKillPriority",
+            "minion_wave\tWavePriority",
+            "game_finish\tAggressive",
+        ]
+        .join("\n");
+        let response = format!("OK|TEAM_STRATEGY_OPTIONS|{}", test_hex_encode(&raw));
+        let options = parse_team_strategy_options_response(&response).unwrap();
+        assert_eq!(options["focused"], vec!["Top", "Bottom"]);
+        assert_eq!(options["tower_press"], vec!["Dive"]);
+        assert_eq!(
+            options["morgard_use"],
+            vec!["Split131 { position1: Top, position2: Mid }"]
+        );
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_strategy_player_facing_labels_are_area_specific() {
+        let lineup = Vec::new();
+        assert_eq!(
+            team_strategy_option_label("object_buildup", "Gather", &lineup),
+            "Group Up"
+        );
+        assert_eq!(
+            team_strategy_option_label("morgard_use", "Gather", &lineup),
+            "Group as 5"
+        );
+        assert_eq!(
+            team_strategy_option_label("morgard_defense", "Gather", &lineup),
+            "Defend Pressured Lane"
+        );
+        assert_eq!(
+            team_strategy_option_label("early_jungle", "GrowthAndCover", &lineup),
+            "Farming/Cover"
+        );
+        assert_eq!(
+            team_strategy_option_label("early_serpen", "Giveup", &lineup),
+            "Concede"
+        );
+        assert_eq!(
+            team_strategy_option_label("early_serpen_top", "Giveup", &lineup),
+            "Do Not Join"
+        );
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_strategy_split_type_is_separate_from_assignments() {
+        let lineup = Vec::new();
+        assert_eq!(
+            team_strategy_option_label(
+                "morgard_use",
+                "Split131 { position1: Top, position2: Mid }",
+                &lineup,
+            ),
+            "1-3-1 Split"
+        );
+        assert_eq!(
+            team_strategy_option_label(
+                "morgard_use",
+                "Split14 { position: Support }",
+                &lineup,
+            ),
+            "1-4 Split"
+        );
+        assert_eq!(
+            team_strategy_option_label(
+                "object_buildup",
+                "Split { position: Top }",
+                &lineup,
+            ),
+            "Split Push"
+        );
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_strategy_editor_collapses_generated_split_combinations() {
+        let raw_options = vec![
+            "Gather".to_string(),
+            "Split14 { position: Top }".to_string(),
+            "Split14 { position: Jungle }".to_string(),
+            "Split131 { position1: Top, position2: Mid }".to_string(),
+            "Split131 { position1: Bottom, position2: Mid }".to_string(),
+        ];
+        let choices = team_strategy_editor_choices(
+            "morgard_use",
+            &raw_options,
+            "Split131 { position1: Top, position2: Mid }",
+        );
+        assert_eq!(choices.len(), 3);
+        assert_eq!(team_strategy_choice_token("morgard_use", &choices[0]), "Gather");
+        assert_eq!(team_strategy_choice_token("morgard_use", &choices[1]), "Split14");
+        assert_eq!(team_strategy_choice_token("morgard_use", &choices[2]), "Split131");
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_strategy_split_assignments_reuse_exact_runtime_values() {
+        let raw_options = vec![
+            "Split14 { position: Top }".to_string(),
+            "Split14 { position: Support }".to_string(),
+            "Split131 { position1: Top, position2: Mid }".to_string(),
+            "Split131 { position1: Top, position2: Bottom }".to_string(),
+            "Split131 { position1: Jungle, position2: Bottom }".to_string(),
+        ];
+        assert_eq!(
+            team_strategy_split14_raw_for_position(&raw_options, "Support").as_deref(),
+            Some("Split14 { position: Support }")
+        );
+        assert_eq!(
+            team_strategy_split131_position2_options(&raw_options, "Top"),
+            vec!["Mid".to_string(), "Bottom".to_string()]
+        );
+        assert_eq!(
+            team_strategy_split131_raw_for_positions(&raw_options, "Top", "Bottom").as_deref(),
+            Some("Split131 { position1: Top, position2: Bottom }")
+        );
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_strategy_probe_helpers_detect_swap_and_restore() {
+        let current = vec![
+            TeamStrategyEntry {
+                key: "focused".into(),
+                value: "Top".into(),
+            },
+            TeamStrategyEntry {
+                key: "game_finish".into(),
+                value: "Stable".into(),
+            },
+        ];
+        let last = vec![
+            TeamStrategyEntry {
+                key: "focused".into(),
+                value: "Bottom".into(),
+            },
+            TeamStrategyEntry {
+                key: "game_finish".into(),
+                value: "Aggressive".into(),
+            },
+        ];
+        let backup = TeamStrategyProbeBackup {
+            team_id: 85,
+            current_strategy: current.clone(),
+            last_strategy: last.clone(),
+        };
+        let mut data = TeamManagementData {
+            team_id: 85,
+            lineup: Vec::new(),
+            watched_players: Vec::new(),
+            no_transfer_players: Vec::new(),
+            release_players: Vec::new(),
+            watched_staff: Vec::new(),
+            release_staff: Vec::new(),
+            pending_installments: 0,
+            resale_clauses: 0,
+            scout_dispatch: String::new(),
+            merchandise_product_count: 0,
+            champion_tier_count: 0,
+            personal_tactic_count: 0,
+            current_strategy: last.clone(),
+            last_strategy: current.clone(),
+            team_color_strategy: Vec::new(),
+            merchandise: Vec::new(),
+            champion_setup: Vec::new(),
+            gaming_house: TeamGamingHouseSummary::default(),
+        };
+
+        assert!(team_strategy_probe_is_swapped(&data, &backup));
+        assert!(!team_strategy_probe_is_restored(&data, &backup));
+
+        data.current_strategy = current;
+        data.last_strategy = last;
+        assert!(team_strategy_probe_is_restored(&data, &backup));
+        assert!(!team_strategy_probe_is_swapped(&data, &backup));
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_strategy_preset_support_requires_all_strategy_fields() {
+        let strategy = TEAM_STRATEGY_KEYS
+            .iter()
+            .map(|key| TeamStrategyEntry {
+                key: (*key).to_string(),
+                value: format!("Value-{key}"),
+            })
+            .collect::<Vec<_>>();
+        let preset = TeamStrategyPreset::new("My Preset".to_string(), strategy.clone());
+        assert!(preset.is_supported());
+
+        let incomplete = TeamStrategyPreset::new(
+            "Incomplete".to_string(),
+            strategy.into_iter().take(11).collect(),
+        );
+        assert!(!incomplete.is_supported());
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_strategy_preset_name_sanitization_is_windows_safe() {
+        assert_eq!(
+            ModifierApp::sanitize_team_strategy_preset_name("  Early:Aggression?  "),
+            "Early_Aggression_"
+        );
+        assert_eq!(
+            ModifierApp::sanitize_team_strategy_preset_name("   "),
+            "Strategy Preset"
+        );
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn replay_strategy_response_parser_preserves_all_strategy_areas() {
+        let raw = "87\tOK\tRed\t89\t85\t1\tfocused=Bottom;early_jungle=CounterJungle;early_serpen=Flexible;early_serpen_top=Must;object_buildup=Gather;object_battle=Poking;morgard_use=Split131 { position1: Mid, position2: Bottom };tower_press=Poking;morgard_defense=Gather;object_finish=BattlePriority;minion_wave=WavePriority;game_finish=Flexible";
+        let response = format!("OK|TEAM_REPLAY_STRATEGIES|{}", test_hex_encode(raw));
+        let parsed = parse_team_replay_strategies_response(&response).unwrap();
+        let snapshot = parsed.get(&87).unwrap();
+        assert_eq!(snapshot.status, "OK");
+        assert_eq!(snapshot.side, "Red");
+        assert_eq!(snapshot.blue_team_id, Some(89));
+        assert_eq!(snapshot.red_team_id, Some(85));
+        assert_eq!(snapshot.set_is_win, Some(true));
+        assert_eq!(snapshot.strategy.len(), 12);
+        assert_eq!(team_strategy_value(&snapshot.strategy, "focused"), "Bottom");
+        assert_eq!(
+            team_strategy_value(&snapshot.strategy, "morgard_use"),
+            "Split131 { position1: Mid, position2: Bottom }"
+        );
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_tactics_correlates_only_analyses_with_completed_match_ids() {
+        let match_entry = |match_id, is_win| TeamMatchHistoryEntry {
+            date: "2026-02-01".to_string(),
+            match_id,
+            opponent_id: 99,
+            opponent_name: "Opponent".to_string(),
+            is_practice: false,
+            is_win,
+            my_score: if is_win { 2 } else { 0 },
+            enemy_score: if is_win { 0 } else { 2 },
+            replay_ids: Vec::new(),
+            article_pattern: String::new(),
+            sets: Vec::new(),
+        };
+        let analysis = |match_id, value: &str| TeamPreMatchAnalysisEntry {
+            date: "2026-02-01".to_string(),
+            match_id,
+            opponent_id: 99,
+            opponent_name: "Opponent".to_string(),
+            analysis_level: "93".to_string(),
+            has_match_history: true,
+            star_player_id: 1,
+            star_player_name: "Star".to_string(),
+            tactics: vec![TeamPreMatchTacticEntry {
+                category: "Early Jungle".to_string(),
+                value: value.to_string(),
+            }],
+            champion_picks: Vec::new(),
+            insights: Vec::new(),
+        };
+        let history = TeamHistoryData {
+            team_id: 85,
+            matches: vec![match_entry(10, true), match_entry(11, false)],
+            analyses: vec![
+                analysis(10, "Ganking"),
+                analysis(11, "Ganking"),
+                analysis(12, "Counter Jungle"),
+            ],
+            latest_rating: None,
+            latest_rank: None,
+            latest_rating_date: String::new(),
+        };
+
+        assert_eq!(team_tactics_linked_analysis_count(&history), 2);
+        let evidence = team_tactics_linked_match_evidence(&history);
+        assert_eq!(evidence.len(), 2);
+        assert_eq!(evidence[0].match_id, 11);
+        assert_eq!(evidence[0].result, "L 0-2");
+        assert_eq!(evidence[1].match_id, 10);
+        assert_eq!(evidence[1].result, "W 2-0");
+        assert!(evidence
+            .iter()
+            .all(|entry| entry.scouted_tactics.contains("Early Jungle: Ganking")));
+        let summaries = team_tactics_outcome_summaries(&history);
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].category, "Early Jungle");
+        assert_eq!(summaries[0].value, "Ganking");
+        assert_eq!(summaries[0].matches, 2);
+        assert_eq!(summaries[0].wins, 1);
+        assert_eq!(summaries[0].losses, 1);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_tactics_historical_performance_counts_match_and_set_results_without_mixed_false_wins() {
+        let match_entry = |match_id, is_practice, is_win| TeamMatchHistoryEntry {
+            date: format!("2026-03-{match_id:02}"),
+            match_id,
+            opponent_id: 90 + match_id,
+            opponent_name: format!("Opponent {match_id}"),
+            is_practice,
+            is_win,
+            my_score: if is_win { 2 } else { 1 },
+            enemy_score: if is_win { 1 } else { 2 },
+            replay_ids: Vec::new(),
+            article_pattern: String::new(),
+            sets: Vec::new(),
+        };
+        let history = TeamHistoryData {
+            team_id: 85,
+            matches: vec![
+                match_entry(1, false, true),
+                match_entry(2, false, false),
+                match_entry(3, false, true),
+                match_entry(4, false, false),
+                match_entry(5, true, true),
+            ],
+            analyses: vec![TeamPreMatchAnalysisEntry {
+                date: "2026-03-01".to_string(),
+                match_id: 1,
+                opponent_id: 91,
+                opponent_name: "Opponent 1".to_string(),
+                analysis_level: "90".to_string(),
+                has_match_history: true,
+                star_player_id: 1,
+                star_player_name: "Star".to_string(),
+                tactics: Vec::new(),
+                champion_picks: Vec::new(),
+                insights: Vec::new(),
+            }],
+            latest_rating: None,
+            latest_rank: None,
+            latest_rating_date: String::new(),
+        };
+        let strategy = |value: &str| {
+            vec![TeamStrategyEntry {
+                key: "early_jungle".to_string(),
+                value: value.to_string(),
+            }]
+        };
+        let row = |match_id, replay_id, set_number, value: &str, is_practice, set_is_win| {
+            TeamOwnStrategyProbeRow {
+                match_id,
+                date: format!("2026-03-{match_id:02}"),
+                opponent_name: format!("Opponent {match_id}"),
+                result: String::new(),
+                is_practice,
+                replay_id,
+                set_number,
+                side: "Blue".to_string(),
+                status: "OK".to_string(),
+                blue_team_id: Some(85),
+                red_team_id: Some(90 + match_id),
+                set_is_win: Some(set_is_win),
+                strategy: strategy(value),
+            }
+        };
+        let rows = vec![
+            // Match 1 uses Ganking for two sets: one clean match result, not two wins.
+            row(1, 10, 1, "Ganking", false, true),
+            row(1, 11, 2, "Ganking", false, true),
+            // Match 2 changes Early Jungle between sets: preserve sets, exclude W/L attribution.
+            row(2, 20, 1, "Ganking", false, true),
+            row(2, 21, 2, "GrowthAndCover", false, false),
+            // Match 3 gives Ganking its second clean official exposure.
+            row(3, 30, 1, "Ganking", false, true),
+            // Match 4 is only one clean GrowthAndCover exposure, below the provisional historical-leader support threshold.
+            row(4, 40, 1, "GrowthAndCover", false, false),
+            // Practice remains separate historical evidence and is not merged into Official leader ranking.
+            row(5, 50, 1, "GrowthAndCover", true, true),
+        ];
+
+        let evidence = team_tactics_historical_performance_evidence(&history, &rows);
+        let ganking = evidence
+            .iter()
+            .find(|entry| entry.key == "early_jungle" && entry.display_value == "Ganking")
+            .unwrap();
+        assert_eq!(ganking.official_matches, 2);
+        assert_eq!(ganking.official_wins, 2);
+        assert_eq!(ganking.official_losses, 0);
+        assert_eq!(ganking.official_sets, 4);
+        assert_eq!(ganking.official_set_wins, 4);
+        assert_eq!(ganking.official_set_losses, 0);
+        assert_eq!(ganking.official_mixed_matches, 1);
+
+        let growth = evidence
+            .iter()
+            .find(|entry| {
+                entry.key == "early_jungle" && entry.display_value == "Farming/Cover"
+            })
+            .unwrap();
+        assert_eq!(growth.official_matches, 1);
+        assert_eq!(growth.official_losses, 1);
+        assert_eq!(growth.official_mixed_matches, 1);
+        assert_eq!(growth.official_sets, 2);
+        assert_eq!(growth.official_set_wins, 0);
+        assert_eq!(growth.official_set_losses, 2);
+        assert_eq!(growth.practice_matches, 1);
+        assert_eq!(growth.practice_wins, 1);
+        assert_eq!(growth.practice_sets, 1);
+        assert_eq!(growth.practice_set_wins, 1);
+        assert_eq!(growth.practice_set_losses, 0);
+
+        let historical_leaders = team_tactics_historical_leader_rows(&evidence);
+        let early_jungle = historical_leaders
+            .iter()
+            .find(|entry| entry.key == "early_jungle")
+            .unwrap();
+        assert_eq!(early_jungle.historical_value.as_deref(), Some("Ganking"));
+        assert_eq!(early_jungle.official_matches, 2);
+        assert_eq!(early_jungle.official_wins, 2);
+        assert_eq!(early_jungle.official_set_wins, 4);
+        assert_eq!(early_jungle.official_set_losses, 0);
+        assert_eq!(early_jungle.mixed_matches_excluded, 1);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_tactics_historical_performance_keeps_practice_separate_from_official_leader() {
+        let history = TeamHistoryData {
+            team_id: 85,
+            matches: (1..=4)
+                .map(|match_id| TeamMatchHistoryEntry {
+                    date: format!("2026-04-{match_id:02}"),
+                    match_id,
+                    opponent_id: 100 + match_id,
+                    opponent_name: format!("Practice {match_id}"),
+                    is_practice: true,
+                    is_win: true,
+                    my_score: 1,
+                    enemy_score: 0,
+                    replay_ids: Vec::new(),
+                    article_pattern: String::new(),
+                    sets: Vec::new(),
+                })
+                .collect(),
+            analyses: Vec::new(),
+            latest_rating: None,
+            latest_rank: None,
+            latest_rating_date: String::new(),
+        };
+        let rows = (1..=4)
+            .map(|match_id| TeamOwnStrategyProbeRow {
+                match_id,
+                date: format!("2026-04-{match_id:02}"),
+                opponent_name: format!("Practice {match_id}"),
+                result: "W 1-0".to_string(),
+                is_practice: true,
+                replay_id: match_id,
+                set_number: 1,
+                side: "Blue".to_string(),
+                status: "OK".to_string(),
+                blue_team_id: Some(85),
+                red_team_id: Some(100 + match_id),
+                set_is_win: Some(true),
+                strategy: vec![TeamStrategyEntry {
+                    key: "focused".to_string(),
+                    value: "Top".to_string(),
+                }],
+            })
+            .collect::<Vec<_>>();
+
+        let evidence = team_tactics_historical_performance_evidence(&history, &rows);
+        let historical_leaders = team_tactics_historical_leader_rows(&evidence);
+        let focus = historical_leaders
+            .iter()
+            .find(|entry| entry.key == "focused")
+            .unwrap();
+        assert_eq!(focus.historical_value, None);
+        assert_eq!(focus.official_matches, 0);
+        let focus_evidence = evidence
+            .iter()
+            .find(|entry| entry.key == "focused" && entry.display_value == "Focus on Top/Mid")
+            .unwrap();
+        assert_eq!(focus_evidence.practice_matches, 4);
+        assert_eq!(focus_evidence.practice_wins, 4);
+        assert_eq!(focus_evidence.practice_sets, 4);
+        assert_eq!(focus_evidence.practice_set_wins, 4);
+    }
+
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_tactics_historical_performance_excludes_mixed_practice_match_wl_but_keeps_sets() {
+        let history = TeamHistoryData {
+            team_id: 85,
+            matches: vec![TeamMatchHistoryEntry {
+                date: "2026-05-01".to_string(),
+                match_id: 77,
+                opponent_id: 177,
+                opponent_name: "Practice Opponent".to_string(),
+                is_practice: true,
+                is_win: true,
+                my_score: 2,
+                enemy_score: 1,
+                replay_ids: Vec::new(),
+                article_pattern: String::new(),
+                sets: Vec::new(),
+            }],
+            analyses: Vec::new(),
+            latest_rating: None,
+            latest_rank: None,
+            latest_rating_date: String::new(),
+        };
+        let row = |replay_id, set_number, value: &str, set_is_win| TeamOwnStrategyProbeRow {
+            match_id: 77,
+            date: "2026-05-01".to_string(),
+            opponent_name: "Practice Opponent".to_string(),
+            result: "W 2-1".to_string(),
+            is_practice: true,
+            replay_id,
+            set_number,
+            side: "Blue".to_string(),
+            status: "OK".to_string(),
+            blue_team_id: Some(85),
+            red_team_id: Some(177),
+            set_is_win: Some(set_is_win),
+            strategy: vec![TeamStrategyEntry {
+                key: "game_finish".to_string(),
+                value: value.to_string(),
+            }],
+        };
+        let rows = vec![
+            row(700, 1, "Aggressive", true),
+            row(701, 2, "Flexible", false),
+            row(702, 3, "Aggressive", true),
+        ];
+
+        let evidence = team_tactics_historical_performance_evidence(&history, &rows);
+        let aggressive = evidence
+            .iter()
+            .find(|entry| entry.key == "game_finish" && entry.display_value == "Aggressive")
+            .unwrap();
+        assert_eq!(aggressive.practice_matches, 0);
+        assert_eq!(aggressive.practice_wins, 0);
+        assert_eq!(aggressive.practice_losses, 0);
+        assert_eq!(aggressive.practice_sets, 2);
+        assert_eq!(aggressive.practice_set_wins, 2);
+        assert_eq!(aggressive.practice_set_losses, 0);
+        assert_eq!(aggressive.practice_mixed_matches, 1);
+
+        let flexible = evidence
+            .iter()
+            .find(|entry| entry.key == "game_finish" && entry.display_value == "Flexible")
+            .unwrap();
+        assert_eq!(flexible.practice_matches, 0);
+        assert_eq!(flexible.practice_sets, 1);
+        assert_eq!(flexible.practice_set_wins, 0);
+        assert_eq!(flexible.practice_set_losses, 1);
+        assert_eq!(flexible.practice_mixed_matches, 1);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_tactics_strategy_combination_key_is_canonical_across_member_order() {
+        let early_jungle = TeamTacticsStrategyCombinationMember {
+            area_key: "early_jungle".to_string(),
+            raw_value: "GrowthAndCover".to_string(),
+            display_value: "Farming/Cover".to_string(),
+        };
+        let morgard = TeamTacticsStrategyCombinationMember {
+            area_key: "morgard_use".to_string(),
+            raw_value: "Split14 { position: Top }".to_string(),
+            display_value: "1-4 Split · Top".to_string(),
+        };
+        let (left_key, left_members) =
+            team_tactics_canonical_combination(&[early_jungle.clone(), morgard.clone()]);
+        let (right_key, right_members) =
+            team_tactics_canonical_combination(&[morgard, early_jungle]);
+        assert_eq!(left_key, right_key);
+        assert_eq!(left_members, right_members);
+        assert_eq!(left_members[0].area_key, "early_jungle");
+        assert_eq!(left_members[1].area_key, "morgard_use");
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_tactics_four_way_combination_key_is_canonical_across_member_order() {
+        let member = |area_key: &str, raw_value: &str| TeamTacticsStrategyCombinationMember {
+            area_key: area_key.to_string(),
+            raw_value: raw_value.to_string(),
+            display_value: raw_value.to_string(),
+        };
+        let focused = member("focused", "Bottom");
+        let jungle = member("early_jungle", "GrowthAndCover");
+        let tower = member("tower_press", "Dive");
+        let finish = member("game_finish", "Aggressive");
+
+        let (left_key, left_members) = team_tactics_canonical_combination(&[
+            finish.clone(),
+            tower.clone(),
+            focused.clone(),
+            jungle.clone(),
+        ]);
+        let (right_key, right_members) =
+            team_tactics_canonical_combination(&[jungle, focused, finish, tower]);
+
+        assert_eq!(left_key, right_key);
+        assert_eq!(left_members, right_members);
+        assert_eq!(left_members.len(), 4);
+        assert_eq!(left_members[0].area_key, "focused");
+        assert_eq!(left_members[1].area_key, "early_jungle");
+        assert_eq!(left_members[2].area_key, "tower_press");
+        assert_eq!(left_members[3].area_key, "game_finish");
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_tactics_generic_engine_tracks_three_and_four_way_clean_mixed_evidence() {
+        let history = TeamHistoryData {
+            team_id: 85,
+            matches: vec![
+                TeamMatchHistoryEntry {
+                    date: "2026-07-01".to_string(),
+                    match_id: 10,
+                    opponent_id: 110,
+                    opponent_name: "Clean Opponent".to_string(),
+                    is_practice: false,
+                    is_win: true,
+                    my_score: 2,
+                    enemy_score: 0,
+                    replay_ids: vec![100, 101],
+                    article_pattern: String::new(),
+                    sets: Vec::new(),
+                },
+                TeamMatchHistoryEntry {
+                    date: "2026-07-02".to_string(),
+                    match_id: 11,
+                    opponent_id: 111,
+                    opponent_name: "Mixed Opponent".to_string(),
+                    is_practice: false,
+                    is_win: true,
+                    my_score: 2,
+                    enemy_score: 0,
+                    replay_ids: vec![110, 111],
+                    article_pattern: String::new(),
+                    sets: Vec::new(),
+                },
+            ],
+            analyses: Vec::new(),
+            latest_rating: None,
+            latest_rank: None,
+            latest_rating_date: String::new(),
+        };
+        let strategy = |finish: &str| {
+            vec![
+                TeamStrategyEntry {
+                    key: "focused".to_string(),
+                    value: "Bottom".to_string(),
+                },
+                TeamStrategyEntry {
+                    key: "early_jungle".to_string(),
+                    value: "Ganking".to_string(),
+                },
+                TeamStrategyEntry {
+                    key: "tower_press".to_string(),
+                    value: "Dive".to_string(),
+                },
+                TeamStrategyEntry {
+                    key: "game_finish".to_string(),
+                    value: finish.to_string(),
+                },
+            ]
+        };
+        let row = |match_id, replay_id, set_number, finish: &str| TeamOwnStrategyProbeRow {
+            match_id,
+            date: format!("2026-07-{match_id:02}"),
+            opponent_name: format!("Opponent {match_id}"),
+            result: "W 2-0".to_string(),
+            is_practice: false,
+            replay_id,
+            set_number,
+            side: "Blue".to_string(),
+            status: "OK".to_string(),
+            blue_team_id: Some(85),
+            red_team_id: Some(100 + match_id),
+            set_is_win: Some(true),
+            strategy: strategy(finish),
+        };
+        let rows = vec![
+            row(10, 100, 1, "Aggressive"),
+            row(10, 101, 2, "Aggressive"),
+            row(11, 110, 1, "Aggressive"),
+            row(11, 111, 2, "Flexible"),
+        ];
+
+        let combinations = team_tactics_strategy_combinations(&history, &rows, 4);
+        let triple = combinations
+            .iter()
+            .find(|combination| {
+                combination.depth == 3
+                    && combination.members.iter().all(|member| {
+                        member.area_key != "game_finish"
+                    })
+                    && combination.members.len() == 3
+            })
+            .unwrap();
+        assert_eq!(triple.official_matches, 2);
+        assert_eq!(triple.official_wins, 2);
+        assert_eq!(triple.official_sets, 4);
+        assert_eq!(triple.official_set_wins, 4);
+        assert_eq!(triple.official_mixed_matches, 0);
+        assert_eq!(triple.official_match_ids, vec![10, 11]);
+        assert_eq!(triple.official_replay_ids, vec![100, 101, 110, 111]);
+
+        let four_way = combinations
+            .iter()
+            .find(|combination| {
+                combination.depth == 4
+                    && combination.members.iter().any(|member| {
+                        member.area_key == "game_finish" && member.raw_value == "Aggressive"
+                    })
+            })
+            .unwrap();
+        assert_eq!(four_way.members.len(), 4);
+        assert_eq!(four_way.official_matches, 1);
+        assert_eq!(four_way.official_wins, 1);
+        assert_eq!(four_way.official_losses, 0);
+        assert_eq!(four_way.official_sets, 3);
+        assert_eq!(four_way.official_set_wins, 3);
+        assert_eq!(four_way.official_mixed_matches, 1);
+        assert_eq!(four_way.official_match_ids, vec![10]);
+        assert_eq!(four_way.official_mixed_match_ids, vec![11]);
+        assert_eq!(four_way.official_replay_ids, vec![100, 101, 110]);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_tactics_generic_combinations_keep_pair_match_and_set_evidence_separate() {
+        let history = TeamHistoryData {
+            team_id: 85,
+            matches: vec![
+                TeamMatchHistoryEntry {
+                    date: "2026-06-01".to_string(),
+                    match_id: 1,
+                    opponent_id: 101,
+                    opponent_name: "Clean Opponent".to_string(),
+                    is_practice: false,
+                    is_win: true,
+                    my_score: 2,
+                    enemy_score: 0,
+                    replay_ids: vec![10, 11],
+                    article_pattern: String::new(),
+                    sets: Vec::new(),
+                },
+                TeamMatchHistoryEntry {
+                    date: "2026-06-02".to_string(),
+                    match_id: 2,
+                    opponent_id: 102,
+                    opponent_name: "Mixed Opponent".to_string(),
+                    is_practice: false,
+                    is_win: true,
+                    my_score: 2,
+                    enemy_score: 0,
+                    replay_ids: vec![20, 21],
+                    article_pattern: String::new(),
+                    sets: Vec::new(),
+                },
+            ],
+            analyses: Vec::new(),
+            latest_rating: None,
+            latest_rank: None,
+            latest_rating_date: String::new(),
+        };
+        let strategy = |jungle: &str, finish: &str| {
+            vec![
+                TeamStrategyEntry {
+                    key: "early_jungle".to_string(),
+                    value: jungle.to_string(),
+                },
+                TeamStrategyEntry {
+                    key: "game_finish".to_string(),
+                    value: finish.to_string(),
+                },
+            ]
+        };
+        let row = |match_id, replay_id, set_number, jungle: &str, finish: &str| {
+            TeamOwnStrategyProbeRow {
+                match_id,
+                date: format!("2026-06-{match_id:02}"),
+                opponent_name: format!("Opponent {match_id}"),
+                result: "W 2-0".to_string(),
+                is_practice: false,
+                replay_id,
+                set_number,
+                side: "Blue".to_string(),
+                status: "OK".to_string(),
+                blue_team_id: Some(85),
+                red_team_id: Some(100 + match_id),
+                set_is_win: Some(true),
+                strategy: strategy(jungle, finish),
+            }
+        };
+        let rows = vec![
+            row(1, 10, 1, "Ganking", "Aggressive"),
+            row(1, 11, 2, "Ganking", "Aggressive"),
+            row(2, 20, 1, "Ganking", "Aggressive"),
+            row(2, 21, 2, "GrowthAndCover", "Aggressive"),
+        ];
+
+        let combinations = team_tactics_strategy_combinations(&history, &rows, 2);
+        let pair = combinations
+            .iter()
+            .find(|combination| {
+                combination.depth == 2
+                    && combination.members.iter().any(|member| {
+                        member.area_key == "early_jungle" && member.raw_value == "Ganking"
+                    })
+                    && combination.members.iter().any(|member| {
+                        member.area_key == "game_finish" && member.raw_value == "Aggressive"
+                    })
+            })
+            .unwrap();
+        assert_eq!(pair.official_matches, 1);
+        assert_eq!(pair.official_wins, 1);
+        assert_eq!(pair.official_losses, 0);
+        assert_eq!(pair.official_sets, 3);
+        assert_eq!(pair.official_set_wins, 3);
+        assert_eq!(pair.official_set_losses, 0);
+        assert_eq!(pair.official_mixed_matches, 1);
+        assert_eq!(pair.official_match_ids, vec![1]);
+        assert_eq!(pair.official_mixed_match_ids, vec![2]);
+        assert_eq!(pair.official_replay_ids, vec![10, 11, 20]);
+
+        let one_way_ganking = combinations
+            .iter()
+            .find(|combination| {
+                combination.depth == 1
+                    && combination.members[0].area_key == "early_jungle"
+                    && combination.members[0].raw_value == "Ganking"
+            })
+            .unwrap();
+        assert_eq!(one_way_ganking.official_matches, 1);
+        assert_eq!(one_way_ganking.official_wins, 1);
+        assert_eq!(one_way_ganking.official_sets, 3);
+        assert_eq!(one_way_ganking.official_set_wins, 3);
+        assert_eq!(one_way_ganking.official_mixed_matches, 1);
+
+        let reverse_duplicate_count = combinations
+            .iter()
+            .filter(|combination| combination.depth == 2 && combination.key == pair.key)
+            .count();
+        assert_eq!(reverse_duplicate_count, 1);
+        assert!(combinations.iter().any(|combination| combination.depth == 1));
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_tactics_generic_combinations_keep_practice_separate() {
+        let history = TeamHistoryData {
+            team_id: 85,
+            matches: vec![TeamMatchHistoryEntry {
+                date: "2026-06-03".to_string(),
+                match_id: 3,
+                opponent_id: 103,
+                opponent_name: "Practice Opponent".to_string(),
+                is_practice: true,
+                is_win: false,
+                my_score: 0,
+                enemy_score: 1,
+                replay_ids: vec![30],
+                article_pattern: String::new(),
+                sets: Vec::new(),
+            }],
+            analyses: Vec::new(),
+            latest_rating: None,
+            latest_rank: None,
+            latest_rating_date: String::new(),
+        };
+        let rows = vec![TeamOwnStrategyProbeRow {
+            match_id: 3,
+            date: "2026-06-03".to_string(),
+            opponent_name: "Practice Opponent".to_string(),
+            result: "L 0-1".to_string(),
+            is_practice: true,
+            replay_id: 30,
+            set_number: 1,
+            side: "Blue".to_string(),
+            status: "OK".to_string(),
+            blue_team_id: Some(85),
+            red_team_id: Some(103),
+            set_is_win: Some(false),
+            strategy: vec![
+                TeamStrategyEntry {
+                    key: "early_jungle".to_string(),
+                    value: "CounterJungle".to_string(),
+                },
+                TeamStrategyEntry {
+                    key: "tower_press".to_string(),
+                    value: "Dive".to_string(),
+                },
+            ],
+        }];
+        let combinations = team_tactics_strategy_combinations(&history, &rows, 2);
+        let pair = combinations
+            .iter()
+            .find(|combination| combination.depth == 2)
+            .unwrap();
+        assert_eq!(pair.official_matches, 0);
+        assert_eq!(pair.official_sets, 0);
+        assert_eq!(pair.practice_matches, 1);
+        assert_eq!(pair.practice_wins, 0);
+        assert_eq!(pair.practice_losses, 1);
+        assert_eq!(pair.practice_sets, 1);
+        assert_eq!(pair.practice_set_wins, 0);
+        assert_eq!(pair.practice_set_losses, 1);
+        assert_eq!(pair.practice_match_ids, vec![3]);
+        assert_eq!(pair.practice_replay_ids, vec![30]);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_tactics_depth_visibility_uses_provisional_support_and_wilson_ordering() {
+        let member = |area_key: &str, raw_value: &str| TeamTacticsStrategyCombinationMember {
+            area_key: area_key.to_string(),
+            raw_value: raw_value.to_string(),
+            display_value: raw_value.to_string(),
+        };
+        let combination = |key: &str, wins: usize, losses: usize, depth: usize| {
+            let matches = wins + losses;
+            TeamTacticsStrategyCombination {
+                key: key.to_string(),
+                members: vec![member("early_jungle", key), member("tower_press", "Dive")],
+                depth,
+                official_matches: matches,
+                official_wins: wins,
+                official_losses: losses,
+                official_sets: matches,
+                official_set_wins: wins,
+                official_set_losses: losses,
+                official_mixed_matches: 0,
+                practice_matches: 0,
+                practice_wins: 0,
+                practice_losses: 0,
+                practice_sets: 0,
+                practice_set_wins: 0,
+                practice_set_losses: 0,
+                practice_mixed_matches: 0,
+                official_match_ids: Vec::new(),
+                official_mixed_match_ids: Vec::new(),
+                official_replay_ids: Vec::new(),
+                practice_match_ids: Vec::new(),
+                practice_mixed_match_ids: Vec::new(),
+                practice_replay_ids: Vec::new(),
+                raw_performance: if matches == 0 {
+                    0.0
+                } else {
+                    wins as f64 / matches as f64
+                },
+                adjusted_performance: team_tactics_wilson_lower_bound(wins, matches),
+                support_count: matches,
+            }
+        };
+        let rows = vec![
+            combination("one-perfect", 1, 0, 2),
+            combination("two-perfect", 2, 0, 2),
+            combination("large-supported", 18, 8, 2),
+            combination("three-way", 3, 0, 3),
+            combination("four-way", 4, 1, 4),
+        ];
+        let visible_two = team_tactics_visible_synergies(&rows, 2);
+        assert_eq!(visible_two.len(), 2);
+        assert!(visible_two.iter().all(|row| row.depth == 2));
+        assert!(visible_two.iter().all(|row| row.official_matches >= 2));
+        assert_eq!(visible_two[0].key, "large-supported");
+        assert_eq!(visible_two[1].key, "two-perfect");
+
+        let visible_three = team_tactics_visible_synergies(&rows, 3);
+        assert_eq!(visible_three.len(), 1);
+        assert_eq!(visible_three[0].key, "three-way");
+        let visible_four = team_tactics_visible_synergies(&rows, 4);
+        assert_eq!(visible_four.len(), 1);
+        assert_eq!(visible_four[0].key, "four-way");
+        assert_eq!(team_tactics_supported_synergy_count(&rows, 3), 1);
+        assert_eq!(team_tactics_supported_synergy_count(&rows, 4), 1);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_tactics_combination_index_generator_is_generic_through_twelve_areas() {
+        assert_eq!(team_tactics_combination_indices(12, 1).len(), 12);
+        assert_eq!(team_tactics_combination_indices(12, 2).len(), 66);
+        assert_eq!(team_tactics_combination_indices(12, 3).len(), 220);
+        assert_eq!(team_tactics_combination_indices(12, 4).len(), 495);
+        assert_eq!(team_tactics_combination_indices(12, 12).len(), 1);
+        assert!(team_tactics_combination_indices(12, 13).is_empty());
+        assert_eq!(TEAM_TACTICS_MAX_SYNERGY_DEPTH, 4);
+        assert_eq!(TEAM_TACTICS_MAX_SUPPORTED_SYNERGY_DEPTH, TEAM_STRATEGY_KEYS.len());
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_tactics_synergy_presentation_selects_best_supported_across_depths() {
+        let performance = TeamTacticsHistoricalPerformanceEvidence {
+            key: "early_jungle".to_string(),
+            raw_value: "Ganking".to_string(),
+            display_value: "Ganking".to_string(),
+            official_matches: 6,
+            official_wins: 5,
+            official_losses: 1,
+            official_sets: 12,
+            official_set_wins: 10,
+            official_set_losses: 2,
+            official_mixed_matches: 2,
+            practice_matches: 1,
+            practice_wins: 1,
+            practice_losses: 0,
+            practice_sets: 1,
+            practice_set_wins: 1,
+            practice_set_losses: 0,
+            practice_mixed_matches: 0,
+        };
+        let member = |area_key: &str, raw_value: &str| TeamTacticsStrategyCombinationMember {
+            area_key: area_key.to_string(),
+            raw_value: raw_value.to_string(),
+            display_value: raw_value.to_string(),
+        };
+        let combination = |
+            key: &str,
+            depth: usize,
+            wins: usize,
+            losses: usize,
+            sets: usize,
+            mut members: Vec<TeamTacticsStrategyCombinationMember>,
+        | {
+            members.sort_by(|left, right| {
+                team_tactics_strategy_area_rank(&left.area_key)
+                    .cmp(&team_tactics_strategy_area_rank(&right.area_key))
+            });
+            let matches = wins + losses;
+            TeamTacticsStrategyCombination {
+                key: key.to_string(),
+                members,
+                depth,
+                official_matches: matches,
+                official_wins: wins,
+                official_losses: losses,
+                official_sets: sets,
+                official_set_wins: sets,
+                official_set_losses: 0,
+                official_mixed_matches: 0,
+                practice_matches: 0,
+                practice_wins: 0,
+                practice_losses: 0,
+                practice_sets: 0,
+                practice_set_wins: 0,
+                practice_set_losses: 0,
+                practice_mixed_matches: 0,
+                official_match_ids: Vec::new(),
+                official_mixed_match_ids: Vec::new(),
+                official_replay_ids: Vec::new(),
+                practice_match_ids: Vec::new(),
+                practice_mixed_match_ids: Vec::new(),
+                practice_replay_ids: Vec::new(),
+                raw_performance: if matches == 0 {
+                    0.0
+                } else {
+                    wins as f64 / matches as f64
+                },
+                adjusted_performance: team_tactics_wilson_lower_bound(wins, matches),
+                support_count: matches,
+            }
+        };
+
+        let rows = vec![
+            combination(
+                "pair-five-perfect",
+                2,
+                5,
+                0,
+                10,
+                vec![member("early_jungle", "Ganking"), member("tower_press", "Dive")],
+            ),
+            combination(
+                "triple-three-perfect",
+                3,
+                3,
+                0,
+                8,
+                vec![
+                    member("early_jungle", "Ganking"),
+                    member("tower_press", "Dive"),
+                    member("game_finish", "Aggressive"),
+                ],
+            ),
+            combination(
+                "low-support-perfect",
+                4,
+                1,
+                0,
+                2,
+                vec![
+                    member("early_jungle", "Ganking"),
+                    member("tower_press", "Dive"),
+                    member("minion_wave", "Join"),
+                    member("game_finish", "Aggressive"),
+                ],
+            ),
+            combination(
+                "unrelated-perfect",
+                2,
+                20,
+                0,
+                20,
+                vec![member("focused", "All"), member("tower_press", "Dive")],
+            ),
+        ];
+
+        let presentation = team_tactics_historical_synergy_presentation_rows(&[performance], &rows);
+        assert_eq!(presentation.len(), 1);
+        assert_eq!(presentation[0].supported_synergies.len(), 2);
+        assert_eq!(presentation[0].supported_synergies[0].key, "pair-five-perfect");
+        assert_eq!(presentation[0].supported_synergies[1].key, "triple-three-perfect");
+        assert!(presentation[0]
+            .supported_synergies
+            .iter()
+            .all(|combination| team_tactics_combination_contains_strategy(
+                combination,
+                "early_jungle",
+                "Ganking"
+            )));
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_tactics_synergy_presentation_prefers_simpler_depth_when_evidence_is_tied() {
+        let member = |area_key: &str| TeamTacticsStrategyCombinationMember {
+            area_key: area_key.to_string(),
+            raw_value: area_key.to_string(),
+            display_value: area_key.to_string(),
+        };
+        let combination = |key: &str, depth: usize, members: Vec<TeamTacticsStrategyCombinationMember>| {
+            TeamTacticsStrategyCombination {
+                key: key.to_string(),
+                members,
+                depth,
+                official_matches: 3,
+                official_wins: 3,
+                official_losses: 0,
+                official_sets: 6,
+                official_set_wins: 6,
+                official_set_losses: 0,
+                official_mixed_matches: 0,
+                practice_matches: 0,
+                practice_wins: 0,
+                practice_losses: 0,
+                practice_sets: 0,
+                practice_set_wins: 0,
+                practice_set_losses: 0,
+                practice_mixed_matches: 0,
+                official_match_ids: Vec::new(),
+                official_mixed_match_ids: Vec::new(),
+                official_replay_ids: Vec::new(),
+                practice_match_ids: Vec::new(),
+                practice_mixed_match_ids: Vec::new(),
+                practice_replay_ids: Vec::new(),
+                raw_performance: 1.0,
+                adjusted_performance: team_tactics_wilson_lower_bound(3, 3),
+                support_count: 3,
+            }
+        };
+        let pair = combination(
+            "z-pair",
+            2,
+            vec![member("early_jungle"), member("tower_press")],
+        );
+        let four_way = combination(
+            "a-four",
+            4,
+            vec![
+                member("early_jungle"),
+                member("object_buildup"),
+                member("tower_press"),
+                member("game_finish"),
+            ],
+        );
+        let mut rows = [four_way, pair];
+        rows.sort_by(team_tactics_presentation_synergy_order);
+        assert_eq!(rows[0].depth, 2);
+        assert_eq!(rows[0].key, "z-pair");
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_tactics_synergy_presentation_does_not_use_practice_to_break_ranking_ties() {
+        let member = |raw_value: &str| TeamTacticsStrategyCombinationMember {
+            area_key: "early_jungle".to_string(),
+            raw_value: raw_value.to_string(),
+            display_value: raw_value.to_string(),
+        };
+        let combination = |key: &str, practice_matches: usize| TeamTacticsStrategyCombination {
+            key: key.to_string(),
+            members: vec![member("Ganking"), TeamTacticsStrategyCombinationMember {
+                area_key: "tower_press".to_string(),
+                raw_value: "Dive".to_string(),
+                display_value: "Dive".to_string(),
+            }],
+            depth: 2,
+            official_matches: 3,
+            official_wins: 2,
+            official_losses: 1,
+            official_sets: 5,
+            official_set_wins: 3,
+            official_set_losses: 2,
+            official_mixed_matches: 1,
+            practice_matches,
+            practice_wins: practice_matches,
+            practice_losses: 0,
+            practice_sets: practice_matches,
+            practice_set_wins: practice_matches,
+            practice_set_losses: 0,
+            practice_mixed_matches: 0,
+            official_match_ids: Vec::new(),
+            official_mixed_match_ids: Vec::new(),
+            official_replay_ids: Vec::new(),
+            practice_match_ids: Vec::new(),
+            practice_mixed_match_ids: Vec::new(),
+            practice_replay_ids: Vec::new(),
+            raw_performance: 2.0 / 3.0,
+            adjusted_performance: team_tactics_wilson_lower_bound(2, 3),
+            support_count: 3,
+        };
+        let mut rows = [combination("b-many-practice", 50), combination("a-no-practice", 0)];
+        rows.sort_by(team_tactics_presentation_synergy_order);
+        assert_eq!(rows[0].key, "a-no-practice");
+        assert_eq!(rows[1].key, "b-many-practice");
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn historical_strategy_focus_all_uses_player_facing_label() {
+        assert_eq!(historical_team_strategy_label("focused", "All"), "All Lanes");
+        assert_eq!(historical_team_strategy_label("focused", "Auto"), "All Lanes");
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_tactics_strategy_display_rows_render_each_area_once() {
+        let strategy = vec![
+            TeamStrategyEntry {
+                key: "game_finish".to_string(),
+                value: "Aggressive".to_string(),
+            },
+            TeamStrategyEntry {
+                key: "game_finish".to_string(),
+                value: "Stable".to_string(),
+            },
+        ];
+        let rows = team_tactics_strategy_display_rows(&strategy);
+        assert_eq!(rows.len(), TEAM_STRATEGY_KEYS.len());
+        assert_eq!(
+            rows.iter().filter(|(key, _)| key == "game_finish").count(),
+            1
+        );
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_tactics_history_filters_match_exact_numeric_fields_and_clear() {
+        let row = tactics_history_filter_row(850, 2, 1875, false, "Solary");
+
+        assert!(team_tactics_history_row_matches_filter(
+            &row,
+            "850",
+            "",
+            "",
+            TeamTacticsHistoryMatchTypeFilter::All,
+            "",
+        ));
+        assert!(team_tactics_history_row_matches_filter(
+            &row,
+            "",
+            "2",
+            "",
+            TeamTacticsHistoryMatchTypeFilter::All,
+            "",
+        ));
+        assert!(team_tactics_history_row_matches_filter(
+            &row,
+            "",
+            "",
+            "1875",
+            TeamTacticsHistoryMatchTypeFilter::All,
+            "",
+        ));
+        assert!(team_tactics_history_row_matches_filter(
+            &row,
+            "850",
+            "2",
+            "",
+            TeamTacticsHistoryMatchTypeFilter::All,
+            "",
+        ));
+        assert!(team_tactics_history_row_matches_filter(
+            &row,
+            "",
+            "",
+            "",
+            TeamTacticsHistoryMatchTypeFilter::All,
+            "",
+        ));
+        assert!(!team_tactics_history_row_matches_filter(
+            &row,
+            "844",
+            "",
+            "",
+            TeamTacticsHistoryMatchTypeFilter::All,
+            "",
+        ));
+        assert!(!team_tactics_history_row_matches_filter(
+            &row,
+            "invalid",
+            "",
+            "",
+            TeamTacticsHistoryMatchTypeFilter::All,
+            "",
+        ));
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_tactics_history_filters_keep_official_and_practice_separate() {
+        let official = tactics_history_filter_row(850, 1, 1874, false, "Solary");
+        let practice = tactics_history_filter_row(1183, 1, 39, true, "Practice Team");
+
+        assert!(team_tactics_history_row_matches_filter(
+            &official,
+            "",
+            "",
+            "",
+            TeamTacticsHistoryMatchTypeFilter::Official,
+            "",
+        ));
+        assert!(!team_tactics_history_row_matches_filter(
+            &official,
+            "",
+            "",
+            "",
+            TeamTacticsHistoryMatchTypeFilter::Practice,
+            "",
+        ));
+        assert!(team_tactics_history_row_matches_filter(
+            &practice,
+            "",
+            "",
+            "",
+            TeamTacticsHistoryMatchTypeFilter::Practice,
+            "",
+        ));
+        assert!(!team_tactics_history_row_matches_filter(
+            &practice,
+            "",
+            "",
+            "",
+            TeamTacticsHistoryMatchTypeFilter::Official,
+            "",
+        ));
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_tactics_history_opponent_filter_is_case_insensitive_contains() {
+        let row = tactics_history_filter_row(844, 1, 1752, false, "Galions Esports");
+
+        assert!(team_tactics_history_row_matches_filter(
+            &row,
+            "",
+            "",
+            "",
+            TeamTacticsHistoryMatchTypeFilter::All,
+            "galions",
+        ));
+        assert!(team_tactics_history_row_matches_filter(
+            &row,
+            "",
+            "",
+            "",
+            TeamTacticsHistoryMatchTypeFilter::All,
+            "ESPORTS",
+        ));
+        assert!(!team_tactics_history_row_matches_filter(
+            &row,
+            "",
+            "",
+            "",
+            TeamTacticsHistoryMatchTypeFilter::All,
+            "Solary",
+        ));
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_tactics_history_filtering_does_not_mutate_source_evidence() {
+        let rows = vec![
+            tactics_history_filter_row(850, 1, 1874, false, "Solary"),
+            tactics_history_filter_row(850, 2, 1875, false, "Solary"),
+            tactics_history_filter_row(1183, 1, 39, true, "Practice Team"),
+        ];
+        let original = rows.clone();
+
+        let matching = rows
+            .iter()
+            .filter(|row| {
+                team_tactics_history_row_matches_filter(
+                    row,
+                    "850",
+                    "2",
+                    "",
+                    TeamTacticsHistoryMatchTypeFilter::Official,
+                    "sol",
+                )
+            })
+            .count();
+
+        assert_eq!(matching, 1);
+        assert_eq!(rows, original);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_finance_payroll_uses_internal_units_after_display_salary_parsing() {
+        let player_display_salaries = [
+            "$54.7K", "$63.6K", "$342K", "$64.8K", "$63.6K", "$62.3K", "$189K",
+            "$271K", "$240K",
+        ];
+        let staff_display_salaries = ["$11.2K", "$141K"];
+
+        let player_payroll = player_display_salaries
+            .iter()
+            .map(|salary| parse_display_to_internal(salary).unwrap())
+            .sum::<f64>();
+        let staff_payroll = staff_display_salaries
+            .iter()
+            .map(|salary| parse_display_to_internal(salary).unwrap())
+            .sum::<f64>();
+        let combined_payroll = player_payroll + staff_payroll;
+        let salary_budget = parse_display_to_internal("$1.36M").unwrap();
+
+        assert_eq!(format_internal_amount(&player_payroll.to_string()), "$1.35M");
+        assert_eq!(format_internal_amount(&staff_payroll.to_string()), "$152K");
+        assert_eq!(format_internal_amount(&combined_payroll.to_string()), "$1.5M");
+        assert!((team_finance_percentage(combined_payroll, salary_budget) - 110.52941176470588).abs() < 0.000_001);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
     fn team_history_parser_accepts_team_without_history() {
         let raw = "=== SELECTED TEAM RECORD ===\nTeam key: 61\nTeam { news: [] }";
         let parsed = parse_team_history_probe(raw, 61, &[], &[]).unwrap();
@@ -17808,6 +29308,514 @@ Team {
         assert!(parsed.analyses.is_empty());
         assert_eq!(parsed.latest_rating, None);
         assert_eq!(parsed.latest_rank, None);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_contract_extension_defaults_and_manual_years_are_additive() {
+        assert_eq!(parse_contract_extension_years("2"), Ok(2));
+        assert_eq!(parse_contract_extension_years(" 3 "), Ok(3));
+        assert_eq!(extend_contract_end_date("2027-06-30", 2).unwrap(), "2029-06-30");
+        assert_eq!(extend_contract_end_date("2027-06-30T00:00:00", 3).unwrap(), "2030-06-30");
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_contract_extension_selected_and_apply_all_targets_are_scoped() {
+        let members = [(1usize, "2027-06-30"), (2usize, ""), (3usize, "2028-06-30")];
+        let selected_ids = [1usize, 2usize].into_iter().collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            team_contract_extension_target_ids(members, &selected_ids, false),
+            vec![1, 2]
+        );
+        assert_eq!(
+            team_contract_extension_target_ids(members, &selected_ids, true),
+            vec![1, 3]
+        );
+        assert_eq!(TEAM_CONTRACT_EXTENSION_DEFAULT_YEARS, "2");
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_contract_extension_rejects_zero_negative_invalid_and_overflow() {
+        assert!(parse_contract_extension_years("0").is_err());
+        assert!(parse_contract_extension_years("-1").is_err());
+        assert!(parse_contract_extension_years("abc").is_err());
+        assert!(extend_contract_end_date("9999-06-30", 1).is_err());
+        assert!(extend_contract_end_date("Free Agent", 2).is_err());
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_contract_extension_target_scope_respects_selected_and_current_team_all() {
+        let members = [(1usize, "2027-12-31"), (2usize, ""), (3usize, "2028-06-30")];
+        let selected = BTreeSet::from([1usize, 2usize]);
+
+        let selected_targets = team_contract_extension_target_ids(
+            members.iter().map(|(id, end)| (*id, *end)),
+            &selected,
+            false,
+        );
+        assert_eq!(selected_targets, vec![1, 2]);
+
+        let all_targets = team_contract_extension_target_ids(
+            members.iter().map(|(id, end)| (*id, *end)),
+            &selected,
+            true,
+        );
+        assert_eq!(all_targets, vec![1, 3]);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_quick_edit_commands_only_carry_requested_write_fields() {
+        let merchandise = TeamMerchandiseEntry {
+            product_type: "Uniform".to_string(),
+            athlete_id: 42,
+            athlete_name: "Player".to_string(),
+            stock: "123".to_string(),
+            sell_price: "49.5".to_string(),
+            yearly_sales: "999".to_string(),
+            yearly_revenue: "888".to_string(),
+            total_sales: "777".to_string(),
+            total_revenue: "666".to_string(),
+            daily_purchase_rate: "5".to_string(),
+        };
+        let command = team_merchandise_write_command(85, &merchandise);
+        let fields = command.split('|').collect::<Vec<_>>();
+        assert_eq!(
+            fields,
+            [
+                "SET_TEAM_MERCHANDISE",
+                "85",
+                "556e69666f726d",
+                "42",
+                "123",
+                "49.5",
+            ]
+        );
+
+        let fans = team_fans_write_command(85, "3", "120000", "Lower", "Satisfied", "4");
+        let fan_fields = fans.split('|').collect::<Vec<_>>();
+        assert_eq!(
+            fan_fields,
+            [
+                "SET_TEAM_FANS",
+                "85",
+                "3",
+                "120000",
+                "4c6f776572",
+                "536174697366696564",
+                "4",
+            ]
+        );
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_fans_popularity_observed_range_guard_rejects_prior_test_value() {
+        assert_eq!(TEAM_POPULARITY_LEVELS, [0, 1, 2, 3, 4]);
+        for level in TEAM_POPULARITY_LEVELS {
+            assert_eq!(parse_observed_team_popularity(&level.to_string()), Ok(level));
+        }
+        assert!(parse_observed_team_popularity("100").is_err());
+        assert!(parse_observed_team_popularity("not-a-number").is_err());
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_finance_refresh_resyncs_player_team_fan_edit_buffers_from_latest_team_snapshot() {
+        let team = parse_teams_response(
+            "OK|TEAMS|1|85:474f205465616d2041737472616c73:4269726479:8:1:6:7:90:53:53:53:1000:500:300:4d61676d612043656e746572:15000:91474:8:975000000:4:4c6f776572:56657279536174697366696564:26890:5:4c7633:52",
+        )
+        .unwrap()
+        .remove(0);
+        let mut popularity = "0".to_string();
+        let mut fan_count = "26864".to_string();
+        let mut fan_expectation = "Bottom".to_string();
+        let mut fan_satisfaction = "Satisfied".to_string();
+        let mut fan_momentum = "0".to_string();
+
+        sync_team_fan_edit_values(
+            &team,
+            &mut popularity,
+            &mut fan_count,
+            &mut fan_expectation,
+            &mut fan_satisfaction,
+            &mut fan_momentum,
+        );
+        assert_eq!(popularity, "4");
+        assert_eq!(fan_count, "26890");
+        assert_eq!(fan_expectation, "Lower");
+        assert_eq!(fan_satisfaction, "VerySatisfied");
+        assert_eq!(fan_momentum, "5");
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_fan_expectation_dropdown_uses_observed_game_states_in_game_order() {
+        let ordered = order_observed_team_fan_expectations([
+            "Top".to_string(),
+            "Lower".to_string(),
+            "Mid".to_string(),
+            "Bottom".to_string(),
+            "Upper".to_string(),
+            "Lower".to_string(),
+        ]);
+        assert_eq!(
+            ordered,
+            vec![
+                "Bottom".to_string(),
+                "Lower".to_string(),
+                "Mid".to_string(),
+                "Upper".to_string(),
+                "Top".to_string(),
+            ]
+        );
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_fan_expectation_presentation_adds_tier_without_changing_raw_state() {
+        assert_eq!(team_fan_expectation_display_label("Bottom"), "Bottom Tier");
+        assert_eq!(team_fan_expectation_display_label("Lower"), "Lower Tier");
+        assert_eq!(team_fan_expectation_display_label("Mid"), "Mid Tier");
+        assert_eq!(team_fan_expectation_display_label("Upper"), "Upper Tier");
+        assert_eq!(team_fan_expectation_display_label("Top"), "Top Tier");
+        assert_eq!(team_fan_expectation_display_label("FutureState"), "FutureState");
+
+        let command = team_fans_write_command(85, "0", "37193", "Lower", "VerySatisfied", "5");
+        let fields = command.split('|').collect::<Vec<_>>();
+        assert_eq!(fields[4], hex_encode("Lower"));
+        assert_ne!(fields[4], hex_encode("Lower Tier"));
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_contract_extension_confirmation_covers_selected_and_apply_all() {
+        let selected = TeamContractExtensionConfirmation {
+            member_kind: TeamContractExtensionMemberKind::Player,
+            apply_to_all: false,
+            member_ids: vec![43, 486],
+            years: "2".to_string(),
+        };
+        let all_staff = TeamContractExtensionConfirmation {
+            member_kind: TeamContractExtensionMemberKind::Staff,
+            apply_to_all: true,
+            member_ids: vec![1, 2, 3],
+            years: "3".to_string(),
+        };
+        assert!(team_contract_extension_confirmation_message(&selected)
+            .contains("selected Player contract(s)"));
+        assert!(team_contract_extension_confirmation_message(&all_staff)
+            .contains("all eligible Staff on this Team"));
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_fan_momentum_dropdown_and_payload_use_validated_signed_range() {
+        assert_eq!(
+            TEAM_FAN_MOMENTUM_LEVELS,
+            [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5]
+        );
+        assert_eq!(parse_team_fan_momentum("-5"), Ok(-5));
+        assert_eq!(parse_team_fan_momentum("0"), Ok(0));
+        assert_eq!(parse_team_fan_momentum("5"), Ok(5));
+        assert!(parse_team_fan_momentum("-6").is_err());
+        assert!(parse_team_fan_momentum("6").is_err());
+        let command =
+            team_fans_write_command(85, "0", "37193", "Lower", "VerySatisfied", "-4");
+        let fields = command.split('|').collect::<Vec<_>>();
+        assert_eq!(fields.last().copied(), Some("-4"));
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_fan_momentum_probe_request_uses_current_team_id_only() {
+        assert_eq!(
+            team_fan_momentum_probe_command(85),
+            "GET_TEAM_FAN_MOMENTUM_PROBE|85"
+        );
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_merchandise_sell_price_uses_shared_currency_presentation_without_raw_scaling_loss() {
+        let raw_internal = "1800000";
+        let rows = team_merchandise_edit_rows(&[TeamMerchandiseEntry {
+            product_type: "Uniform".to_string(),
+            athlete_id: 42,
+            athlete_name: "Player".to_string(),
+            stock: "123".to_string(),
+            sell_price: raw_internal.to_string(),
+            yearly_sales: String::new(),
+            yearly_revenue: String::new(),
+            total_sales: String::new(),
+            total_revenue: String::new(),
+            daily_purchase_rate: String::new(),
+        }]);
+        assert_eq!(rows[0].sell_price, "$1.5K");
+        assert_eq!(
+            parse_display_to_internal(&rows[0].sell_price).unwrap(),
+            raw_internal.parse::<f64>().unwrap()
+        );
+    }
+
+    #[test]
+    fn potential_star_color_is_shared_release_gold() {
+        assert_eq!(
+            POTENTIAL_STAR_COLOR,
+            egui::Color32::from_rgb(0xF0, 0xBF, 0x15)
+        );
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn development_visual_test_palette_matches_refined_colors() {
+        assert_eq!(DEV_BG_PRIMARY, egui::Color32::from_rgb(0x0B, 0x0F, 0x14));
+        assert_eq!(DEV_TEXT_PRIMARY, egui::Color32::from_rgb(0xDE, 0xDE, 0xDE));
+        assert_eq!(DEV_ACCENT, egui::Color32::from_rgb(0x3D, 0xF3, 0xE0));
+        assert_eq!(POTENTIAL_STAR_COLOR, egui::Color32::from_rgb(0xF0, 0xBF, 0x15));
+        assert_eq!(DEV_TABLE_ALT_ROW, egui::Color32::from_rgb(0x12, 0x19, 0x21));
+        assert_eq!(DEV_CARD_BORDER, egui::Color32::from_rgb(0x24, 0x35, 0x3A));
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_dashboard_responsive_column_thresholds_are_stable() {
+        assert_eq!(team_dashboard_column_count(TEAM_DASHBOARD_THREE_COLUMN_MIN_WIDTH), 3);
+        assert_eq!(team_dashboard_column_count(TEAM_DASHBOARD_THREE_COLUMN_MIN_WIDTH - 1.0), 2);
+        assert_eq!(team_dashboard_column_count(TEAM_DASHBOARD_TWO_COLUMN_MIN_WIDTH), 2);
+        assert_eq!(team_dashboard_column_count(TEAM_DASHBOARD_TWO_COLUMN_MIN_WIDTH - 1.0), 1);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_dashboard_three_column_widths_use_controlled_preferred_and_maximum_bands() {
+        let preferred_width = TEAM_DASHBOARD_COLUMN_1_PREFERRED
+            + TEAM_DASHBOARD_COLUMN_2_PREFERRED
+            + TEAM_DASHBOARD_COLUMN_3_PREFERRED
+            + TEAM_DASHBOARD_COLUMN_GAP * 2.0;
+        let preferred = team_dashboard_three_column_widths(preferred_width);
+        assert!((preferred[0] - TEAM_DASHBOARD_COLUMN_1_PREFERRED).abs() < 0.01);
+        assert!((preferred[1] - TEAM_DASHBOARD_COLUMN_2_PREFERRED).abs() < 0.01);
+        assert!((preferred[2] - TEAM_DASHBOARD_COLUMN_3_PREFERRED).abs() < 0.01);
+
+        let very_wide = team_dashboard_three_column_widths(5000.0);
+        assert!((very_wide[0] - TEAM_DASHBOARD_COLUMN_1_MAX).abs() < 0.01);
+        assert!((very_wide[1] - TEAM_DASHBOARD_COLUMN_2_MAX).abs() < 0.01);
+        assert!((very_wide[2] - TEAM_DASHBOARD_COLUMN_3_MAX).abs() < 0.01);
+        let capped_total = very_wide.iter().sum::<f32>() + TEAM_DASHBOARD_COLUMN_GAP * 2.0;
+        assert!(capped_total < 1600.0);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn management_lineup_rows_preserve_stable_adjacent_player_ids() {
+        let data = TeamManagementData {
+            team_id: 85,
+            lineup: vec![
+                TeamLineupEntry {
+                    slot: "Top".to_string(),
+                    member: Some(TeamMemberReference {
+                        id: 43,
+                        name: "Siwoo".to_string(),
+                    }),
+                },
+                TeamLineupEntry {
+                    slot: "Jungle".to_string(),
+                    member: Some(TeamMemberReference {
+                        id: 486,
+                        name: "Hizto".to_string(),
+                    }),
+                },
+            ],
+            watched_players: vec![],
+            no_transfer_players: vec![],
+            release_players: vec![],
+            watched_staff: vec![],
+            release_staff: vec![],
+            pending_installments: 0,
+            resale_clauses: 0,
+            scout_dispatch: String::new(),
+            merchandise_product_count: 0,
+            champion_tier_count: 0,
+            personal_tactic_count: 0,
+            current_strategy: vec![],
+            last_strategy: vec![],
+            team_color_strategy: vec![],
+            merchandise: vec![],
+            champion_setup: vec![],
+            gaming_house: TeamGamingHouseSummary::default(),
+        };
+        let rows = team_management_lineup_player_rows(&data);
+        assert_eq!(rows[0], ("Top".to_string(), 43, "Siwoo".to_string()));
+        assert_eq!(rows[1], ("Jungle".to_string(), 486, "Hizto".to_string()));
+        assert_ne!(rows[0].1, rows[1].1);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn global_visual_consistency_uses_shared_standard_border_stroke() {
+        let mut visuals = egui::Visuals::dark();
+        apply_development_visual_test_theme(&mut visuals);
+        let expected = development_standard_border_stroke();
+        assert_eq!(visuals.widgets.noninteractive.bg_stroke, expected);
+        assert_eq!(visuals.window_stroke, expected);
+        assert_eq!(expected.color, DEV_CARD_BORDER);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn team_navigation_groups_map_to_the_existing_feature_actions() {
+        assert_eq!(
+            TEAM_MEMBERS_MENU_ACTIONS,
+            [
+                TeamNavigationAction::Roster,
+                TeamNavigationAction::Staff,
+                TeamNavigationAction::Condition,
+            ]
+        );
+        assert_eq!(
+            MATCH_STRATEGY_MENU_ACTIONS,
+            [
+                TeamNavigationAction::PreMatchAnalysis,
+                TeamNavigationAction::Strategy,
+                TeamNavigationAction::TacticsAnalysis,
+                TeamNavigationAction::TeamStats,
+            ]
+        );
+        assert_eq!(
+            RECRUITMENT_CENTER_MENU_ACTIONS,
+            [TeamNavigationAction::Transfers, TeamNavigationAction::ContractCenter]
+        );
+        assert_eq!(
+            COMPETITION_MENU_ACTIONS,
+            [
+                TeamNavigationAction::CompetitionCenter,
+                TeamNavigationAction::MatchHistory,
+            ]
+        );
+        assert_eq!(
+            DEVELOPMENT_MENU_ACTIONS,
+            [
+                TeamNavigationAction::TeamDataProbe,
+                TeamNavigationAction::ChampionSetup,
+            ]
+        );
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn player_team_only_team_navigation_actions_preserve_existing_availability() {
+        assert!(team_navigation_action_available(
+            TeamNavigationAction::PreMatchAnalysis,
+            true
+        ));
+        assert!(!team_navigation_action_available(
+            TeamNavigationAction::PreMatchAnalysis,
+            false
+        ));
+        assert!(team_navigation_action_available(
+            TeamNavigationAction::ChampionSetup,
+            true
+        ));
+        assert!(!team_navigation_action_available(
+            TeamNavigationAction::ChampionSetup,
+            false
+        ));
+        assert!(team_navigation_action_available(
+            TeamNavigationAction::Strategy,
+            false
+        ));
+    }
+
+
+    #[test]
+    fn community_release_copy_uses_clean_team_and_transfer_language() {
+        let locale: serde_json::Value = serde_json::from_str(include_str!("../locales/en-US.json")).unwrap();
+        let strings = locale["strings"].as_object().unwrap();
+        let text = |key: &str| strings.get(key).and_then(|value| value.as_str()).unwrap();
+
+        assert_eq!(text("team_workspace.intro"), "Review and manage the selected team.");
+        assert_eq!(
+            text("team_workspace.read_only"),
+            "Manage team members, strategy, finances, transfers, and competition data."
+        );
+        assert_eq!(text("team_workspace.roster_source"), "Current team roster.");
+        assert_eq!(text("team_workspace.staff_source"), "Current team staff.");
+        assert_eq!(text("recruitment.heading"), "Transfers");
+        assert_eq!(text("recruitment.retry"), "Negotiation Retry");
+        assert_eq!(text("team_performance.window_title"), "Team Stats — {team}");
+        assert_eq!(text("team_recruitment.window_title"), "Transfers — {team}");
+    }
+
+    #[test]
+    fn community_release_copy_avoids_internal_terms_in_cleaned_surfaces() {
+        let locale: serde_json::Value = serde_json::from_str(include_str!("../locales/en-US.json")).unwrap();
+        let strings = locale["strings"].as_object().unwrap();
+        let keys = [
+            "team_workspace.intro",
+            "team_workspace.read_only",
+            "team_workspace.read_only_ai",
+            "team_workspace.roster_source",
+            "team_workspace.staff_source",
+            "team_pre_match.help",
+            "team_strategy.help",
+            "team_tactics.help",
+            "team_tactics.historical_performance_help",
+            "team_tactics.historical_synergy_help",
+            "team_performance.help",
+            "team_performance.roster_note",
+            "team_performance.champion_help",
+            "team_finance_center.help",
+            "team_finance_center.budget_editor_help",
+            "team_merchandise.help",
+            "team_merchandise.edit_help",
+            "team_competition.help",
+            "team_standings.help",
+            "team_match_history.help",
+            "team_gaming_house.help",
+            "team_history_summary.help",
+            "recruitment.info",
+            "recruitment.runtime_toggle",
+            "recruitment.instant_retry_tooltip",
+            "team_recruitment.help",
+            "team_recruitment.contracted_move_note",
+            "team_recruitment.free_agent_contract_note",
+            "team_move.contracted_player_note",
+            "team_move.contracted_staff_note",
+            "team_move.free_agent_player_note",
+            "team_move.free_agent_staff_note",
+        ];
+        let forbidden = [
+            "validated write",
+            "write path",
+            "authoritative",
+            "player search dataset",
+            "staff search dataset",
+            "leaguecompetition",
+            "matchreport",
+            "prematchanalysis",
+            "teamratingrankingreport",
+            "champion_detail",
+            "payload",
+            "research",
+            "development",
+            "runtime",
+        ];
+
+        for key in keys {
+            let value = strings.get(key).and_then(|entry| entry.as_str()).unwrap();
+            let lowered = value.to_lowercase();
+            for term in forbidden {
+                assert!(
+                    !lowered.contains(term),
+                    "Community-facing key {key} still exposes internal term {term}: {value}"
+                );
+            }
+        }
     }
 
 }
@@ -17827,11 +29835,7 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| {
             let mut visuals = egui::Visuals::dark();
-            visuals.selection.bg_fill = egui::Color32::from_rgb(35, 92, 170);
-            visuals.selection.stroke = egui::Stroke::new(
-                1.0_f32,
-                egui::Color32::from_rgb(145, 195, 255),
-            );
+            apply_development_visual_test_theme(&mut visuals);
             cc.egui_ctx.set_visuals(visuals);
             Ok(Box::new(ModifierApp::default()))
         }),

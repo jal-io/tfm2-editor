@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -5,16 +6,17 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mod_api::*;
-use game_core::{Contract, Incentive, PaperState, SquadStatus};
+use game_core::{Contract, Incentive, PaperState, SquadStatus, StaffRole};
 
 const MOD_ID: &str = "tfm2_modifier_bridge";
 const BRIDGE_ADDR: &str = "127.0.0.1:28452";
-const BRIDGE_VERSION: &str = "0.2.49";
-const BRIDGE_PROTOCOL_VERSION: u32 = 9;
-const TFM2_TARGET_VERSION: &str = "0.5.4";
+const BRIDGE_VERSION: &str = "0.2.59";
+const BRIDGE_PROTOCOL_VERSION: u32 = 19;
+const TFM2_TARGET_VERSION: &str = "0.5.5";
+const GLOBAL_HISTORY_RECORD_CAP: usize = 10_000;
 
 #[derive(Debug, Clone, Copy)]
 struct EconomyValues {
@@ -193,6 +195,23 @@ struct TeamManagementSnapshot {
     merchandise: String,
     champion_setup: String,
     gaming_house: String,
+}
+
+#[derive(Debug, Clone)]
+struct TeamMerchandiseWriteValue {
+    product_type: String,
+    athlete_id: usize,
+    stock: String,
+    sell_price: String,
+}
+
+#[derive(Debug, Clone)]
+struct TeamFansWriteValue {
+    popularity: String,
+    fan_count: String,
+    fan_expectation: String,
+    fan_satisfaction: String,
+    fan_momentum: String,
 }
 
 #[derive(Debug, Clone)]
@@ -381,6 +400,37 @@ enum GameRequest {
         team_id: usize,
         reply: Sender<String>,
     },
+    SetTeamMerchandise {
+        team_id: usize,
+        values: TeamMerchandiseWriteValue,
+        reply: Sender<String>,
+    },
+    SetTeamFans {
+        team_id: usize,
+        values: TeamFansWriteValue,
+        reply: Sender<String>,
+    },
+    GetTeamFanMomentumProbe {
+        team_id: usize,
+        reply: Sender<String>,
+    },
+    GetTeamStrategyOptions {
+        reply: Sender<String>,
+    },
+    GetTeamReplayStrategies {
+        team_id: usize,
+        replay_ids: Vec<usize>,
+        reply: Sender<String>,
+    },
+    ProbeSwapTeamStrategy {
+        team_id: usize,
+        reply: Sender<String>,
+    },
+    SetTeamStrategy {
+        team_id: usize,
+        raw_strategy: String,
+        reply: Sender<String>,
+    },
     GetContractDefaults {
         entity: ContractDefaultsEntity,
         team_id: usize,
@@ -389,6 +439,7 @@ enum GameRequest {
     MoveStaffToTeam {
         staff_id: usize,
         team_id: usize,
+        role: Option<String>,
         reply: Sender<String>,
     },
     SetStaffFreeAgent {
@@ -478,9 +529,81 @@ enum GameRequest {
         values: Vec<ChampionMasteryValue>,
         reply: Sender<String>,
     },
+    GetGlobalLeagues {
+        reply: Sender<String>,
+    },
+    GetGlobalLeagueCompetition {
+        league_id: usize,
+        reply: Sender<String>,
+    },
+    GetGlobalTeamSchedule {
+        team_id: usize,
+        reply: Sender<String>,
+    },
+    GetGlobalTeamHistory {
+        team_id: usize,
+        reply: Sender<String>,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct GlobalMatchRecord {
+    json: String,
+    completed: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct GlobalHistoryCaptureMetrics {
+    league_source_records: usize,
+    league_retained_records: usize,
+    league_bytes: usize,
+    league_competition_source_records: usize,
+    league_competition_retained_records: usize,
+    league_competition_bytes: usize,
+    match_source_records: usize,
+    match_scanned_records: usize,
+    match_retained_records: usize,
+    match_dropped_records: usize,
+    match_oldest_retained_id: Option<usize>,
+    match_newest_retained_id: Option<usize>,
+    match_indexed_teams: usize,
+    match_index_entries: usize,
+    match_bytes: usize,
+    snapshot_bytes: usize,
+    largest_record_bytes: usize,
+    capture_micros: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct GlobalHistoryRequestMetric {
+    requested_id: Option<usize>,
+    records_returned: usize,
+    response_bytes: usize,
+    response_micros: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct GlobalHistoryResponseMetrics {
+    get_leagues: Option<GlobalHistoryRequestMetric>,
+    get_league_competition: Option<GlobalHistoryRequestMetric>,
+    get_team_schedule: Option<GlobalHistoryRequestMetric>,
+    get_team_history: Option<GlobalHistoryRequestMetric>,
+}
+
+#[derive(Debug, Default)]
+struct GlobalHistorySnapshot {
+    capture_index: usize,
+    league_records: Vec<String>,
+    league_competition_records: HashMap<usize, String>,
+    match_records: Vec<GlobalMatchRecord>,
+    team_match_indices: HashMap<usize, Vec<usize>>,
+    metrics: GlobalHistoryCaptureMetrics,
 }
 
 static SERVER_STARTED: AtomicBool = AtomicBool::new(false);
+static GLOBAL_HISTORY_CAPTURE_INDEX: AtomicUsize = AtomicUsize::new(0);
+static GLOBAL_HISTORY_SNAPSHOT: OnceLock<Mutex<Option<GlobalHistorySnapshot>>> = OnceLock::new();
+static GLOBAL_HISTORY_RESPONSE_METRICS: OnceLock<Mutex<GlobalHistoryResponseMetrics>> = OnceLock::new();
 static TRANSFER_ALWAYS_SUCCESS: AtomicBool = AtomicBool::new(false);
 static TRANSFER_ALWAYS_SUCCESS_TEAM_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
 static RECRUITMENT_INSTANT_RETRY: AtomicBool = AtomicBool::new(false);
@@ -731,21 +854,38 @@ fn response_ok_contract_defaults(values: &ContractDefaults) -> String {
     )
 }
 
-fn hex_encode(value: &str) -> String {
+fn hex_encode_into(output: &mut String, value: &str) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let bytes = value.as_bytes();
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-
-    for byte in bytes {
-        encoded.push(HEX[(byte >> 4) as usize] as char);
-        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    for byte in value.as_bytes() {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
     }
+}
 
+fn hex_encode(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len().saturating_mul(2));
+    hex_encode_into(&mut encoded, value);
     encoded
 }
 
+fn hex_join_records(records: &[String]) -> String {
+    let encoded_bytes = records
+        .iter()
+        .map(|record| record.len().saturating_mul(2))
+        .sum::<usize>();
+    let separators = records.len().saturating_sub(1);
+    let mut payload = String::with_capacity(encoded_bytes.saturating_add(separators));
+    for (index, record) in records.iter().enumerate() {
+        if index != 0 {
+            payload.push(';');
+        }
+        hex_encode_into(&mut payload, record);
+    }
+    payload
+}
+
 fn hex_decode(encoded: &str) -> Result<String, &'static str> {
-    if encoded.len() % 2 != 0 {
+    if !encoded.len().is_multiple_of(2) {
         return Err("INVALID_NAME_ENCODING");
     }
 
@@ -967,6 +1107,18 @@ fn response_ok_team_management(snapshot: TeamManagementSnapshot) -> String {
         hex_encode(&snapshot.champion_setup),
         hex_encode(&snapshot.gaming_house),
     )
+}
+
+fn response_ok_team_strategy_options(raw: &str) -> String {
+    format!("OK|TEAM_STRATEGY_OPTIONS|{}", hex_encode(raw))
+}
+
+fn response_ok_team_fan_momentum_probe(raw: &str) -> String {
+    format!("OK|TEAM_FAN_MOMENTUM_PROBE|{}", hex_encode(raw))
+}
+
+fn response_ok_team_replay_strategies(raw: &str) -> String {
+    format!("OK|TEAM_REPLAY_STRATEGIES|{}", hex_encode(raw))
 }
 
 fn response_ok_player(player: PlayerSnapshot) -> String {
@@ -1236,8 +1388,8 @@ fn read_staffs(scene: &mut Scene) -> Result<Vec<StaffListEntry>, &'static str> {
 
             let communication = staff
                 .language
-                .iter()
-                .filter_map(|(_, value)| value.to_string().parse::<f64>().ok())
+                .values()
+                .filter_map(|value| value.to_string().parse::<f64>().ok())
                 .max_by(|left, right| left.total_cmp(right))
                 .map(|value| value.to_string())
                 .unwrap_or_default();
@@ -1674,7 +1826,7 @@ fn write_staff_communication(
 
     {
         let db = data.db();
-        if db.staffs.get(&staff_id).is_none() {
+        if !db.staffs.contains_key(&staff_id) {
             return Err("STAFF_NOT_FOUND");
         }
     }
@@ -1761,17 +1913,18 @@ fn read_team_probe(scene: &mut Scene, team_id: usize) -> Result<String, &'static
         return Err("TEAM_NOT_FOUND");
     };
 
-    Ok(format!(
+    let mut raw = format!(
         "=== SELECTED TEAM RECORD ===\nTeam key: {team_id}\nDisplay name: {}\n{team:#?}",
         db.team_display_name(team)
-    ))
+    );
+    raw.push_str("\n\n");
+    raw.push_str(&global_history_robustness_report());
+    Ok(raw)
 }
 
 fn sanitize_tsv_cell(value: &str) -> String {
     value
-        .replace('\t', " ")
-        .replace('\r', " ")
-        .replace('\n', " ")
+        .replace(['\t', '\r', '\n'], " ")
 }
 
 fn append_tsv_row(output: &mut String, cells: &[String]) {
@@ -1923,33 +2076,33 @@ fn read_team_management(
 
     let mut current_strategy = String::new();
     let current_values = [
-        ("focused", format!("{:?}", &team.strategy.focused)),
-        ("early_jungle", format!("{:?}", &team.strategy.early_jungle)),
-        ("early_serpen", format!("{:?}", &team.strategy.early_serpen)),
+        ("focused", format!("{:?}", team.strategy.focused)),
+        ("early_jungle", format!("{:?}", team.strategy.early_jungle)),
+        ("early_serpen", format!("{:?}", team.strategy.early_serpen)),
         (
             "early_serpen_top",
-            format!("{:?}", &team.strategy.early_serpen_top),
+            format!("{:?}", team.strategy.early_serpen_top),
         ),
         (
             "object_buildup",
-            format!("{:?}", &team.strategy.object_buildup),
+            format!("{:?}", team.strategy.object_buildup),
         ),
         (
             "object_battle",
-            format!("{:?}", &team.strategy.object_battle),
+            format!("{:?}", team.strategy.object_battle),
         ),
-        ("morgard_use", format!("{:?}", &team.strategy.morgard_use)),
-        ("tower_press", format!("{:?}", &team.strategy.tower_press)),
+        ("morgard_use", format!("{:?}", team.strategy.morgard_use)),
+        ("tower_press", format!("{:?}", team.strategy.tower_press)),
         (
             "morgard_defense",
-            format!("{:?}", &team.strategy.morgard_defense),
+            format!("{:?}", team.strategy.morgard_defense),
         ),
         (
             "object_finish",
-            format!("{:?}", &team.strategy.object_finish),
+            format!("{:?}", team.strategy.object_finish),
         ),
-        ("minion_wave", format!("{:?}", &team.strategy.minion_wave)),
-        ("game_finish", format!("{:?}", &team.strategy.game_finish)),
+        ("minion_wave", format!("{:?}", team.strategy.minion_wave)),
+        ("game_finish", format!("{:?}", team.strategy.game_finish)),
     ];
     for (key, value) in current_values {
         append_tsv_row(&mut current_strategy, &[key.to_string(), value]);
@@ -1957,50 +2110,50 @@ fn read_team_management(
 
     let mut last_strategy = String::new();
     let last_values = [
-        ("focused", format!("{:?}", &team.last_strategy.focused)),
+        ("focused", format!("{:?}", team.last_strategy.focused)),
         (
             "early_jungle",
-            format!("{:?}", &team.last_strategy.early_jungle),
+            format!("{:?}", team.last_strategy.early_jungle),
         ),
         (
             "early_serpen",
-            format!("{:?}", &team.last_strategy.early_serpen),
+            format!("{:?}", team.last_strategy.early_serpen),
         ),
         (
             "early_serpen_top",
-            format!("{:?}", &team.last_strategy.early_serpen_top),
+            format!("{:?}", team.last_strategy.early_serpen_top),
         ),
         (
             "object_buildup",
-            format!("{:?}", &team.last_strategy.object_buildup),
+            format!("{:?}", team.last_strategy.object_buildup),
         ),
         (
             "object_battle",
-            format!("{:?}", &team.last_strategy.object_battle),
+            format!("{:?}", team.last_strategy.object_battle),
         ),
         (
             "morgard_use",
-            format!("{:?}", &team.last_strategy.morgard_use),
+            format!("{:?}", team.last_strategy.morgard_use),
         ),
         (
             "tower_press",
-            format!("{:?}", &team.last_strategy.tower_press),
+            format!("{:?}", team.last_strategy.tower_press),
         ),
         (
             "morgard_defense",
-            format!("{:?}", &team.last_strategy.morgard_defense),
+            format!("{:?}", team.last_strategy.morgard_defense),
         ),
         (
             "object_finish",
-            format!("{:?}", &team.last_strategy.object_finish),
+            format!("{:?}", team.last_strategy.object_finish),
         ),
         (
             "minion_wave",
-            format!("{:?}", &team.last_strategy.minion_wave),
+            format!("{:?}", team.last_strategy.minion_wave),
         ),
         (
             "game_finish",
-            format!("{:?}", &team.last_strategy.game_finish),
+            format!("{:?}", team.last_strategy.game_finish),
         ),
     ];
     for (key, value) in last_values {
@@ -2095,7 +2248,7 @@ fn read_team_management(
             .unwrap_or_default();
         let tactics = team.champion_personal_tactics.get(&champion_id);
         let tactic_1 = tactics
-            .and_then(|values| values.get(0))
+            .and_then(|values| values.first())
             .map(|value| format!("{value:?}"))
             .unwrap_or_default();
         let tactic_2 = tactics
@@ -2117,27 +2270,27 @@ fn read_team_management(
     let owned_furniture_total = inventory
         .furniture
         .iter()
-        .map(|item| item.count as usize)
+        .map(|item| item.count)
         .sum::<usize>();
     let owned_wallpaper_total = inventory
         .wallpapers
         .iter()
-        .map(|item| item.count as usize)
+        .map(|item| item.count)
         .sum::<usize>();
     let owned_wall_total = inventory
         .walls
         .iter()
-        .map(|item| item.count as usize)
+        .map(|item| item.count)
         .sum::<usize>();
     let owned_window_total = inventory
         .windows
         .iter()
-        .map(|item| item.count as usize)
+        .map(|item| item.count)
         .sum::<usize>();
 
     let mut gaming_house = String::new();
     let gaming_metrics = [
-        ("level", format!("{:?}", &team.gaming_house_level)),
+        ("level", format!("{:?}", team.gaming_house_level)),
         ("welfare", team.welfare.to_string()),
         ("owned_furniture_types", inventory.furniture.len().to_string()),
         ("owned_furniture_total", owned_furniture_total.to_string()),
@@ -2181,19 +2334,27 @@ fn read_teams(scene: &mut Scene) -> Result<Vec<TeamListEntry>, &'static str> {
         .map(|(id, team)| {
             let roster = db
                 .athletes
-                .iter()
-                .filter_map(|(_, athlete)| {
-                    if matches!(
+                .values()
+                .filter(|athlete| {
+                    matches!(
                         &athlete.contract,
                         Contract::InContract { team_id, .. } if *team_id == *id
-                    ) {
-                        Some(athlete)
-                    } else {
-                        None
-                    }
+                    )
                 })
                 .collect::<Vec<_>>();
             let roster_size = roster.len();
+            let roster_player_fans = roster
+                .iter()
+                .filter_map(|athlete| athlete.management.fan_count.to_string().parse::<u128>().ok())
+                .sum::<u128>();
+            let displayed_fan_count = team
+                .fan_count
+                .to_string()
+                .parse::<u128>()
+                .ok()
+                .and_then(|base| displayed_team_fan_count(base, roster_player_fans).ok())
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| team.fan_count.to_string());
             let staff_count = db
                 .staffs
                 .iter()
@@ -2254,7 +2415,7 @@ fn read_teams(scene: &mut Scene) -> Result<Vec<TeamListEntry>, &'static str> {
                 popularity: team.popularity.to_string(),
                 fan_expectation: format!("{:?}", team.fan_expectation),
                 fan_satisfaction: format!("{:?}", team.fan_satisfaction),
-                fan_count: team.fan_count.to_string(),
+                fan_count: displayed_fan_count,
                 fan_momentum: team.fan_momentum.to_string(),
                 gaming_house_level: format!("{:?}", team.gaming_house_level),
                 welfare: team.welfare.to_string(),
@@ -2276,6 +2437,572 @@ fn read_teams(scene: &mut Scene) -> Result<Vec<TeamListEntry>, &'static str> {
     Ok(teams)
 }
 
+
+fn global_history_state() -> &'static Mutex<Option<GlobalHistorySnapshot>> {
+    GLOBAL_HISTORY_SNAPSHOT.get_or_init(|| Mutex::new(None))
+}
+
+fn global_history_response_metrics() -> &'static Mutex<GlobalHistoryResponseMetrics> {
+    GLOBAL_HISTORY_RESPONSE_METRICS.get_or_init(|| Mutex::new(GlobalHistoryResponseMetrics::default()))
+}
+
+fn duration_micros_u64(duration: Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+}
+
+fn record_global_history_response_metric(
+    kind: &str,
+    requested_id: Option<usize>,
+    records_returned: usize,
+    response_bytes: usize,
+    started: Instant,
+) {
+    let metric = GlobalHistoryRequestMetric {
+        requested_id,
+        records_returned,
+        response_bytes,
+        response_micros: duration_micros_u64(started.elapsed()),
+    };
+    if let Ok(mut metrics) = global_history_response_metrics().lock() {
+        match kind {
+            "GET_LEAGUES" => metrics.get_leagues = Some(metric),
+            "GET_LEAGUE_COMPETITION" => metrics.get_league_competition = Some(metric),
+            "GET_TEAM_SCHEDULE" => metrics.get_team_schedule = Some(metric),
+            "GET_TEAM_HISTORY" => metrics.get_team_history = Some(metric),
+            _ => {}
+        }
+    }
+}
+
+fn format_global_history_request_metric(
+    label: &str,
+    metric: &Option<GlobalHistoryRequestMetric>,
+) -> String {
+    let Some(metric) = metric else {
+        return format!("{label}: not requested yet");
+    };
+    let requested = metric
+        .requested_id
+        .map(|value| format!(" requested_id={value}"))
+        .unwrap_or_default();
+    format!(
+        "{label}:{requested} records={} response_bytes={} response_time_us={}",
+        metric.records_returned, metric.response_bytes, metric.response_micros
+    )
+}
+
+fn global_history_robustness_report() -> String {
+    let capture = global_history_state()
+        .lock()
+        .ok()
+        .and_then(|state| state.as_ref().map(|snapshot| (snapshot.capture_index, snapshot.metrics.clone())));
+    let responses = global_history_response_metrics()
+        .lock()
+        .map(|metrics| metrics.clone())
+        .unwrap_or_default();
+
+    let mut report = String::from("=== GLOBAL HISTORY ROBUSTNESS ===\n");
+    if let Some((capture_index, metrics)) = capture {
+        report.push_str(&format!(
+            "capture_index={capture_index} record_cap={GLOBAL_HISTORY_RECORD_CAP} capture_time_us={}\n",
+            metrics.capture_micros
+        ));
+        report.push_str(&format!(
+            "leagues: source={} retained={} bytes={}\n",
+            metrics.league_source_records, metrics.league_retained_records, metrics.league_bytes
+        ));
+        report.push_str(&format!(
+            "league_competitions: source={} retained={} bytes={}\n",
+            metrics.league_competition_source_records,
+            metrics.league_competition_retained_records,
+            metrics.league_competition_bytes
+        ));
+        report.push_str(&format!(
+            "matches: source={} scanned={} retained={} dropped={} bytes={}\n",
+            metrics.match_source_records,
+            metrics.match_scanned_records,
+            metrics.match_retained_records,
+            metrics.match_dropped_records,
+            metrics.match_bytes
+        ));
+        report.push_str(&format!(
+            "match_window: policy=highest_id_recent oldest_id={} newest_id={} indexed_teams={} index_entries={}\n",
+            metrics
+                .match_oldest_retained_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            metrics
+                .match_newest_retained_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            metrics.match_indexed_teams,
+            metrics.match_index_entries
+        ));
+        report.push_str(&format!(
+            "snapshot: retained_records={} bytes={} largest_record_bytes={}\n",
+            metrics
+                .league_retained_records
+                .saturating_add(metrics.league_competition_retained_records)
+                .saturating_add(metrics.match_retained_records),
+            metrics.snapshot_bytes,
+            metrics.largest_record_bytes
+        ));
+    } else {
+        report.push_str("capture: not ready\n");
+    }
+    report.push_str(&format!(
+        "{}\n{}\n{}\n{}",
+        format_global_history_request_metric("GET_LEAGUES", &responses.get_leagues),
+        format_global_history_request_metric(
+            "GET_LEAGUE_COMPETITION",
+            &responses.get_league_competition
+        ),
+        format_global_history_request_metric("GET_TEAM_SCHEDULE", &responses.get_team_schedule),
+        format_global_history_request_metric("GET_TEAM_HISTORY", &responses.get_team_history),
+    ));
+    report
+}
+
+fn clear_global_history_snapshot() {
+    GLOBAL_HISTORY_CAPTURE_INDEX.store(0, Ordering::SeqCst);
+    if let Ok(mut state) = global_history_state().lock() {
+        *state = None;
+    }
+    if let Ok(mut metrics) = global_history_response_metrics().lock() {
+        *metrics = GlobalHistoryResponseMetrics::default();
+    }
+}
+
+fn global_json_with_id(
+    record_id: usize,
+    mut value: serde_json::Value,
+) -> Result<String, &'static str> {
+    let object = value.as_object_mut().ok_or("GLOBAL_RECORD_NOT_OBJECT")?;
+    object.insert(
+        "id".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(record_id as u64)),
+    );
+
+    // TFM2 0.5.5 production Bridge: keep serde_json for Value construction,
+    // then encode text with the Bridge-local serializer used by global history.
+    Ok(global_json_value_to_string(&value))
+}
+
+fn global_json_write_string(output: &mut String, value: &str) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    output.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\u{08}' => output.push_str("\\b"),
+            '\u{0c}' => output.push_str("\\f"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            ch if ch <= '\u{1f}' => {
+                let code = ch as u32;
+                output.push_str("\\u00");
+                output.push(HEX[((code >> 4) & 0x0f) as usize] as char);
+                output.push(HEX[(code & 0x0f) as usize] as char);
+            }
+            ch => output.push(ch),
+        }
+    }
+    output.push('"');
+}
+
+fn global_json_write_value(output: &mut String, value: &serde_json::Value) {
+    match value {
+        serde_json::Value::Null => output.push_str("null"),
+        serde_json::Value::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
+        serde_json::Value::Number(value) => output.push_str(&value.to_string()),
+        serde_json::Value::String(value) => global_json_write_string(output, value),
+        serde_json::Value::Array(values) => {
+            output.push('[');
+            for (index, value) in values.iter().enumerate() {
+                if index != 0 {
+                    output.push(',');
+                }
+                global_json_write_value(output, value);
+            }
+            output.push(']');
+        }
+        serde_json::Value::Object(values) => {
+            output.push('{');
+            for (index, (key, value)) in values.iter().enumerate() {
+                if index != 0 {
+                    output.push(',');
+                }
+                global_json_write_string(output, key);
+                output.push(':');
+                global_json_write_value(output, value);
+            }
+            output.push('}');
+        }
+    }
+}
+
+fn global_json_value_to_string(value: &serde_json::Value) -> String {
+    let mut output = String::new();
+    global_json_write_value(&mut output, value);
+    output
+}
+
+fn global_json_normal_team_id(value: &serde_json::Value, field: &str) -> Option<usize> {
+    value
+        .get(field)
+        .and_then(|team| team.get("Normal"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+}
+
+fn global_json_is_completed_match(value: &serde_json::Value) -> bool {
+    value
+        .get("running_state")
+        .and_then(|state| state.get("End"))
+        .is_some()
+}
+
+fn global_json_copy_fields(
+    source: &serde_json::Value,
+    fields: &[&str],
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut projected = serde_json::Map::new();
+    for field in fields {
+        if let Some(value) = source.get(*field) {
+            projected.insert((*field).to_string(), value.clone());
+        }
+    }
+    projected
+}
+
+fn global_compact_league_value(value: &serde_json::Value) -> serde_json::Value {
+    serde_json::Value::Object(global_json_copy_fields(
+        value,
+        &["region_id", "division", "name"],
+    ))
+}
+
+fn global_compact_league_competition_value(value: &serde_json::Value) -> serde_json::Value {
+    let mut projected = global_json_copy_fields(value, &["league_type", "finalized"]);
+
+    let mut standings = serde_json::Map::new();
+    if let Some(source_standings) = value.get("standings").and_then(serde_json::Value::as_object) {
+        for (team_id, stats) in source_standings {
+            standings.insert(
+                team_id.clone(),
+                serde_json::Value::Object(global_json_copy_fields(
+                    stats,
+                    &["win", "lose", "set_win", "set_lose", "kill", "death", "assist"],
+                )),
+            );
+        }
+    }
+    projected.insert("standings".to_string(), serde_json::Value::Object(standings));
+
+    let mut statistics = serde_json::Map::new();
+    if let Some(source_statistics) = value.get("statistics").and_then(serde_json::Value::as_object) {
+        for (player_id, stats) in source_statistics {
+            let mut player = global_json_copy_fields(
+                stats,
+                &[
+                    "matches",
+                    "wins",
+                    "kills",
+                    "deaths",
+                    "assists",
+                    "mvp",
+                    "rating",
+                    "gold",
+                    "dealing",
+                    "healing",
+                    "tanking",
+                    "solo_kill",
+                    "solo_killed",
+                ],
+            );
+            let mut champion_detail = serde_json::Map::new();
+            if let Some(source_champions) = stats
+                .get("champion_detail")
+                .and_then(serde_json::Value::as_object)
+            {
+                for (champion_id, champion_stats) in source_champions {
+                    champion_detail.insert(
+                        champion_id.clone(),
+                        serde_json::Value::Object(global_json_copy_fields(
+                            champion_stats,
+                            &["matches", "wins", "rating", "dealing", "healing", "tanking"],
+                        )),
+                    );
+                }
+            }
+            player.insert(
+                "champion_detail".to_string(),
+                serde_json::Value::Object(champion_detail),
+            );
+            statistics.insert(player_id.clone(), serde_json::Value::Object(player));
+        }
+    }
+    projected.insert(
+        "statistics".to_string(),
+        serde_json::Value::Object(statistics),
+    );
+
+    serde_json::Value::Object(projected)
+}
+
+fn global_compact_match_value(value: &serde_json::Value) -> serde_json::Value {
+    let mut projected = global_json_copy_fields(value, &["date", "is_practice", "replays"]);
+
+    for field in ["team1", "team2"] {
+        if let Some(team_id) = global_json_normal_team_id(value, field) {
+            let mut team = serde_json::Map::new();
+            team.insert(
+                "Normal".to_string(),
+                serde_json::Value::Number(serde_json::Number::from(team_id as u64)),
+            );
+            projected.insert(field.to_string(), serde_json::Value::Object(team));
+        }
+    }
+
+    if let Some(running_state) = value.get("running_state") {
+        if let Some(end) = running_state.get("End") {
+            let mut state = serde_json::Map::new();
+            state.insert(
+                "End".to_string(),
+                serde_json::Value::Object(global_json_copy_fields(
+                    end,
+                    &["team1_score", "team2_score", "winner"],
+                )),
+            );
+            projected.insert("running_state".to_string(), serde_json::Value::Object(state));
+        } else if running_state.as_str() == Some("Running") {
+            projected.insert("running_state".to_string(), running_state.clone());
+        }
+    }
+
+    serde_json::Value::Object(projected)
+}
+
+fn select_recent_global_match_ids(mut record_ids: Vec<usize>, cap: usize) -> Vec<usize> {
+    record_ids.sort_unstable_by_key(|record_id| Reverse(*record_id));
+    record_ids.truncate(cap);
+    record_ids.sort_unstable();
+    record_ids
+}
+
+fn index_global_match_for_team(
+    team_match_indices: &mut HashMap<usize, Vec<usize>>,
+    team_id: Option<usize>,
+    record_index: usize,
+) {
+    if let Some(team_id) = team_id {
+        team_match_indices.entry(team_id).or_default().push(record_index);
+    }
+}
+
+fn capture_global_history_snapshot(ctx: &ServerModContext) {
+    let started = Instant::now();
+    let capture_index = GLOBAL_HISTORY_CAPTURE_INDEX
+        .fetch_add(1, Ordering::SeqCst)
+        .saturating_add(1);
+    let mut snapshot = GlobalHistorySnapshot {
+        capture_index,
+        ..GlobalHistorySnapshot::default()
+    };
+
+    let league_ids = ctx.database.leagues.keys();
+    snapshot.metrics.league_source_records = league_ids.len();
+    for record_id in league_ids.into_iter().take(GLOBAL_HISTORY_RECORD_CAP) {
+        let Some(league) = ctx.database.leagues.get(record_id) else {
+            continue;
+        };
+        let Ok(value) = serde_json::to_value(league) else {
+            continue;
+        };
+        let compact = global_compact_league_value(&value);
+        let Ok(json) = global_json_with_id(record_id, compact) else {
+            continue;
+        };
+        snapshot.metrics.league_bytes = snapshot.metrics.league_bytes.saturating_add(json.len());
+        snapshot.metrics.largest_record_bytes = snapshot.metrics.largest_record_bytes.max(json.len());
+        snapshot.league_records.push(json);
+    }
+    snapshot.metrics.league_retained_records = snapshot.league_records.len();
+
+    let league_competition_ids = ctx.database.league_competitions.keys();
+    snapshot.metrics.league_competition_source_records = league_competition_ids.len();
+    for record_id in league_competition_ids
+        .into_iter()
+        .take(GLOBAL_HISTORY_RECORD_CAP)
+    {
+        let Some(competition) = ctx.database.league_competitions.get(record_id) else {
+            continue;
+        };
+        let Ok(value) = serde_json::to_value(competition) else {
+            continue;
+        };
+        let compact = global_compact_league_competition_value(&value);
+        let Ok(json) = global_json_with_id(record_id, compact) else {
+            continue;
+        };
+        snapshot.metrics.league_competition_bytes = snapshot
+            .metrics
+            .league_competition_bytes
+            .saturating_add(json.len());
+        snapshot.metrics.largest_record_bytes = snapshot.metrics.largest_record_bytes.max(json.len());
+        snapshot.league_competition_records.insert(record_id, json);
+    }
+    snapshot.metrics.league_competition_retained_records =
+        snapshot.league_competition_records.len();
+
+    let match_ids = ctx.database.matches.keys();
+    snapshot.metrics.match_source_records = match_ids.len();
+    let retained_match_ids = select_recent_global_match_ids(match_ids, GLOBAL_HISTORY_RECORD_CAP);
+    snapshot.metrics.match_dropped_records = snapshot
+        .metrics
+        .match_source_records
+        .saturating_sub(retained_match_ids.len());
+    snapshot.metrics.match_oldest_retained_id = retained_match_ids.first().copied();
+    snapshot.metrics.match_newest_retained_id = retained_match_ids.last().copied();
+
+    for record_id in retained_match_ids {
+        snapshot.metrics.match_scanned_records = snapshot.metrics.match_scanned_records.saturating_add(1);
+        let Some(match_info) = ctx.database.matches.get(record_id) else {
+            continue;
+        };
+        let Ok(value) = serde_json::to_value(match_info) else {
+            continue;
+        };
+        let team1_id = global_json_normal_team_id(&value, "team1");
+        let team2_id = global_json_normal_team_id(&value, "team2");
+        let completed = global_json_is_completed_match(&value);
+        let compact = global_compact_match_value(&value);
+        let Ok(json) = global_json_with_id(record_id, compact) else {
+            continue;
+        };
+        snapshot.metrics.match_bytes = snapshot.metrics.match_bytes.saturating_add(json.len());
+        snapshot.metrics.largest_record_bytes = snapshot.metrics.largest_record_bytes.max(json.len());
+        let record_index = snapshot.match_records.len();
+        snapshot.match_records.push(GlobalMatchRecord { json, completed });
+        index_global_match_for_team(&mut snapshot.team_match_indices, team1_id, record_index);
+        if team2_id != team1_id {
+            index_global_match_for_team(&mut snapshot.team_match_indices, team2_id, record_index);
+        }
+    }
+    snapshot.metrics.match_retained_records = snapshot.match_records.len();
+    snapshot.metrics.match_indexed_teams = snapshot.team_match_indices.len();
+    snapshot.metrics.match_index_entries = snapshot
+        .team_match_indices
+        .values()
+        .map(Vec::len)
+        .sum();
+    snapshot.metrics.snapshot_bytes = snapshot
+        .metrics
+        .league_bytes
+        .saturating_add(snapshot.metrics.league_competition_bytes)
+        .saturating_add(snapshot.metrics.match_bytes);
+    snapshot.metrics.capture_micros = duration_micros_u64(started.elapsed());
+
+    if let Ok(mut state) = global_history_state().lock() {
+        *state = Some(snapshot);
+    }
+}
+
+fn read_global_leagues() -> Result<(usize, Vec<String>), &'static str> {
+    let state = global_history_state()
+        .lock()
+        .map_err(|_| "GLOBAL_HISTORY_LOCK_FAILED")?;
+    let snapshot = state.as_ref().ok_or("GLOBAL_HISTORY_NOT_READY")?;
+    Ok((snapshot.capture_index, snapshot.league_records.clone()))
+}
+
+fn read_global_league_competition(
+    league_id: usize,
+) -> Result<(usize, String), &'static str> {
+    let state = global_history_state()
+        .lock()
+        .map_err(|_| "GLOBAL_HISTORY_LOCK_FAILED")?;
+    let snapshot = state.as_ref().ok_or("GLOBAL_HISTORY_NOT_READY")?;
+    let json = snapshot
+        .league_competition_records
+        .get(&league_id)
+        .cloned()
+        .ok_or("LEAGUE_COMPETITION_NOT_FOUND")?;
+    Ok((snapshot.capture_index, json))
+}
+
+fn filter_global_team_records(
+    snapshot: &GlobalHistorySnapshot,
+    team_id: usize,
+    completed_only: bool,
+) -> Vec<String> {
+    let Some(record_indices) = snapshot.team_match_indices.get(&team_id) else {
+        return Vec::new();
+    };
+
+    record_indices
+        .iter()
+        .filter_map(|record_index| snapshot.match_records.get(*record_index))
+        .filter(|record| !completed_only || record.completed)
+        .map(|record| record.json.clone())
+        .collect()
+}
+
+fn read_global_team_matches(
+    team_id: usize,
+    completed_only: bool,
+) -> Result<(usize, Vec<String>), &'static str> {
+    let state = global_history_state()
+        .lock()
+        .map_err(|_| "GLOBAL_HISTORY_LOCK_FAILED")?;
+    let snapshot = state.as_ref().ok_or("GLOBAL_HISTORY_NOT_READY")?;
+    let records = filter_global_team_records(snapshot, team_id, completed_only);
+    Ok((snapshot.capture_index, records))
+}
+
+fn current_player_team_id(scene: &mut Scene) -> Result<usize, &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+    Ok(data.player_team_id())
+}
+
+fn response_ok_global_leagues(capture_index: usize, records: &[String]) -> String {
+    let payload = hex_join_records(records);
+    format!(
+        "OK|GLOBAL_LEAGUES|{BRIDGE_VERSION}|{TFM2_TARGET_VERSION}|{capture_index}|{}|{}",
+        records.len(), payload
+    )
+}
+
+fn response_ok_global_league_competition(
+    capture_index: usize,
+    league_id: usize,
+    json: &str,
+) -> String {
+    format!(
+        "OK|GLOBAL_LEAGUE_COMPETITION|{BRIDGE_VERSION}|{TFM2_TARGET_VERSION}|{capture_index}|{league_id}|{}",
+        hex_encode(json)
+    )
+}
+
+fn response_ok_global_team_records(
+    kind: &str,
+    capture_index: usize,
+    player_team_id: usize,
+    team_id: usize,
+    records: &[String],
+) -> String {
+    let payload = hex_join_records(records);
+    format!(
+        "OK|{kind}|{BRIDGE_VERSION}|{TFM2_TARGET_VERSION}|{capture_index}|{player_team_id}|{team_id}|{}|{}",
+        records.len(), payload
+    )
+}
+
 fn contract_annual_salary(contract: &Contract) -> Option<f64> {
     match contract {
         Contract::InContract { weekly_salary, .. } => weekly_salary
@@ -2295,11 +3022,681 @@ fn median_salary(mut salaries: Vec<f64>) -> f64 {
     }
     salaries.sort_by(|left, right| left.total_cmp(right));
     let middle = salaries.len() / 2;
-    if salaries.len() % 2 == 0 {
+    if salaries.len().is_multiple_of(2) {
         (salaries[middle - 1] + salaries[middle]) / 2.0
     } else {
         salaries[middle]
     }
+}
+
+fn parse_replay_id_list(raw: &str) -> Result<Vec<usize>, &'static str> {
+    let mut replay_ids = Vec::new();
+    for value in raw.split(',').map(str::trim).filter(|value| !value.is_empty()) {
+        let replay_id = value.parse::<usize>().map_err(|_| "INVALID_REPLAY_ID")?;
+        if !replay_ids.contains(&replay_id) {
+            replay_ids.push(replay_id);
+        }
+    }
+    if replay_ids.is_empty() {
+        return Err("NO_REPLAY_IDS");
+    }
+    Ok(replay_ids)
+}
+
+fn read_team_replay_strategies(
+    scene: &mut Scene,
+    team_id: usize,
+    replay_ids: &[usize],
+) -> Result<String, &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+    if data.player_team_id() != team_id {
+        return Err("PLAYER_TEAM_ONLY");
+    }
+
+    let db = data.db();
+    if !db.teams.contains_key(&team_id) {
+        return Err("TEAM_NOT_FOUND");
+    }
+
+    macro_rules! strategy_snapshot {
+        ($strategy:expr) => {
+            format!(
+                "focused={:?};early_jungle={:?};early_serpen={:?};early_serpen_top={:?};object_buildup={:?};object_battle={:?};morgard_use={:?};tower_press={:?};morgard_defense={:?};object_finish={:?};minion_wave={:?};game_finish={:?}",
+                &$strategy.focused,
+                &$strategy.early_jungle,
+                &$strategy.early_serpen,
+                &$strategy.early_serpen_top,
+                &$strategy.object_buildup,
+                &$strategy.object_battle,
+                &$strategy.morgard_use,
+                &$strategy.tower_press,
+                &$strategy.morgard_defense,
+                &$strategy.object_finish,
+                &$strategy.minion_wave,
+                &$strategy.game_finish,
+            )
+        };
+    }
+
+    let mut raw = String::new();
+    for replay_id in replay_ids {
+        let Some(replay) = db.match_replays.get(replay_id) else {
+            append_tsv_row(
+                &mut raw,
+                &[
+                    replay_id.to_string(),
+                    "MISSING".to_string(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                ],
+            );
+            continue;
+        };
+
+        let blue_team_id = replay.blue_team_id;
+        let red_team_id = replay.red_team_id;
+        let (side, own_strategy, own_set_win) = if blue_team_id == team_id {
+            (
+                "Blue",
+                strategy_snapshot!(replay.blue_strategy),
+                replay.blue_team_win,
+            )
+        } else if red_team_id == team_id {
+            (
+                "Red",
+                strategy_snapshot!(replay.red_strategy),
+                !replay.blue_team_win,
+            )
+        } else {
+            append_tsv_row(
+                &mut raw,
+                &[
+                    replay_id.to_string(),
+                    "TEAM_NOT_IN_REPLAY".to_string(),
+                    String::new(),
+                    blue_team_id.to_string(),
+                    red_team_id.to_string(),
+                    String::new(),
+                    String::new(),
+                ],
+            );
+            continue;
+        };
+
+        append_tsv_row(
+            &mut raw,
+            &[
+                replay_id.to_string(),
+                "OK".to_string(),
+                side.to_string(),
+                blue_team_id.to_string(),
+                red_team_id.to_string(),
+                if own_set_win { "1".to_string() } else { "0".to_string() },
+                own_strategy,
+            ],
+        );
+    }
+    Ok(raw)
+}
+
+fn team_strategy_probe_payload(team_id: usize) -> Vec<u8> {
+    team_id.to_string().into_bytes()
+}
+
+fn parse_team_strategy_probe_payload(payload: &[u8]) -> Result<usize, &'static str> {
+    let text = std::str::from_utf8(payload).map_err(|_| "INVALID_PAYLOAD")?;
+    text.trim().parse::<usize>().map_err(|_| "INVALID_ID")
+}
+
+fn parse_team_strategy_values(raw: &str) -> Result<HashMap<String, String>, &'static str> {
+    let mut values = HashMap::new();
+    for line in raw.lines() {
+        let Some((key, value)) = line.split_once('\t') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        if !key.is_empty() && !value.is_empty() {
+            values.insert(key.to_string(), value.to_string());
+        }
+    }
+    for key in [
+        "focused",
+        "early_jungle",
+        "early_serpen",
+        "early_serpen_top",
+        "object_buildup",
+        "object_battle",
+        "morgard_use",
+        "tower_press",
+        "morgard_defense",
+        "object_finish",
+        "minion_wave",
+        "game_finish",
+    ] {
+        if !values.contains_key(key) {
+            return Err("MISSING_STRATEGY_VALUE");
+        }
+    }
+    Ok(values)
+}
+
+fn team_strategy_set_payload(team_id: usize, raw_strategy: &str) -> Vec<u8> {
+    format!("{team_id}|{}", hex_encode(raw_strategy)).into_bytes()
+}
+
+fn parse_team_strategy_set_payload(
+    payload: &[u8],
+) -> Result<(usize, String), &'static str> {
+    let text = std::str::from_utf8(payload).map_err(|_| "INVALID_PAYLOAD")?;
+    let mut parts = text.splitn(2, '|');
+    let team_id = parts
+        .next()
+        .ok_or("MISSING_VALUE")?
+        .parse::<usize>()
+        .map_err(|_| "INVALID_ID")?;
+    let raw_strategy = hex_decode(parts.next().ok_or("MISSING_VALUE")?)?;
+    parse_team_strategy_values(&raw_strategy)?;
+    Ok((team_id, raw_strategy))
+}
+
+fn probe_swap_team_strategy_client(
+    scene: &mut Scene,
+    team_id: usize,
+) -> Result<TeamManagementSnapshot, &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    {
+        let db = data.db();
+        if !db.teams.contains_key(&team_id) {
+            return Err("TEAM_NOT_FOUND");
+        }
+    }
+
+    if !data.send_mod_command(
+        MOD_ID,
+        "probe_swap_team_strategy",
+        team_strategy_probe_payload(team_id),
+    ) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+
+    {
+        let mut db = data.db_mut();
+        let Some(team) = db.teams.get_mut(&team_id) else {
+            return Err("TEAM_NOT_FOUND");
+        };
+        std::mem::swap(&mut team.strategy, &mut team.last_strategy);
+    }
+
+    read_team_management(scene, team_id)
+}
+
+
+fn set_team_strategy_client(
+    scene: &mut Scene,
+    team_id: usize,
+    raw_strategy: &str,
+) -> Result<TeamManagementSnapshot, &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+    if data.player_team_id() != team_id {
+        return Err("PLAYER_TEAM_ONLY");
+    }
+    let values = parse_team_strategy_values(raw_strategy)?;
+
+    let new_strategy = {
+        let db = data.db();
+        let Some(target) = db.teams.get(&team_id) else {
+            return Err("TEAM_NOT_FOUND");
+        };
+        let mut strategy = target.strategy;
+
+        macro_rules! resolve_field {
+            ($field:ident, $key:literal) => {{
+                let desired = values.get($key).ok_or("MISSING_STRATEGY_VALUE")?;
+                db.teams
+                    .iter()
+                    .find_map(|(_, candidate)| {
+                        if format!("{:?}", candidate.strategy.$field) == desired.as_str() {
+                            Some(candidate.strategy.$field.clone())
+                        } else if format!("{:?}", candidate.last_strategy.$field) == desired.as_str() {
+                            Some(candidate.last_strategy.$field.clone())
+                        } else {
+                            candidate
+                                .team_color_strategy
+                                .$field
+                                .as_ref()
+                                .filter(|value| format!("{:?}", value) == desired.as_str())
+                                .cloned()
+                        }
+                    })
+                    .ok_or("UNKNOWN_STRATEGY_VALUE")?
+            }};
+        }
+
+        strategy.focused = resolve_field!(focused, "focused");
+        strategy.early_jungle = resolve_field!(early_jungle, "early_jungle");
+        strategy.early_serpen = resolve_field!(early_serpen, "early_serpen");
+        strategy.early_serpen_top = resolve_field!(early_serpen_top, "early_serpen_top");
+        strategy.object_buildup = resolve_field!(object_buildup, "object_buildup");
+        strategy.object_battle = resolve_field!(object_battle, "object_battle");
+        strategy.morgard_use = resolve_field!(morgard_use, "morgard_use");
+        strategy.tower_press = resolve_field!(tower_press, "tower_press");
+        strategy.morgard_defense = resolve_field!(morgard_defense, "morgard_defense");
+        strategy.object_finish = resolve_field!(object_finish, "object_finish");
+        strategy.minion_wave = resolve_field!(minion_wave, "minion_wave");
+        strategy.game_finish = resolve_field!(game_finish, "game_finish");
+        strategy
+    };
+
+    if !data.send_mod_command(
+        MOD_ID,
+        "set_team_strategy",
+        team_strategy_set_payload(team_id, raw_strategy),
+    ) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+
+    {
+        let mut db = data.db_mut();
+        let Some(team) = db.teams.get_mut(&team_id) else {
+            return Err("TEAM_NOT_FOUND");
+        };
+        team.strategy = new_strategy;
+    }
+
+    read_team_management(scene, team_id)
+}
+
+fn validate_team_merchandise_write(values: &TeamMerchandiseWriteValue) -> Result<(), &'static str> {
+    if values.product_type.trim().is_empty() {
+        return Err("INVALID_MERCHANDISE_TYPE");
+    }
+    values
+        .stock
+        .trim()
+        .parse::<u128>()
+        .map_err(|_| "INVALID_MERCHANDISE_STOCK")?;
+    let sell_price = values
+        .sell_price
+        .trim()
+        .parse::<f64>()
+        .map_err(|_| "INVALID_MERCHANDISE_SELL_PRICE")?;
+    if !sell_price.is_finite() || sell_price < 0.0 {
+        return Err("MERCHANDISE_SELL_PRICE_OUT_OF_RANGE");
+    }
+    Ok(())
+}
+
+fn team_merchandise_write_payload(
+    team_id: usize,
+    values: &TeamMerchandiseWriteValue,
+) -> Vec<u8> {
+    format!(
+        "{}|{}|{}|{}|{}",
+        team_id,
+        hex_encode(&values.product_type),
+        values.athlete_id,
+        values.stock.trim(),
+        values.sell_price.trim(),
+    )
+    .into_bytes()
+}
+
+fn parse_team_merchandise_write_payload(
+    payload: &[u8],
+) -> Result<(usize, TeamMerchandiseWriteValue), &'static str> {
+    let text = std::str::from_utf8(payload).map_err(|_| "INVALID_PAYLOAD")?;
+    let mut parts = text.split('|');
+    let team_id = parse_usize(parts.next())?;
+    let values = TeamMerchandiseWriteValue {
+        product_type: hex_decode(parts.next().ok_or("MISSING_VALUE")?)?,
+        athlete_id: parse_usize(parts.next())?,
+        stock: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        sell_price: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+    };
+    validate_team_merchandise_write(&values)?;
+    Ok((team_id, values))
+}
+
+fn set_team_merchandise_client(
+    scene: &mut Scene,
+    team_id: usize,
+    values: &TeamMerchandiseWriteValue,
+) -> Result<(), &'static str> {
+    validate_team_merchandise_write(values)?;
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+    if data.player_team_id() != team_id {
+        return Err("PLAYER_TEAM_ONLY");
+    }
+    {
+        let db = data.db();
+        let Some(team) = db.teams.get(&team_id) else {
+            return Err("TEAM_NOT_FOUND");
+        };
+        if !team.merchandise_products.iter().any(|product| {
+            product.athlete_id == values.athlete_id
+                && product.product_type.to_string() == values.product_type
+        }) {
+            return Err("MERCHANDISE_PRODUCT_NOT_FOUND");
+        }
+    }
+    if !data.send_mod_command(
+        MOD_ID,
+        "set_team_merchandise",
+        team_merchandise_write_payload(team_id, values),
+    ) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+    let mut db = data.db_mut();
+    let Some(team) = db.teams.get_mut(&team_id) else {
+        return Err("TEAM_NOT_FOUND");
+    };
+    let Some(product) = team.merchandise_products.iter_mut().find(|product| {
+        product.athlete_id == values.athlete_id
+            && product.product_type.to_string() == values.product_type
+    }) else {
+        return Err("MERCHANDISE_PRODUCT_NOT_FOUND");
+    };
+    product.stock = values
+        .stock
+        .trim()
+        .parse()
+        .map_err(|_| "MERCHANDISE_STOCK_TYPE_ERROR")?;
+    product.sell_price = values
+        .sell_price
+        .trim()
+        .parse()
+        .map_err(|_| "MERCHANDISE_SELL_PRICE_TYPE_ERROR")?;
+    Ok(())
+}
+
+fn displayed_team_fan_count(base_team_fans: u128, roster_player_fans: u128) -> Result<u128, &'static str> {
+    base_team_fans
+        .checked_add(roster_player_fans)
+        .ok_or("FAN_COUNT_OVERFLOW")
+}
+
+fn base_team_fan_count_from_displayed(
+    displayed_fans: u128,
+    roster_player_fans: u128,
+) -> Result<u128, &'static str> {
+    displayed_fans
+        .checked_sub(roster_player_fans)
+        .ok_or("FAN_COUNT_BELOW_PLAYER_FANS")
+}
+
+fn validate_team_fans_write(values: &TeamFansWriteValue) -> Result<(), &'static str> {
+    if values.popularity.trim().is_empty() {
+        return Err("INVALID_FAN_POPULARITY");
+    }
+    values
+        .fan_count
+        .trim()
+        .parse::<u128>()
+        .map_err(|_| "INVALID_FAN_COUNT")?;
+    if values.fan_expectation.trim().is_empty() {
+        return Err("INVALID_FAN_EXPECTATION");
+    }
+    if values.fan_satisfaction.trim().is_empty() {
+        return Err("INVALID_FAN_SATISFACTION");
+    }
+    let fan_momentum = values
+        .fan_momentum
+        .trim()
+        .parse::<i32>()
+        .map_err(|_| "INVALID_FAN_MOMENTUM")?;
+    if !(-5..=5).contains(&fan_momentum) {
+        return Err("FAN_MOMENTUM_OUT_OF_RANGE");
+    }
+    Ok(())
+}
+
+fn team_fans_write_payload(team_id: usize, values: &TeamFansWriteValue) -> Vec<u8> {
+    format!(
+        "{}|{}|{}|{}|{}|{}",
+        team_id,
+        values.popularity.trim(),
+        values.fan_count.trim(),
+        hex_encode(values.fan_expectation.trim()),
+        hex_encode(values.fan_satisfaction.trim()),
+        values.fan_momentum.trim(),
+    )
+    .into_bytes()
+}
+
+fn parse_team_fans_write_payload(
+    payload: &[u8],
+) -> Result<(usize, TeamFansWriteValue), &'static str> {
+    let text = std::str::from_utf8(payload).map_err(|_| "INVALID_PAYLOAD")?;
+    let mut parts = text.split('|');
+    let team_id = parse_usize(parts.next())?;
+    let values = TeamFansWriteValue {
+        popularity: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        fan_count: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+        fan_expectation: hex_decode(parts.next().ok_or("MISSING_VALUE")?)?,
+        fan_satisfaction: hex_decode(parts.next().ok_or("MISSING_VALUE")?)?,
+        fan_momentum: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+    };
+    validate_team_fans_write(&values)?;
+    Ok((team_id, values))
+}
+
+fn set_team_fans_client(
+    scene: &mut Scene,
+    team_id: usize,
+    values: &TeamFansWriteValue,
+) -> Result<(), &'static str> {
+    validate_team_fans_write(values)?;
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+    if data.player_team_id() != team_id {
+        return Err("PLAYER_TEAM_ONLY");
+    }
+    let (resolved_expectation, resolved_satisfaction, roster_player_fans) = {
+        let db = data.db();
+        if !db.teams.contains_key(&team_id) {
+            return Err("TEAM_NOT_FOUND");
+        }
+        let expectation = db
+            .teams
+            .iter()
+            .find_map(|(_, candidate)| {
+                if format!("{:?}", candidate.fan_expectation) == values.fan_expectation.trim() {
+                    Some(candidate.fan_expectation)
+                } else {
+                    None
+                }
+            })
+            .ok_or("UNKNOWN_FAN_EXPECTATION")?;
+        let satisfaction = db
+            .teams
+            .iter()
+            .find_map(|(_, candidate)| {
+                if format!("{:?}", candidate.fan_satisfaction) == values.fan_satisfaction.trim() {
+                    Some(candidate.fan_satisfaction)
+                } else {
+                    None
+                }
+            })
+            .ok_or("UNKNOWN_FAN_SATISFACTION")?;
+        let player_fans = db
+            .athletes
+            .values()
+            .filter_map(|athlete| {
+                if matches!(
+                    &athlete.contract,
+                    Contract::InContract { team_id: athlete_team_id, .. } if *athlete_team_id == team_id
+                ) {
+                    athlete.management.fan_count.to_string().parse::<u128>().ok()
+                } else {
+                    None
+                }
+            })
+            .sum::<u128>();
+        (expectation, satisfaction, player_fans)
+    };
+    let displayed_fan_count = values
+        .fan_count
+        .trim()
+        .parse::<u128>()
+        .map_err(|_| "INVALID_FAN_COUNT")?;
+    let base_fan_count =
+        base_team_fan_count_from_displayed(displayed_fan_count, roster_player_fans)?;
+    if !data.send_mod_command(
+        MOD_ID,
+        "set_team_fans",
+        team_fans_write_payload(team_id, values),
+    ) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+    let mut db = data.db_mut();
+    let Some(team) = db.teams.get_mut(&team_id) else {
+        return Err("TEAM_NOT_FOUND");
+    };
+    team.popularity = values
+        .popularity
+        .trim()
+        .parse()
+        .map_err(|_| "FAN_POPULARITY_TYPE_ERROR")?;
+    team.fan_count = base_fan_count
+        .to_string()
+        .parse()
+        .map_err(|_| "FAN_COUNT_TYPE_ERROR")?;
+    team.fan_expectation = resolved_expectation;
+    team.fan_satisfaction = resolved_satisfaction;
+    team.fan_momentum = values
+        .fan_momentum
+        .trim()
+        .parse()
+        .map_err(|_| "FAN_MOMENTUM_TYPE_ERROR")?;
+    Ok(())
+}
+
+fn read_team_fan_momentum_probe(
+    scene: &mut Scene,
+    team_id: usize,
+) -> Result<String, &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+    let db = data.db();
+    let Some(team) = db.teams.get(&team_id) else {
+        return Err("TEAM_NOT_FOUND");
+    };
+    let rust_type = std::any::type_name_of_val(&team.fan_momentum);
+    let mut observed = db
+        .teams
+        .iter()
+        .map(|(id, candidate)| (*id, candidate.fan_momentum.to_string()))
+        .collect::<Vec<_>>();
+    observed.sort_by_key(|(id, _)| *id);
+    let numeric = observed
+        .iter()
+        .filter_map(|(_, value)| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite())
+        .collect::<Vec<_>>();
+    let observed_min = numeric.iter().copied().reduce(f64::min);
+    let observed_max = numeric.iter().copied().reduce(f64::max);
+    let signed_hint = rust_type
+        .rsplit("::")
+        .next()
+        .is_some_and(|name| name.starts_with('i') || name.starts_with('f'));
+
+    let mut raw = String::new();
+    append_tsv_row(&mut raw, &["team_id".to_string(), team_id.to_string()]);
+    append_tsv_row(&mut raw, &["rust_type".to_string(), rust_type.to_string()]);
+    append_tsv_row(
+        &mut raw,
+        &["current_raw".to_string(), team.fan_momentum.to_string()],
+    );
+    append_tsv_row(
+        &mut raw,
+        &["signed_type_hint".to_string(), signed_hint.to_string()],
+    );
+    append_tsv_row(
+        &mut raw,
+        &[
+            "observed_min".to_string(),
+            observed_min.map(|value| value.to_string()).unwrap_or_default(),
+        ],
+    );
+    append_tsv_row(
+        &mut raw,
+        &[
+            "observed_max".to_string(),
+            observed_max.map(|value| value.to_string()).unwrap_or_default(),
+        ],
+    );
+    append_tsv_row(
+        &mut raw,
+        &[
+            "display_scaling".to_string(),
+            "Bridge raw ToString output; no display scaling is applied.".to_string(),
+        ],
+    );
+    for (id, value) in observed {
+        append_tsv_row(
+            &mut raw,
+            &["observed_team".to_string(), id.to_string(), value],
+        );
+    }
+    Ok(raw)
+}
+
+fn read_team_strategy_options(scene: &mut Scene) -> Result<String, &'static str> {
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    let db = data.db();
+    let mut options = BTreeSet::<(String, String)>::new();
+
+    for team in db.teams.values() {
+        macro_rules! collect_field {
+            ($field:ident, $key:literal) => {{
+                options.insert(($key.to_string(), format!("{:?}", team.strategy.$field)));
+                options.insert((
+                    $key.to_string(),
+                    format!("{:?}", team.last_strategy.$field),
+                ));
+                if let Some(value) = team.team_color_strategy.$field.as_ref() {
+                    options.insert(($key.to_string(), format!("{value:?}")));
+                }
+            }};
+        }
+
+        collect_field!(focused, "focused");
+        collect_field!(early_jungle, "early_jungle");
+        collect_field!(early_serpen, "early_serpen");
+        collect_field!(early_serpen_top, "early_serpen_top");
+        collect_field!(object_buildup, "object_buildup");
+        collect_field!(object_battle, "object_battle");
+        collect_field!(morgard_use, "morgard_use");
+        collect_field!(tower_press, "tower_press");
+        collect_field!(morgard_defense, "morgard_defense");
+        collect_field!(object_finish, "object_finish");
+        collect_field!(minion_wave, "minion_wave");
+        collect_field!(game_finish, "game_finish");
+    }
+
+    let mut raw = String::new();
+    for (key, value) in options {
+        append_tsv_row(&mut raw, &[key, value]);
+    }
+    Ok(raw)
 }
 
 fn read_contract_defaults(
@@ -2312,7 +3709,7 @@ fn read_contract_defaults(
     };
 
     let db = data.db();
-    if db.teams.get(&destination_team_id).is_none() {
+    if !db.teams.contains_key(&destination_team_id) {
         return Err("DESTINATION_TEAM_NOT_FOUND");
     }
 
@@ -2320,26 +3717,26 @@ fn read_contract_defaults(
     // save-specific date source without relying on private client internals.
     let mut latest_date = db
         .teams
-        .iter()
-        .flat_map(|(_, team)| team.news.iter())
+        .values()
+        .flat_map(|team| team.news.iter())
         .filter_map(|news| news.date.to_string().get(..10).map(|value| value.to_string()))
         .max();
 
     // A very early save can have little or no news. Active contract starts provide
     // a safe fallback and are always valid ISO dates in a normal career database.
-    for (_, athlete) in db.athletes.iter() {
+    for athlete in db.athletes.values() {
         if let Contract::InContract { start_date, .. } = &athlete.contract {
             if let Some(date) = start_date.to_string().get(..10).map(|value| value.to_string()) {
-                if latest_date.as_ref().map_or(true, |current| date.as_str() > current.as_str()) {
+                if latest_date.as_ref().is_none_or(|current| date.as_str() > current.as_str()) {
                     latest_date = Some(date);
                 }
             }
         }
     }
-    for (_, staff) in db.staffs.iter() {
+    for staff in db.staffs.values() {
         if let Contract::InContract { start_date, .. } = &staff.contract {
             if let Some(date) = start_date.to_string().get(..10).map(|value| value.to_string()) {
-                if latest_date.as_ref().map_or(true, |current| date.as_str() > current.as_str()) {
+                if latest_date.as_ref().is_none_or(|current| date.as_str() > current.as_str()) {
                     latest_date = Some(date);
                 }
             }
@@ -2356,8 +3753,8 @@ fn read_contract_defaults(
     let team_salaries = match entity {
         ContractDefaultsEntity::Player => db
             .athletes
-            .iter()
-            .filter_map(|(_, athlete)| match &athlete.contract {
+            .values()
+            .filter_map(|athlete| match &athlete.contract {
                 Contract::InContract { team_id, .. } if *team_id == destination_team_id => {
                     contract_annual_salary(&athlete.contract)
                 }
@@ -2366,8 +3763,8 @@ fn read_contract_defaults(
             .collect::<Vec<_>>(),
         ContractDefaultsEntity::Staff => db
             .staffs
-            .iter()
-            .filter_map(|(_, staff)| match &staff.contract {
+            .values()
+            .filter_map(|staff| match &staff.contract {
                 Contract::InContract { team_id, .. } if *team_id == destination_team_id => {
                     contract_annual_salary(&staff.contract)
                 }
@@ -2380,13 +3777,13 @@ fn read_contract_defaults(
         match entity {
             ContractDefaultsEntity::Player => db
                 .athletes
-                .iter()
-                .filter_map(|(_, athlete)| contract_annual_salary(&athlete.contract))
+                .values()
+                .filter_map(|athlete| contract_annual_salary(&athlete.contract))
                 .collect::<Vec<_>>(),
             ContractDefaultsEntity::Staff => db
                 .staffs
-                .iter()
-                .filter_map(|(_, staff)| contract_annual_salary(&staff.contract))
+                .values()
+                .filter_map(|staff| contract_annual_salary(&staff.contract))
                 .collect::<Vec<_>>(),
         }
     } else {
@@ -2400,21 +3797,40 @@ fn read_contract_defaults(
     })
 }
 
+fn parse_staff_role(raw: &str) -> Result<StaffRole, &'static str> {
+    match raw.trim() {
+        "HeadCoach" => Ok(StaffRole::HeadCoach),
+        "TrainingCoach" => Ok(StaffRole::TrainingCoach),
+        "Scouter" => Ok(StaffRole::Scouter),
+        "Analyst" => Ok(StaffRole::Analyst),
+        _ => Err("INVALID_STAFF_ROLE"),
+    }
+}
+
+fn validate_optional_staff_role(role: Option<&str>) -> Result<(), &'static str> {
+    if let Some(role) = role {
+        let _ = parse_staff_role(role)?;
+    }
+    Ok(())
+}
+
 fn move_staff_to_team_client(
     scene: &mut Scene,
     staff_id: usize,
     destination_team_id: usize,
+    role: Option<String>,
 ) -> Result<(), &'static str> {
     let Scene::InGame { data } = scene else {
         return Err("NOT_IN_GAME");
     };
+    validate_optional_staff_role(role.as_deref())?;
 
     {
         let db = data.db();
-        if db.teams.get(&destination_team_id).is_none() {
+        if !db.teams.contains_key(&destination_team_id) {
             return Err("TEAM_NOT_FOUND");
         }
-        if db.staffs.get(&staff_id).is_none() {
+        if !db.staffs.contains_key(&staff_id) {
             return Err("STAFF_NOT_FOUND");
         }
     }
@@ -2437,26 +3853,44 @@ fn move_staff_to_team_client(
             }
             Contract::FreeAgent { .. } => return Err("STAFF_FREE_AGENT_NEEDS_CONTRACT"),
         }
+        if let Some(role) = role.as_deref() {
+            staff.role = parse_staff_role(role)?;
+        }
     }
 
-    let payload = format!("{}|{}", staff_id, destination_team_id).into_bytes();
+    let payload = if let Some(role) = role.as_deref() {
+        format!("{}|{}|{}", staff_id, destination_team_id, role).into_bytes()
+    } else {
+        format!("{}|{}", staff_id, destination_team_id).into_bytes()
+    };
     if !data.send_mod_command(MOD_ID, "move_staff_to_team", payload) {
         return Err("SERVER_COMMAND_FAILED");
     }
     Ok(())
 }
 
-fn parse_move_staff_payload(payload: &[u8]) -> Result<(usize, usize), &'static str> {
+fn parse_move_staff_payload(
+    payload: &[u8],
+) -> Result<(usize, usize, Option<String>), &'static str> {
     let text = std::str::from_utf8(payload).map_err(|_| "INVALID_PAYLOAD")?;
     let mut parts = text.split('|');
-    Ok((parse_usize(parts.next())?, parse_usize(parts.next())?))
+    let staff_id = parse_usize(parts.next())?;
+    let team_id = parse_usize(parts.next())?;
+    let role = parts
+        .next()
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string);
+    validate_optional_staff_role(role.as_deref())?;
+    Ok((staff_id, team_id, role))
 }
 
 fn move_staff_to_team_server(
     ctx: &mut ServerModContext,
     staff_id: usize,
     destination_team_id: usize,
+    role: Option<String>,
 ) -> Result<(), &'static str> {
+    validate_optional_staff_role(role.as_deref())?;
     if ctx.database.teams.get(destination_team_id).is_none() {
         return Err("TEAM_NOT_FOUND");
     }
@@ -2473,6 +3907,9 @@ fn move_staff_to_team_server(
             *team_id = destination_team_id;
             transfer_requests.clear();
             recruit_requests.clear();
+            if let Some(role) = role.as_deref() {
+                staff.role = parse_staff_role(role)?;
+            }
             Ok(())
         }
         Contract::FreeAgent { .. } => Err("STAFF_FREE_AGENT_NEEDS_CONTRACT"),
@@ -2524,10 +3961,10 @@ fn move_player_to_team_client(
 
     {
         let db = data.db();
-        if db.teams.get(&destination_team_id).is_none() {
+        if !db.teams.contains_key(&destination_team_id) {
             return Err("TEAM_NOT_FOUND");
         }
-        if db.athletes.get(&athlete_id).is_none() {
+        if !db.athletes.contains_key(&athlete_id) {
             return Err("PLAYER_NOT_FOUND");
         }
     }
@@ -2701,7 +4138,7 @@ fn detected_region_ids(scene: &mut Scene) -> Result<Vec<usize>, &'static str> {
 
     let db = data.db();
     let mut region_ids = Vec::new();
-    for (_, athlete) in db.athletes.iter() {
+    for athlete in db.athletes.values() {
         if let Some(region_id) = athlete.get_primary_region() {
             region_ids.push(region_id);
         }
@@ -2959,15 +4396,12 @@ fn apply_contract_end_to_contract(
     requested: &str,
     free_agent_error: &'static str,
 ) -> Result<(), &'static str> {
-    let requested = validate_contract_end_date_text(requested)?;
+    // Reuse the exact full-contract serialization already validated by the
+    // Player/Staff Contract Editor. The wire command remains YYYY-MM-DD, while
+    // the game-facing Contract end value is normalized to end-of-day.
+    let candidate = contract_end_text(requested)?;
     match contract {
         Contract::InContract { end_date, .. } => {
-            let current = end_date.to_string();
-            let candidate = if current.len() > 10 {
-                format!("{}{}", requested, &current[10..])
-            } else {
-                requested.to_string()
-            };
             *end_date = candidate.parse().map_err(|_| "INVALID_CONTRACT_DATE")?;
             Ok(())
         }
@@ -3286,10 +4720,10 @@ fn write_player_contract(
 
     {
         let db = data.db();
-        if db.teams.get(&values.team_id).is_none() {
+        if !db.teams.contains_key(&values.team_id) {
             return Err("TEAM_NOT_FOUND");
         }
-        if db.athletes.get(&athlete_id).is_none() {
+        if !db.athletes.contains_key(&athlete_id) {
             return Err("PLAYER_NOT_FOUND");
         }
     }
@@ -3379,10 +4813,10 @@ fn write_staff_contract(
 
     {
         let db = data.db();
-        if db.teams.get(&values.team_id).is_none() {
+        if !db.teams.contains_key(&values.team_id) {
             return Err("TEAM_NOT_FOUND");
         }
-        if db.staffs.get(&staff_id).is_none() {
+        if !db.staffs.contains_key(&staff_id) {
             return Err("STAFF_NOT_FOUND");
         }
     }
@@ -4491,6 +5925,71 @@ fn process_game_requests(scene: &mut Scene) {
                 };
                 let _ = reply.send(response);
             }
+            GameRequest::SetTeamMerchandise {
+                team_id,
+                values,
+                reply,
+            } => {
+                let response = match set_team_merchandise_client(scene, team_id, &values) {
+                    Ok(()) => "OK|TEAM_MERCHANDISE".to_string(),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::SetTeamFans {
+                team_id,
+                values,
+                reply,
+            } => {
+                let response = match set_team_fans_client(scene, team_id, &values) {
+                    Ok(()) => "OK|TEAM_FANS".to_string(),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::GetTeamFanMomentumProbe { team_id, reply } => {
+                let response = match read_team_fan_momentum_probe(scene, team_id) {
+                    Ok(raw) => response_ok_team_fan_momentum_probe(&raw),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::GetTeamStrategyOptions { reply } => {
+                let response = match read_team_strategy_options(scene) {
+                    Ok(raw) => response_ok_team_strategy_options(&raw),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::GetTeamReplayStrategies {
+                team_id,
+                replay_ids,
+                reply,
+            } => {
+                let response = match read_team_replay_strategies(scene, team_id, &replay_ids) {
+                    Ok(raw) => response_ok_team_replay_strategies(&raw),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::ProbeSwapTeamStrategy { team_id, reply } => {
+                let response = match probe_swap_team_strategy_client(scene, team_id) {
+                    Ok(snapshot) => response_ok_team_management(snapshot),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::SetTeamStrategy {
+                team_id,
+                raw_strategy,
+                reply,
+            } => {
+                let response = match set_team_strategy_client(scene, team_id, &raw_strategy) {
+                    Ok(snapshot) => response_ok_team_management(snapshot),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
             GameRequest::GetContractDefaults {
                 entity,
                 team_id,
@@ -4505,9 +6004,10 @@ fn process_game_requests(scene: &mut Scene) {
             GameRequest::MoveStaffToTeam {
                 staff_id,
                 team_id,
+                role,
                 reply,
             } => {
-                let response = match move_staff_to_team_client(scene, staff_id, team_id) {
+                let response = match move_staff_to_team_client(scene, staff_id, team_id, role) {
                     Ok(()) => "OK|MOVE_STAFF".to_string(),
                     Err(reason) => format!("ERR|{reason}"),
                 };
@@ -4584,6 +6084,102 @@ fn process_game_requests(scene: &mut Scene) {
                     }
                     Err(reason) => format!("ERR|{reason}"),
                 };
+                let _ = reply.send(response);
+            }
+            GameRequest::GetGlobalLeagues { reply } => {
+                let started = Instant::now();
+                let (response, records_returned) = match read_global_leagues() {
+                    Ok((capture_index, records)) => {
+                        let records_returned = records.len();
+                        (response_ok_global_leagues(capture_index, &records), records_returned)
+                    }
+                    Err(reason) => (format!("ERR|{reason}"), 0),
+                };
+                record_global_history_response_metric(
+                    "GET_LEAGUES",
+                    None,
+                    records_returned,
+                    response.len(),
+                    started,
+                );
+                let _ = reply.send(response);
+            }
+            GameRequest::GetGlobalLeagueCompetition { league_id, reply } => {
+                let started = Instant::now();
+                let (response, records_returned) = match read_global_league_competition(league_id) {
+                    Ok((capture_index, json)) => (
+                        response_ok_global_league_competition(capture_index, league_id, &json),
+                        1,
+                    ),
+                    Err(reason) => (format!("ERR|{reason}"), 0),
+                };
+                record_global_history_response_metric(
+                    "GET_LEAGUE_COMPETITION",
+                    Some(league_id),
+                    records_returned,
+                    response.len(),
+                    started,
+                );
+                let _ = reply.send(response);
+            }
+            GameRequest::GetGlobalTeamSchedule { team_id, reply } => {
+                let started = Instant::now();
+                let (response, records_returned) = match (
+                    current_player_team_id(scene),
+                    read_global_team_matches(team_id, false),
+                ) {
+                    (Ok(player_team_id), Ok((capture_index, records))) => {
+                        let records_returned = records.len();
+                        (
+                            response_ok_global_team_records(
+                                "GLOBAL_TEAM_SCHEDULE",
+                                capture_index,
+                                player_team_id,
+                                team_id,
+                                &records,
+                            ),
+                            records_returned,
+                        )
+                    }
+                    (Err(reason), _) | (_, Err(reason)) => (format!("ERR|{reason}"), 0),
+                };
+                record_global_history_response_metric(
+                    "GET_TEAM_SCHEDULE",
+                    Some(team_id),
+                    records_returned,
+                    response.len(),
+                    started,
+                );
+                let _ = reply.send(response);
+            }
+            GameRequest::GetGlobalTeamHistory { team_id, reply } => {
+                let started = Instant::now();
+                let (response, records_returned) = match (
+                    current_player_team_id(scene),
+                    read_global_team_matches(team_id, true),
+                ) {
+                    (Ok(player_team_id), Ok((capture_index, records))) => {
+                        let records_returned = records.len();
+                        (
+                            response_ok_global_team_records(
+                                "GLOBAL_TEAM_HISTORY",
+                                capture_index,
+                                player_team_id,
+                                team_id,
+                                &records,
+                            ),
+                            records_returned,
+                        )
+                    }
+                    (Err(reason), _) | (_, Err(reason)) => (format!("ERR|{reason}"), 0),
+                };
+                record_global_history_response_metric(
+                    "GET_TEAM_HISTORY",
+                    Some(team_id),
+                    records_returned,
+                    response.len(),
+                    started,
+                );
                 let _ = reply.send(response);
             }
             GameRequest::SetChampionMastery {
@@ -4948,6 +6544,25 @@ fn handle_client(mut stream: TcpStream, request_tx: &Sender<GameRequest>) {
                 reply,
             })
         }
+        "GET_LEAGUES" => send_game_request(request_tx, |reply| GameRequest::GetGlobalLeagues { reply }),
+        "GET_LEAGUE_COMPETITION" => match parse_usize(parts.next()) {
+            Ok(league_id) => send_game_request(request_tx, |reply| {
+                GameRequest::GetGlobalLeagueCompetition { league_id, reply }
+            }),
+            Err(reason) => format!("ERR|{reason}"),
+        },
+        "GET_TEAM_SCHEDULE" => match parse_usize(parts.next()) {
+            Ok(team_id) => send_game_request(request_tx, |reply| {
+                GameRequest::GetGlobalTeamSchedule { team_id, reply }
+            }),
+            Err(reason) => format!("ERR|{reason}"),
+        },
+        "GET_TEAM_HISTORY" => match parse_usize(parts.next()) {
+            Ok(team_id) => send_game_request(request_tx, |reply| {
+                GameRequest::GetGlobalTeamHistory { team_id, reply }
+            }),
+            Err(reason) => format!("ERR|{reason}"),
+        },
         "GET_TEAMS" => send_game_request(request_tx, |reply| GameRequest::GetTeams { reply }),
         "GET_TEAM_PROBE" => match parse_usize(parts.next()) {
             Ok(team_id) => send_game_request(request_tx, |reply| {
@@ -4961,6 +6576,103 @@ fn handle_client(mut stream: TcpStream, request_tx: &Sender<GameRequest>) {
             }),
             Err(reason) => format!("ERR|{reason}"),
         },
+        "SET_TEAM_MERCHANDISE" => {
+            let parsed: Result<(usize, TeamMerchandiseWriteValue), &'static str> = (|| {
+                let team_id = parse_usize(parts.next())?;
+                let values = TeamMerchandiseWriteValue {
+                    product_type: hex_decode(parts.next().ok_or("MISSING_VALUE")?)?,
+                    athlete_id: parse_usize(parts.next())?,
+                    stock: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+                    sell_price: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+                };
+                validate_team_merchandise_write(&values)?;
+                Ok((team_id, values))
+            })();
+            match parsed {
+                Ok((team_id, values)) => send_game_request(request_tx, |reply| {
+                    GameRequest::SetTeamMerchandise {
+                        team_id,
+                        values,
+                        reply,
+                    }
+                }),
+                Err(reason) => format!("ERR|{reason}"),
+            }
+        }
+        "SET_TEAM_FANS" => {
+            let parsed: Result<(usize, TeamFansWriteValue), &'static str> = (|| {
+                let team_id = parse_usize(parts.next())?;
+                let values = TeamFansWriteValue {
+                    popularity: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+                    fan_count: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+                    fan_expectation: hex_decode(parts.next().ok_or("MISSING_VALUE")?)?,
+                    fan_satisfaction: hex_decode(parts.next().ok_or("MISSING_VALUE")?)?,
+                    fan_momentum: parts.next().ok_or("MISSING_VALUE")?.to_string(),
+                };
+                validate_team_fans_write(&values)?;
+                Ok((team_id, values))
+            })();
+            match parsed {
+                Ok((team_id, values)) => send_game_request(request_tx, |reply| {
+                    GameRequest::SetTeamFans {
+                        team_id,
+                        values,
+                        reply,
+                    }
+                }),
+                Err(reason) => format!("ERR|{reason}"),
+            }
+        }
+        "GET_TEAM_FAN_MOMENTUM_PROBE" => match parse_usize(parts.next()) {
+            Ok(team_id) => send_game_request(request_tx, |reply| {
+                GameRequest::GetTeamFanMomentumProbe { team_id, reply }
+            }),
+            Err(reason) => format!("ERR|{reason}"),
+        },
+        "GET_TEAM_STRATEGY_OPTIONS" => send_game_request(request_tx, |reply| {
+            GameRequest::GetTeamStrategyOptions { reply }
+        }),
+        "GET_TEAM_REPLAY_STRATEGIES" => {
+            let parsed: Result<(usize, Vec<usize>), &'static str> = (|| {
+                let team_id = parse_usize(parts.next())?;
+                let replay_ids = parse_replay_id_list(parts.next().ok_or("MISSING_VALUE")?)?;
+                Ok((team_id, replay_ids))
+            })();
+            match parsed {
+                Ok((team_id, replay_ids)) => send_game_request(request_tx, |reply| {
+                    GameRequest::GetTeamReplayStrategies {
+                        team_id,
+                        replay_ids,
+                        reply,
+                    }
+                }),
+                Err(reason) => format!("ERR|{reason}"),
+            }
+        }
+        "PROBE_SWAP_TEAM_STRATEGY" => match parse_usize(parts.next()) {
+            Ok(team_id) => send_game_request(request_tx, |reply| {
+                GameRequest::ProbeSwapTeamStrategy { team_id, reply }
+            }),
+            Err(reason) => format!("ERR|{reason}"),
+        },
+        "SET_TEAM_STRATEGY" => {
+            let parsed: Result<(usize, String), &'static str> = (|| {
+                let team_id = parse_usize(parts.next())?;
+                let raw_strategy = hex_decode(parts.next().ok_or("MISSING_VALUE")?)?;
+                parse_team_strategy_values(&raw_strategy)?;
+                Ok((team_id, raw_strategy))
+            })();
+            match parsed {
+                Ok((team_id, raw_strategy)) => send_game_request(request_tx, |reply| {
+                    GameRequest::SetTeamStrategy {
+                        team_id,
+                        raw_strategy,
+                        reply,
+                    }
+                }),
+                Err(reason) => format!("ERR|{reason}"),
+            }
+        }
         "GET_CONTRACT_DEFAULTS" => {
             let parsed: Result<(ContractDefaultsEntity, usize), &'static str> = (|| {
                 let entity = match parts.next().ok_or("MISSING_VALUE")? {
@@ -4999,11 +6711,19 @@ fn handle_client(mut stream: TcpStream, request_tx: &Sender<GameRequest>) {
                     return;
                 }
             };
-            send_game_request(request_tx, |reply| GameRequest::MoveStaffToTeam {
-                staff_id,
-                team_id,
-                reply,
-            })
+            let role = parts
+                .next()
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string);
+            match validate_optional_staff_role(role.as_deref()) {
+                Ok(()) => send_game_request(request_tx, |reply| GameRequest::MoveStaffToTeam {
+                    staff_id,
+                    team_id,
+                    role,
+                    reply,
+                }),
+                Err(reason) => format!("ERR|{reason}"),
+            }
         }
         "SET_STAFF_FREE_AGENT" => match parse_usize(parts.next()) {
             Ok(staff_id) => send_game_request(request_tx, |reply| {
@@ -5403,7 +7123,7 @@ impl ModExtension for ModifierBridgeClient {
 struct ModifierBridgeServer;
 
 impl ModServerExtension for ModifierBridgeServer {
-    fn on_server_start(&self, _ctx: &mut ServerModContext) {
+    fn on_server_start(&self, ctx: &mut ServerModContext) {
         clear_contract_end_overrides();
         clear_staff_contract_end_overrides();
         clear_active_contract_overrides();
@@ -5413,6 +7133,9 @@ impl ModServerExtension for ModifierBridgeServer {
         // extension will re-send enabled settings for the newly loaded player team.
         TRANSFER_ALWAYS_SUCCESS_TEAM_ID.store(usize::MAX, Ordering::SeqCst);
         RECRUITMENT_INSTANT_RETRY_TEAM_ID.store(usize::MAX, Ordering::SeqCst);
+
+        clear_global_history_snapshot();
+        capture_global_history_snapshot(ctx);
     }
 
     fn before_management_tick(&self, ctx: &mut ServerModContext) {
@@ -5431,6 +7154,7 @@ impl ModServerExtension for ModifierBridgeServer {
         enforce_staff_contract_end_overrides(ctx, true);
         force_transfer_request_success(ctx);
         clear_player_recruitment_cooldowns(ctx);
+        capture_global_history_snapshot(ctx);
     }
 
     fn handle_command(
@@ -5488,11 +7212,182 @@ impl ModServerExtension for ModifierBridgeServer {
             return ModServerCommandResult::Handled;
         }
 
-        if command.command == "move_staff_to_team" {
-            let Ok((staff_id, team_id)) = parse_move_staff_payload(&command.payload) else {
+        if command.command == "probe_swap_team_strategy" {
+            let Ok(team_id) = parse_team_strategy_probe_payload(&command.payload) else {
                 return ModServerCommandResult::Handled;
             };
-            let _ = move_staff_to_team_server(ctx, staff_id, team_id);
+            if let Some(team) = ctx.database.teams.get_mut(team_id) {
+                std::mem::swap(&mut team.strategy, &mut team.last_strategy);
+            }
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "set_team_merchandise" {
+            let Ok((team_id, values)) = parse_team_merchandise_write_payload(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+            if let Some(team) = ctx.database.teams.get_mut(team_id) {
+                if let Some(product) = team.merchandise_products.iter_mut().find(|product| {
+                    product.athlete_id == values.athlete_id
+                        && product.product_type.to_string() == values.product_type
+                }) {
+                    if let (Ok(stock), Ok(sell_price)) = (
+                        values.stock.trim().parse(),
+                        values.sell_price.trim().parse(),
+                    ) {
+                        product.stock = stock;
+                        product.sell_price = sell_price;
+                    }
+                }
+            }
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "set_team_fans" {
+            let Ok((team_id, values)) = parse_team_fans_write_payload(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+
+            let resolved_expectation = ctx
+                .database
+                .teams
+                .iter()
+                .find_map(|candidate| {
+                    if format!("{:?}", candidate.fan_expectation)
+                        == values.fan_expectation.trim()
+                    {
+                        Some(candidate.fan_expectation)
+                    } else {
+                        None
+                    }
+                });
+            let resolved_satisfaction = ctx
+                .database
+                .teams
+                .iter()
+                .find_map(|candidate| {
+                    if format!("{:?}", candidate.fan_satisfaction)
+                        == values.fan_satisfaction.trim()
+                    {
+                        Some(candidate.fan_satisfaction)
+                    } else {
+                        None
+                    }
+                });
+            let roster_player_fans = ctx
+                .database
+                .athletes
+                .iter()
+                .filter_map(|athlete| {
+                    if matches!(
+                        &athlete.contract,
+                        Contract::InContract { team_id: athlete_team_id, .. } if *athlete_team_id == team_id
+                    ) {
+                        athlete.management.fan_count.to_string().parse::<u128>().ok()
+                    } else {
+                        None
+                    }
+                })
+                .sum::<u128>();
+            let displayed_fan_count = values.fan_count.trim().parse::<u128>().ok();
+            let base_fan_count = displayed_fan_count.and_then(|displayed| {
+                base_team_fan_count_from_displayed(displayed, roster_player_fans).ok()
+            });
+
+            if let (
+                Some(expectation),
+                Some(satisfaction),
+                Some(base_fan_count),
+                Some(team),
+            ) = (
+                resolved_expectation,
+                resolved_satisfaction,
+                base_fan_count,
+                ctx.database.teams.get_mut(team_id),
+            ) {
+                if let (Ok(popularity), Ok(fan_count), Ok(fan_momentum)) = (
+                    values.popularity.trim().parse(),
+                    base_fan_count.to_string().parse(),
+                    values.fan_momentum.trim().parse(),
+                ) {
+                    team.popularity = popularity;
+                    team.fan_count = fan_count;
+                    team.fan_expectation = expectation;
+                    team.fan_satisfaction = satisfaction;
+                    team.fan_momentum = fan_momentum;
+                }
+            }
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "set_team_strategy" {
+            let Ok((team_id, raw_strategy)) =
+                parse_team_strategy_set_payload(&command.payload)
+            else {
+                return ModServerCommandResult::Handled;
+            };
+            let Ok(values) = parse_team_strategy_values(&raw_strategy) else {
+                return ModServerCommandResult::Handled;
+            };
+
+            let new_strategy = (|| {
+                let db = &ctx.database;
+                let target = db.teams.get(team_id).ok_or("TEAM_NOT_FOUND")?;
+                let mut strategy = target.strategy;
+
+                macro_rules! resolve_field {
+                    ($field:ident, $key:literal) => {{
+                        let desired = values.get($key).ok_or("MISSING_STRATEGY_VALUE")?;
+                        db.teams
+                            .iter()
+                            .find_map(|candidate| {
+                                if format!("{:?}", candidate.strategy.$field) == desired.as_str() {
+                                    Some(candidate.strategy.$field.clone())
+                                } else if format!("{:?}", candidate.last_strategy.$field) == desired.as_str() {
+                                    Some(candidate.last_strategy.$field.clone())
+                                } else {
+                                    candidate
+                                        .team_color_strategy
+                                        .$field
+                                        .as_ref()
+                                        .filter(|value| format!("{:?}", value) == desired.as_str())
+                                        .cloned()
+                                }
+                            })
+                            .ok_or("UNKNOWN_STRATEGY_VALUE")?
+                    }};
+                }
+
+                strategy.focused = resolve_field!(focused, "focused");
+                strategy.early_jungle = resolve_field!(early_jungle, "early_jungle");
+                strategy.early_serpen = resolve_field!(early_serpen, "early_serpen");
+                strategy.early_serpen_top =
+                    resolve_field!(early_serpen_top, "early_serpen_top");
+                strategy.object_buildup = resolve_field!(object_buildup, "object_buildup");
+                strategy.object_battle = resolve_field!(object_battle, "object_battle");
+                strategy.morgard_use = resolve_field!(morgard_use, "morgard_use");
+                strategy.tower_press = resolve_field!(tower_press, "tower_press");
+                strategy.morgard_defense =
+                    resolve_field!(morgard_defense, "morgard_defense");
+                strategy.object_finish = resolve_field!(object_finish, "object_finish");
+                strategy.minion_wave = resolve_field!(minion_wave, "minion_wave");
+                strategy.game_finish = resolve_field!(game_finish, "game_finish");
+                Ok::<_, &'static str>(strategy)
+            })();
+
+            if let Ok(strategy) = new_strategy {
+                if let Some(team) = ctx.database.teams.get_mut(team_id) {
+                    team.strategy = strategy;
+                }
+            }
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "move_staff_to_team" {
+            let Ok((staff_id, team_id, role)) = parse_move_staff_payload(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+            let _ = move_staff_to_team_server(ctx, staff_id, team_id, role);
             return ModServerCommandResult::Handled;
         }
 
@@ -5748,6 +7643,260 @@ impl ModServerExtension for ModifierBridgeServer {
 }
 
 #[cfg(test)]
+mod global_history_wire_tests {
+    use super::*;
+
+    #[test]
+    fn global_history_responses_use_production_bridge_identity() {
+        let leagues = response_ok_global_leagues(7, &[r#"{"id":0,"name":"LCK"}"#.to_string()]);
+        assert!(leagues.starts_with("OK|GLOBAL_LEAGUES|0.2.59|0.5.5|7|1|"));
+
+        let competition = response_ok_global_league_competition(
+            7,
+            0,
+            r#"{"id":0,"league_type":"Spring"}"#,
+        );
+        assert!(competition.starts_with(
+            "OK|GLOBAL_LEAGUE_COMPETITION|0.2.59|0.5.5|7|0|"
+        ));
+    }
+
+    #[test]
+    fn global_team_response_preserves_capture_player_and_requested_team_ids() {
+        let response = response_ok_global_team_records(
+            "GLOBAL_TEAM_HISTORY",
+            7,
+            85,
+            89,
+            &[r#"{"id":787}"#.to_string()],
+        );
+        assert!(response.starts_with(
+            "OK|GLOBAL_TEAM_HISTORY|0.2.59|0.5.5|7|85|89|1|"
+        ));
+    }
+
+    #[test]
+    fn global_match_json_helpers_decode_normal_team_and_completed_state() {
+        let value: serde_json::Value = serde_json::from_str(
+            r#"{"team1":{"Normal":85},"team2":{"Normal":89},"running_state":{"End":{"winner":85}}}"#,
+        )
+        .unwrap();
+        assert_eq!(global_json_normal_team_id(&value, "team1"), Some(85));
+        assert_eq!(global_json_normal_team_id(&value, "team2"), Some(89));
+        assert!(global_json_is_completed_match(&value));
+    }
+
+    #[test]
+    fn bridge_local_json_encoder_round_trips_nested_values_and_escaping() {
+        let value = serde_json::json!({
+            "null": null,
+            "booleans": [true, false],
+            "numbers": [0, 42, -3.5],
+            "quote": "A\"B",
+            "backslash": "A\\B",
+            "controls": "line\nfeed\rcarriage\tend\u{0008}\u{000c}\u{0001}",
+            "unicode": "René 홍길동 日本語",
+            "array": [true, false, null, 42, {"nested": [1, 2, 3]}],
+            "object": {"key\"\\": "value"}
+        });
+
+        let encoded = global_json_value_to_string(&value);
+        assert_eq!(encoded, global_json_value_to_string(&value));
+        assert!(!encoded.chars().any(|ch| ch <= '\u{001f}'));
+
+        let decoded: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn global_json_with_id_uses_bridge_local_encoder_and_preserves_record_id() {
+        let value = serde_json::json!({"name": "LCK", "active": true});
+        let encoded = global_json_with_id(73, value.clone()).unwrap();
+        assert_eq!(encoded, global_json_with_id(73, value).unwrap());
+
+        let decoded: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.get("id").and_then(serde_json::Value::as_u64), Some(73));
+        assert_eq!(decoded.get("name").and_then(serde_json::Value::as_str), Some("LCK"));
+        assert_eq!(decoded.get("active").and_then(serde_json::Value::as_bool), Some(true));
+    }
+
+    #[test]
+    fn global_history_snapshot_filters_requested_team_and_completed_state() {
+        let snapshot = GlobalHistorySnapshot {
+            capture_index: 3,
+            league_records: Vec::new(),
+            league_competition_records: HashMap::new(),
+            match_records: vec![
+                GlobalMatchRecord {
+                    json: r#"{"id":787}"#.to_string(),
+                    completed: true,
+                },
+                GlobalMatchRecord {
+                    json: r#"{"id":788}"#.to_string(),
+                    completed: false,
+                },
+                GlobalMatchRecord {
+                    json: r#"{"id":789}"#.to_string(),
+                    completed: true,
+                },
+            ],
+            team_match_indices: HashMap::from([
+                (85, vec![0, 1]),
+                (89, vec![0]),
+                (90, vec![1]),
+                (91, vec![2]),
+                (92, vec![2]),
+            ]),
+            metrics: GlobalHistoryCaptureMetrics::default(),
+        };
+
+        assert_eq!(filter_global_team_records(&snapshot, 85, false).len(), 2);
+        assert_eq!(filter_global_team_records(&snapshot, 85, true).len(), 1);
+        assert_eq!(filter_global_team_records(&snapshot, 89, true).len(), 1);
+        assert!(filter_global_team_records(&snapshot, 99, false).is_empty());
+    }
+
+    #[test]
+    fn recent_match_selector_is_bounded_deterministic_and_keeps_highest_ids() {
+        assert!(select_recent_global_match_ids(Vec::new(), 10).is_empty());
+        assert_eq!(select_recent_global_match_ids(vec![42], 10), vec![42]);
+
+        let ascending = (0..12_500).collect::<Vec<_>>();
+        let mut shuffled = ascending.clone();
+        shuffled.reverse();
+        let selected = select_recent_global_match_ids(ascending, GLOBAL_HISTORY_RECORD_CAP);
+        let selected_again = select_recent_global_match_ids(shuffled, GLOBAL_HISTORY_RECORD_CAP);
+
+        assert_eq!(selected.len(), GLOBAL_HISTORY_RECORD_CAP);
+        assert_eq!(selected, selected_again);
+        assert_eq!(selected.first().copied(), Some(2_500));
+        assert_eq!(selected.last().copied(), Some(12_499));
+    }
+
+    #[test]
+    fn compact_league_competition_projection_preserves_editor_fields_only() {
+        let source = serde_json::json!({
+            "league_type": "Spring",
+            "finalized": true,
+            "unused_root": {"large": [1, 2, 3]},
+            "standings": {
+                "85": {
+                    "win": 4, "lose": 1, "set_win": 9, "set_lose": 3,
+                    "kill": 120, "death": 80, "assist": 300, "unused": 999
+                }
+            },
+            "statistics": {
+                "11": {
+                    "matches": 5, "wins": 4, "kills": 30, "deaths": 8, "assists": 41,
+                    "mvp": 2, "rating": 91, "gold": 12345, "dealing": 45678,
+                    "healing": 10, "tanking": 9000, "solo_kill": 3, "solo_killed": 1,
+                    "unused": "drop",
+                    "champion_detail": {
+                        "swordman": {
+                            "matches": 3, "wins": 3, "rating": 95, "dealing": 222,
+                            "healing": 0, "tanking": 100, "unused": 123
+                        }
+                    }
+                }
+            }
+        });
+
+        let compact = global_compact_league_competition_value(&source);
+        assert_eq!(compact.get("league_type"), source.get("league_type"));
+        assert_eq!(compact.get("finalized"), source.get("finalized"));
+        assert!(compact.get("unused_root").is_none());
+        assert!(compact["standings"]["85"].get("unused").is_none());
+        assert!(compact["statistics"]["11"].get("unused").is_none());
+        assert!(compact["statistics"]["11"]["champion_detail"]["swordman"]
+            .get("unused")
+            .is_none());
+        assert_eq!(compact["statistics"]["11"]["rating"], 91);
+        assert_eq!(compact["standings"]["85"]["set_win"], 9);
+    }
+
+    #[test]
+    fn compact_match_projection_preserves_schedule_and_history_contract() {
+        let source = serde_json::json!({
+            "date": "2034-06-10T16:30:00",
+            "is_practice": false,
+            "team1": {"Normal": 85, "unused": "drop"},
+            "team2": {"Normal": 89},
+            "replays": [1001, 1002, 1003],
+            "running_state": {
+                "End": {
+                    "team1_score": 2,
+                    "team2_score": 1,
+                    "winner": 85,
+                    "unused": {"large": true}
+                }
+            },
+            "unused_match_payload": [1, 2, 3, 4]
+        });
+
+        let compact = global_compact_match_value(&source);
+        assert_eq!(global_json_normal_team_id(&compact, "team1"), Some(85));
+        assert_eq!(global_json_normal_team_id(&compact, "team2"), Some(89));
+        assert!(global_json_is_completed_match(&compact));
+        assert_eq!(compact["replays"].as_array().map(Vec::len), Some(3));
+        assert_eq!(compact["running_state"]["End"]["winner"], 85);
+        assert!(compact.get("unused_match_payload").is_none());
+        assert!(compact["running_state"]["End"].get("unused").is_none());
+    }
+
+    #[test]
+    fn team_match_index_scales_to_ten_thousand_records_and_filters_before_clone() {
+        let mut snapshot = GlobalHistorySnapshot::default();
+        for record_index in 0..GLOBAL_HISTORY_RECORD_CAP {
+            let team_id = record_index % 200;
+            snapshot.match_records.push(GlobalMatchRecord {
+                json: format!(r#"{{"id":{record_index}}}"#),
+                completed: record_index % 2 == 0,
+            });
+            index_global_match_for_team(
+                &mut snapshot.team_match_indices,
+                Some(team_id),
+                record_index,
+            );
+        }
+
+        assert_eq!(filter_global_team_records(&snapshot, 17, false).len(), 50);
+        assert_eq!(filter_global_team_records(&snapshot, 17, true).len(), 0);
+        assert_eq!(filter_global_team_records(&snapshot, 18, true).len(), 50);
+        assert!(filter_global_team_records(&snapshot, 999, false).is_empty());
+    }
+
+    #[test]
+    fn very_large_single_team_history_remains_bounded_by_snapshot_cap() {
+        let mut snapshot = GlobalHistorySnapshot::default();
+        for record_index in 0..GLOBAL_HISTORY_RECORD_CAP {
+            snapshot.match_records.push(GlobalMatchRecord {
+                json: format!(r#"{{"id":{record_index}}}"#),
+                completed: true,
+            });
+            index_global_match_for_team(
+                &mut snapshot.team_match_indices,
+                Some(85),
+                record_index,
+            );
+        }
+
+        let records = filter_global_team_records(&snapshot, 85, true);
+        assert_eq!(records.len(), GLOBAL_HISTORY_RECORD_CAP);
+        assert!(records.first().is_some_and(|record| record.contains(r#""id":0"#)));
+        assert!(records.last().is_some_and(|record| record.contains(r#""id":9999"#)));
+    }
+
+    #[test]
+    fn streamed_hex_payload_matches_existing_wire_format() {
+        let records = vec!["A|B".to_string(), "René".to_string(), "{}".to_string()];
+        let legacy = records.iter().map(|record| hex_encode(record)).collect::<Vec<_>>().join(";");
+        assert_eq!(hex_join_records(&records), legacy);
+        assert_eq!(hex_join_records(&[]), "");
+        assert_eq!(hex_join_records(&["x".to_string()]), hex_encode("x"));
+    }
+}
+
+#[cfg(test)]
 mod name_payload_tests {
     use super::*;
 
@@ -5768,6 +7917,196 @@ mod name_payload_tests {
         assert!(validate_entity_name("   ").is_err());
         assert!(validate_entity_name("line\nbreak").is_err());
         assert!(validate_entity_name(&"x".repeat(101)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod team_quick_edit_payload_tests {
+    use super::*;
+
+    #[test]
+    fn quick_contract_end_reuses_full_contract_editor_end_of_day_serialization() {
+        assert_eq!(
+            contract_end_text("2032-12-31").unwrap(),
+            "2032-12-31T23:59:59"
+        );
+        assert_eq!(validate_contract_end_date_text("2032-12-31"), Ok("2032-12-31"));
+        assert!(validate_contract_end_date_text("2032-12-31T23:59:59").is_err());
+        assert_eq!(
+            player_contract_end_payload(42, &PlayerContractEndValue {
+                end_date: "2032-12-31".to_string(),
+            }),
+            b"42|2032-12-31"
+        );
+        assert_eq!(
+            staff_contract_end_payload(7, &StaffContractEndValue {
+                end_date: "2032-12-31".to_string(),
+            }),
+            b"7|2032-12-31"
+        );
+    }
+
+    #[test]
+    fn team_merchandise_payload_round_trips_only_target_fields() {
+        let values = TeamMerchandiseWriteValue {
+            product_type: "Uniform|Special".to_string(),
+            athlete_id: 42,
+            stock: "123".to_string(),
+            sell_price: "49.5".to_string(),
+        };
+        let payload = team_merchandise_write_payload(85, &values);
+        let (team_id, decoded) = parse_team_merchandise_write_payload(&payload).unwrap();
+        assert_eq!(team_id, 85);
+        assert_eq!(decoded.product_type, values.product_type);
+        assert_eq!(decoded.athlete_id, 42);
+        assert_eq!(decoded.stock, "123");
+        assert_eq!(decoded.sell_price, "49.5");
+    }
+
+    #[test]
+    fn team_fans_payload_round_trips_observed_satisfaction_text() {
+        let values = TeamFansWriteValue {
+            popularity: "74".to_string(),
+            fan_count: "120000".to_string(),
+            fan_expectation: "Lower|Observed".to_string(),
+            fan_satisfaction: "VerySatisfied|Observed".to_string(),
+            fan_momentum: "5".to_string(),
+        };
+        let payload = team_fans_write_payload(85, &values);
+        let (team_id, decoded) = parse_team_fans_write_payload(&payload).unwrap();
+        assert_eq!(team_id, 85);
+        assert_eq!(decoded.popularity, "74");
+        assert_eq!(decoded.fan_count, "120000");
+        assert_eq!(decoded.fan_expectation, values.fan_expectation);
+        assert_eq!(decoded.fan_satisfaction, values.fan_satisfaction);
+        assert_eq!(decoded.fan_momentum, "5");
+    }
+
+    #[test]
+    fn team_fans_payload_rejects_legacy_shape() {
+        let old_payload = b"85|2|37193|4c6f776572|56657279536174697366696564";
+        assert!(parse_team_fans_write_payload(old_payload).is_err());
+    }
+
+    #[test]
+    fn team_fan_count_matches_game_composite_and_writes_back_to_base_team_fans() {
+        let roster_player_fans = 5_083u128 + 7_015 + 3_118 + 55 + 2_993 + 3_832;
+        assert_eq!(roster_player_fans, 22_096);
+        assert_eq!(displayed_team_fan_count(15_097, roster_player_fans), Ok(37_193));
+        assert_eq!(
+            base_team_fan_count_from_displayed(40_000, roster_player_fans),
+            Ok(17_904)
+        );
+        assert_eq!(
+            base_team_fan_count_from_displayed(20_000, roster_player_fans),
+            Err("FAN_COUNT_BELOW_PLAYER_FANS")
+        );
+    }
+
+    #[test]
+    fn team_fans_payload_includes_expectation_and_validated_momentum() {
+        let values = TeamFansWriteValue {
+            popularity: "2".to_string(),
+            fan_count: "37193".to_string(),
+            fan_expectation: "Upper".to_string(),
+            fan_satisfaction: "VerySatisfied".to_string(),
+            fan_momentum: "-4".to_string(),
+        };
+        let payload = String::from_utf8(team_fans_write_payload(85, &values)).unwrap();
+        assert_eq!(
+            payload,
+            "85|2|37193|5570706572|56657279536174697366696564|-4"
+        );
+    }
+
+    #[test]
+    fn team_quick_edit_validation_rejects_invalid_numeric_values() {
+        assert!(validate_team_merchandise_write(&TeamMerchandiseWriteValue {
+            product_type: "Uniform".to_string(),
+            athlete_id: 1,
+            stock: "-1".to_string(),
+            sell_price: "10".to_string(),
+        }).is_err());
+        assert!(validate_team_fans_write(&TeamFansWriteValue {
+            popularity: "10".to_string(),
+            fan_count: "-1".to_string(),
+            fan_expectation: "Lower".to_string(),
+            fan_satisfaction: "Satisfied".to_string(),
+            fan_momentum: "0".to_string(),
+        }).is_err());
+        assert!(validate_team_fans_write(&TeamFansWriteValue {
+            popularity: "2".to_string(),
+            fan_count: "37193".to_string(),
+            fan_expectation: "Lower".to_string(),
+            fan_satisfaction: "Satisfied".to_string(),
+            fan_momentum: "6".to_string(),
+        }).is_err());
+    }
+}
+
+#[cfg(test)]
+mod staff_role_payload_tests {
+    use super::*;
+
+    #[test]
+    fn replay_id_list_parser_accepts_unique_ids_and_rejects_empty_input() {
+        assert_eq!(parse_replay_id_list("87,88,87"), Ok(vec![87, 88]));
+        assert_eq!(parse_replay_id_list(""), Err("NO_REPLAY_IDS"));
+        assert_eq!(parse_replay_id_list("87,nope"), Err("INVALID_REPLAY_ID"));
+    }
+
+    #[test]
+    fn team_strategy_probe_payload_round_trips_team_id() {
+        let payload = team_strategy_probe_payload(85);
+        assert_eq!(parse_team_strategy_probe_payload(&payload), Ok(85));
+        assert_eq!(
+            parse_team_strategy_probe_payload(b"not-an-id"),
+            Err("INVALID_ID")
+        );
+    }
+
+    #[test]
+    fn team_strategy_set_payload_round_trips_all_fields() {
+        let raw = [
+            "focused\tBottom",
+            "early_jungle\tCounterJungle",
+            "early_serpen\tFlexible",
+            "early_serpen_top\tFlexible",
+            "object_buildup\tFlexible",
+            "object_battle\tPoking",
+            "morgard_use\tGather",
+            "tower_press\tPoking",
+            "morgard_defense\tBattle",
+            "object_finish\tKillPriority",
+            "minion_wave\tWavePriority",
+            "game_finish\tStable",
+        ]
+        .join("\n");
+        let payload = team_strategy_set_payload(85, &raw);
+        let (team_id, decoded) = parse_team_strategy_set_payload(&payload).unwrap();
+        assert_eq!(team_id, 85);
+        assert_eq!(decoded, raw);
+        assert_eq!(parse_team_strategy_values(&decoded).unwrap().len(), 12);
+    }
+
+    #[test]
+    fn move_staff_payload_accepts_optional_supported_role() {
+        let (staff_id, team_id, role) =
+            parse_move_staff_payload(b"42|85|Analyst").expect("role payload");
+        assert_eq!(staff_id, 42);
+        assert_eq!(team_id, 85);
+        assert_eq!(role.as_deref(), Some("Analyst"));
+
+        let (_, _, role) = parse_move_staff_payload(b"42|85").expect("legacy payload");
+        assert_eq!(role, None);
+    }
+
+    #[test]
+    fn staff_role_parser_accepts_exact_game_variants() {
+        for role in ["HeadCoach", "TrainingCoach", "Scouter", "Analyst"] {
+            assert!(parse_staff_role(role).is_ok(), "{role}");
+        }
+        assert!(parse_staff_role("Coach").is_err());
     }
 }
 

@@ -1,10 +1,11 @@
 param(
     [string]$Project = $PSScriptRoot,
-    [string]$SdkDir = (Join-Path $PSScriptRoot "..\..\mod-sdk")
+    [string]$SdkDir = (Join-Path $PSScriptRoot "..\..\mod-sdk"),
+    [switch]$QualityGate
 )
 
 $ErrorActionPreference = "Stop"
-$expectedSdkVersion = "0.5.4"
+$expectedSdkVersion = "0.5.5"
 
 $sdk = Resolve-Path -LiteralPath $SdkDir
 $depsDir = Join-Path $sdk "deps"
@@ -30,7 +31,7 @@ if ($pinned) {
     Write-Host "Using Rust toolchain $pinned"
 }
 
-# TFM2 0.5.4 classic SDK rlibs contain LLVM bitcode objects. MSVC link.exe
+# TFM2 0.5.5 classic SDK rlibs contain LLVM bitcode objects. MSVC link.exe
 # cannot consume those archives directly (LNK1107). Use the rust-lld shipped
 # with the SDK-pinned Rust toolchain so the linker can perform LLVM LTO.
 $sysroot = (& rustc --print sysroot).Trim()
@@ -49,6 +50,11 @@ if (-not $modApi) { Write-Error "libmod_api .rlib not found in $depsDir" }
 
 $gameCore = Get-ChildItem -LiteralPath $depsDir -Filter "libgame_core-*.rlib" | Select-Object -First 1
 if (-not $gameCore) { Write-Error "libgame_core .rlib not found in $depsDir" }
+
+# Global Team/history reads are now serialized inside the production Bridge. Pin the
+# serde_json crate that matches game_core 0.5.5 instead of relying on a host install.
+$serdeJson = Join-Path $depsDir "libserde_json-9ce4f0220edb6ae7.rlib"
+if (-not (Test-Path -LiteralPath $serdeJson)) { Write-Error "Pinned serde_json .rlib not found: $serdeJson" }
 
 $projectPath = Resolve-Path -LiteralPath $Project
 $manifest = Join-Path $projectPath "Cargo.toml"
@@ -70,16 +76,35 @@ $flags = @(
     "-L", "dependency=$depsDir",
     "--extern", "mod_api=$($modApi.FullName)",
     "--extern", "game_core=$($gameCore.FullName)",
+    "--extern", "serde_json=$serdeJson",
     "-C", "linker=$rustLld",
     "-C", "linker-flavor=lld-link"
 )
 if (Test-Path -LiteralPath $nativeDir) { $flags += @("-L", "native=$nativeDir") }
 $env:CARGO_ENCODED_RUSTFLAGS = $flags -join [char]31
 
-# Avoid stale artifacts from older SDK builds while testing the 0.5.4 bridge.
+# Avoid stale artifacts from older SDK builds while testing the 0.5.5 bridge.
 if (Test-Path -LiteralPath $targetDir) {
     Write-Host "Cleaning previous bridge target directory..."
     Remove-Item -LiteralPath $targetDir -Recurse -Force
+}
+
+if ($QualityGate) {
+    Write-Host "Running Bridge quality gate with TFM2 Mod SDK $sdkVersion..."
+
+    cargo fmt --manifest-path $manifest
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    cargo check --release --manifest-path $manifest --target-dir $targetDir --lib
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    cargo clippy --release --manifest-path $manifest --target-dir $targetDir --all-targets -- -D warnings
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    cargo test --release --manifest-path $manifest --target-dir $targetDir --lib
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    Write-Host "Bridge quality gate passed."
 }
 
 cargo rustc --release --manifest-path $manifest --target-dir $targetDir --lib -- --crate-type cdylib
