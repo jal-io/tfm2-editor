@@ -7,9 +7,9 @@ title: Installation
 
 This guide applies to:
 
-- **TFM2 Editor v0.5.0**
-- **TFM2 Editor Bridge v0.2.59**
-- **Teamfight Manager 2 v0.5.5**
+- **TFM2 Editor v0.5.2**
+- **TFM2 Editor Bridge v0.2.75**
+- **Teamfight Manager 2 v0.5.6**
 - **Windows**
 
 The Editor and Bridge should be updated together.
@@ -33,30 +33,27 @@ Download the latest release from:
 
 [TFM2 Editor — GitHub Releases](https://github.com/jal-io/tfm2-editor/releases/latest)
 
-For v0.5.0, download:
+For v0.5.2, download:
 
 ```text
-TFM2.Editor.v0.5.0.Release.0.5.5.zip
+TFM2.Editor.v0.5.2.Release.0.5.6.zip
 ```
 
 Extract the archive.
 
-The release package contains:
+The main release contains the Windows Editor and the files needed for manual Bridge installation.
+
+If you want Simplified Chinese, also download the optional language pack:
 
 ```text
-TFM2.Editor.v0.5.0.Release.0.5.5/
-├── README.txt
-├── tfm2_editor_0.5.0.exe
-└── tfm2_modifier_bridge/
-    ├── mod.mod_info
-    └── tfm2_modifier_bridge.dll
+lang.zh-cn.zip
 ```
 
-The included Bridge folder is provided for manual installation. If you use Steam Workshop, use the Workshop-managed Bridge instead of keeping a second manual copy active.
+English is built into the Editor and does not require an external language pack.
 
 ### 3. Enable the Bridge in Teamfight Manager 2
 
-1. Start **Teamfight Manager 2 v0.5.5**.
+1. Start **Teamfight Manager 2 v0.5.6**.
 2. Open the **Mods** menu.
 3. Enable **TFM2 Editor Bridge**.
 4. Restart the game.
@@ -67,16 +64,52 @@ Restart the game after enabling or updating the Bridge.
 
 1. Start Teamfight Manager 2.
 2. Load your career.
-3. Start `tfm2_editor_0.5.0.exe`.
+3. Start `tfm2_editor_0.5.2.exe`.
 4. If needed, click **Reconnect**.
 
 When the installation is correct, the Editor header should show:
 
 ```text
-Connected · Bridge v0.2.59 · Compatibility: OK
+Connected · Bridge v0.2.75 · Compatibility: OK
 ```
 
 You can now use the supported Search, Player Editor, Staff Editor, Team, Transfers and Economy tools.
+
+## Simplified Chinese language pack
+
+Simplified Chinese is distributed separately so the main release remains a clean English installation.
+
+To install it:
+
+1. Download `lang.zh-cn.zip` from the same GitHub release.
+2. Extract it into the same folder as `tfm2_editor_0.5.2.exe`.
+
+The result should look like:
+
+```text
+TFM2 Editor/
+├── tfm2_editor_0.5.2.exe
+└── locales/
+    └── zh-CN.json
+```
+
+Do not move `zh-CN.json` into the game or Bridge mod folder.
+
+After installation, use the **Language** selector in the Editor header to switch between English and Simplified Chinese (`简体中文`).
+
+The selected language is remembered between restarts.
+
+## Theme selection
+
+The Editor header includes a **Theme** selector directly after Language.
+
+Available options:
+
+- **System** — follows the current Windows theme
+- **Light** — forces Light mode
+- **Dark** — forces Dark mode
+
+The selected Theme is remembered between restarts.
 
 ## Manual Bridge installation
 
@@ -114,19 +147,19 @@ Then:
 2. Enable **TFM2 Editor Bridge** in the Mods menu.
 3. Restart the game.
 4. Load your career.
-5. Start `tfm2_editor_0.5.0.exe`.
+5. Start `tfm2_editor_0.5.2.exe`.
 
-## Updating from v0.4.2
+## Updating from an older release
 
-TFM2 Editor v0.5.0 introduces a new compatibility boundary for Teamfight Manager 2 v0.5.5.
+TFM2 Editor v0.5.2 uses the release combination for Teamfight Manager 2 v0.5.6.
 
-Do not mix the older v0.4.2 generation with the v0.5.0 release.
+Do not mix older Editor or Bridge generations with the v0.5.2 release.
 
 Update:
 
-- the desktop Editor to **v0.5.0**
-- TFM2 Editor Bridge to **v0.2.59**
-- Teamfight Manager 2 to **v0.5.5**
+- the desktop Editor to **v0.5.2**
+- TFM2 Editor Bridge to **v0.2.75**
+- Teamfight Manager 2 to **v0.5.6**
 
 If you use Steam Workshop, allow Steam to update the Bridge before starting the new Editor.
 
@@ -152,9 +185,9 @@ Active game-data reads and writes remain unavailable until a supported Editor / 
 
 If the Editor cannot connect, check that:
 
-- Teamfight Manager 2 v0.5.5 is running
+- Teamfight Manager 2 v0.5.6 is running
 - a career is loaded
-- TFM2 Editor Bridge v0.2.59 is installed
+- TFM2 Editor Bridge v0.2.75 is installed
 - the Bridge is enabled in the Mods menu
 - the game was restarted after enabling or updating the Bridge
 - only the intended Bridge installation is active
