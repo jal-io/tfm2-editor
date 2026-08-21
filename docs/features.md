@@ -5,11 +5,11 @@ title: Features
 
 # TFM2 Editor Features
 
-This page covers the main features available in **TFM2 Editor v0.5.0**.
+This page covers the main features available in **TFM2 Editor v0.5.2**.
 
-> **TFM2 Editor:** v0.5.0  
-> **TFM2 Editor Bridge:** v0.2.59  
-> **Supported game version:** Teamfight Manager 2 v0.5.5
+> **TFM2 Editor:** v0.5.2  
+> **TFM2 Editor Bridge:** v0.2.75  
+> **Supported game version:** Teamfight Manager 2 v0.5.6
 
 The main Community tabs are:
 
@@ -270,7 +270,7 @@ Supported staff attributes include:
 
 ## Team workspace
 
-TFM2 Editor v0.5.0 adds the expanded **Team** workspace to the Community release.
+The Community release includes the expanded **Team** workspace.
 
 ![Team workspace](images/team-main-v0.5.0.png)
 
@@ -314,6 +314,25 @@ Available actions include:
 - set selected players to maximum
 - set the full team to maximum
 - apply changes
+
+### Training XP multipliers
+
+TFM2 Editor v0.5.2 adds **Training XP multipliers** for the player-controlled team.
+
+The Team workspace shows the current roster multipliers and provides a dedicated Training window.
+
+Training supports:
+
+- individual multiplier values for each current roster player
+- a Full Roster Multiplier action
+- Reset All to x1.0
+- one-decimal multiplier values from x1.0 upward
+- Apply Changes and Refresh
+- per-save persistence
+
+The feature modifies the extra XP added to the supported core Training progression fields. The game's normal training timing, eligibility, base award, threshold and progression rules remain in control.
+
+Values above x5.0 are supported but should be used with care.
 
 ### Contract Center
 
@@ -396,6 +415,15 @@ Champion performance can include picks, wins, win percentage, average rating and
 
 Team strategy tools include Strategy Presets and historical analysis.
 
+In v0.5.2, preset saving uses one consistent Save workflow:
+
+- saving a new preset stores the exact current Strategy editor values
+- an existing preset can be overwritten
+- Rename + Overwrite updates the same preset under the new name
+- Save as New keeps the original and creates another preset
+- split values such as 1-3-1 and 1-4 are preserved correctly
+- Apply to Team remains separate from preset storage
+
 Historical analysis is based on observed completed-match evidence and is intended to show what has worked in the career history rather than guarantee an optimal future strategy.
 
 ### Historical Performance and Historical Synergy
@@ -464,6 +492,37 @@ The Editor uses compact TFM2-style money input and displays a preview of the val
 
 ---
 
+## Language and appearance
+
+### English and Simplified Chinese
+
+English is built into TFM2 Editor.
+
+TFM2 Editor v0.5.2 adds optional **Simplified Chinese (`简体中文`)** support through the separate `lang.zh-cn.zip` release asset.
+
+After the language pack is installed, the Language selector in the Editor header can switch between:
+
+- English
+- Simplified Chinese (`简体中文`)
+
+The selected language is remembered between restarts.
+
+The Editor also includes CJK-capable system font fallback so Chinese text can render correctly regardless of which locale was active when the Editor started.
+
+### Theme
+
+The Theme selector is positioned directly after Language in the Editor header.
+
+Available options are:
+
+- **System** — follows the current Windows theme
+- **Light** — forces Light mode
+- **Dark** — forces Dark mode
+
+The selected Theme is remembered between restarts. Changing Language preserves the selected Theme, and changing Theme preserves the selected Language.
+
+---
+
 ## Compatibility safety
 
 TFM2 Editor displays the detected Bridge and compatibility state in the application header.
@@ -476,13 +535,13 @@ Possible states include:
 
 Known unsupported combinations block active game-data access until a compatible Editor and Bridge are active.
 
-For v0.5.0, use:
+For v0.5.2, use:
 
-- **TFM2 Editor v0.5.0**
-- **TFM2 Editor Bridge v0.2.59**
-- **Teamfight Manager 2 v0.5.5**
+- **TFM2 Editor v0.5.2**
+- **TFM2 Editor Bridge v0.2.75**
+- **Teamfight Manager 2 v0.5.6**
 
-The older v0.4.2 generation is not compatible with this release.
+Older release generations are not compatible with this release combination.
 
 ---
 
