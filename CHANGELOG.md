@@ -2,6 +2,65 @@
 
 All notable public changes to TFM2 Editor are documented here.
 
+## v0.5.2 — 2026-08-21
+
+### Compatibility
+
+- Updated TFM2 Editor to v0.5.2.
+- Updated TFM2 Editor Bridge to v0.2.75.
+- Added support for Teamfight Manager 2 v0.5.6.
+- Updated the Editor / Bridge compatibility rules for the v0.5.2 release combination.
+- Older release generations are blocked from active game-data access when the matching v0.5.2 Bridge is required.
+
+### Training XP multipliers
+
+- Added Training XP multipliers for the player-controlled team.
+- Added individual per-player multipliers for the current roster.
+- Added a Full Roster Multiplier action.
+- Added Reset All to x1.0.
+- Added one-decimal multiplier support from x1.0 upward.
+- Added per-save persistence so different careers can keep different Training settings.
+- Training modifies only the supported core Training XP fields; normal game training timing, eligibility, thresholds and progression remain in control.
+
+### Simplified Chinese and CJK support
+
+- Added Simplified Chinese (`简体中文`) as the first additional Community language.
+- Added `lang.zh-cn.zip` as a separate optional GitHub release asset.
+- English remains embedded in the Editor and requires no external locale file.
+- Added CJK-capable system font fallback.
+- CJK font fallback is initialized independently of the active locale so `简体中文` renders correctly from an English startup.
+- Language selection persists between Editor restarts.
+
+### Theme selection
+
+- Added a Theme selector in the application header directly after Language.
+- Added **System**, **Light** and **Dark** options.
+- System follows the current Windows theme.
+- Light and Dark force the selected appearance.
+- Theme selection persists between Editor restarts.
+- Changing Language preserves Theme, and changing Theme preserves Language.
+
+### Team Strategy presets
+
+- Fixed new Strategy presets so Save stores the exact current Strategy editor values.
+- Replaced the old separate Edit workflow with one Save workflow.
+- Existing presets can now be overwritten without creating duplicates.
+- Rename + Overwrite updates the same preset under the new name.
+- Save as New preserves the original preset and creates a second preset.
+- Duplicate names are automatically suffixed when required.
+- Split Strategy values such as 1-3-1 and 1-4 are preserved correctly.
+- Applying a saved preset to the team remains separate from preset storage.
+
+### Release validation
+
+- Completed the final Windows App quality gate with zero Community and Development warnings.
+- Clippy with `-D warnings` passed.
+- Development App tests passed: 134 / 134.
+- Bridge tests passed: 48 / 48.
+- Final Community runtime smoke testing passed on Teamfight Manager 2 v0.5.6.
+
+---
+
 ## v0.4.2 — 2026-08-06
 
 ### Compatibility
