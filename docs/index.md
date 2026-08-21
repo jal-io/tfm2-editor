@@ -9,9 +9,9 @@ Welcome to the user guide for **TFM2 Editor**, an unofficial live editor and com
 
 Created and maintained by **jal-io**.
 
-> **Current release:** v0.5.2  
-> **Required Bridge:** v0.2.75  
-> **Supported game version:** Teamfight Manager 2 v0.5.6  
+> **Current release:** v0.5.2
+> **Required Bridge:** v0.2.75
+> **Supported game version:** Teamfight Manager 2 v0.5.6
 > **Platform:** Windows
 
 [Download the latest release](https://github.com/jal-io/tfm2-editor/releases/latest) ·
@@ -90,7 +90,6 @@ The expanded **Team workspace** includes:
 - Full Historical Synergy Explorer
 - Gaming House, facilities, fans and team summary information
 
-![TFM2 Editor Team workspace](images/team-main-v0.5.0.png)
 
 ### New in v0.5.2
 
