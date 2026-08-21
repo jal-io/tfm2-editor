@@ -6,9 +6,9 @@ It connects to the running game through **TFM2 Editor Bridge**, allowing you to 
 
 Created and maintained by **jal-io**.
 
-> **Current release:** v0.5.0  
-> **Required Bridge:** v0.2.59  
-> **Supported game version:** Teamfight Manager 2 v0.5.5  
+> **Current release:** v0.5.2  
+> **Required Bridge:** v0.2.75  
+> **Supported game version:** Teamfight Manager 2 v0.5.6  
 > **Platform:** Windows
 
 [Download the latest release](https://github.com/jal-io/tfm2-editor/releases/latest) ·
@@ -23,11 +23,60 @@ The desktop **TFM2 Editor application is not included** with the Workshop subscr
 
 Both the Editor and Bridge should be updated together.
 
+The optional Simplified Chinese language pack is available as a separate GitHub release asset:
+
+```text
+lang.zh-cn.zip
+```
+
+English is built into the Editor and does not require a language pack.
+
 ## What is a live editor?
 
 Unlike a traditional save or database editor, TFM2 Editor works with the currently running game.
 
 Start Teamfight Manager 2, load your career, then launch TFM2 Editor to inspect and modify supported career data through the Bridge.
+
+## New in v0.5.2
+
+### Training XP multipliers
+
+Training XP multipliers are now available for the player-controlled team.
+
+- Set individual multipliers for each current roster player
+- Set one multiplier for the full roster
+- Reset the roster to x1.0
+- Per-save persistence
+- One-decimal multiplier support
+- Vanilla training timing, eligibility and progression rules remain in control
+
+### Simplified Chinese
+
+- Added Simplified Chinese (`简体中文`) support
+- English remains built into the Editor
+- Simplified Chinese is distributed through the optional `lang.zh-cn.zip` language pack
+- Language selection is available directly from the Editor header
+- The selected language is remembered between restarts
+- Added CJK-capable system font fallback
+
+### Theme selection
+
+The Editor header now includes a **Theme** selector directly beside **Language**:
+
+- **System** — follows the Windows theme
+- **Light** — forces Light mode
+- **Dark** — forces Dark mode
+
+The selected theme is remembered between restarts.
+
+### Team Strategy preset improvements
+
+- New presets save the exact current Strategy editor values
+- Existing presets can be overwritten cleanly
+- Presets can be renamed while overwriting
+- **Save as New** keeps the original preset and creates a second preset
+- Split Strategy values such as 1-3-1 and 1-4 are preserved correctly
+- Applying a preset to the team remains separate from saving the preset
 
 ## Features
 
@@ -75,10 +124,11 @@ Start Teamfight Manager 2, load your career, then launch TFM2 Editor to inspect 
 
 ### Team
 
-The Community release now includes the expanded **Team** workspace.
+The Community release includes the expanded **Team** workspace.
 
 - Team overview and roster information
 - Team Condition
+- **Training XP multipliers for the player team**
 - Contract Center
 - Finance Center
 - Recruitment Center
@@ -123,6 +173,15 @@ Free-agent contract forms are filled with valid starting values and can be revie
 - Compact TFM2-style money input
 - Live value previews
 
+### Language and appearance
+
+- Built-in English
+- Optional Simplified Chinese (`简体中文`) language pack
+- Persisted Language selection
+- CJK-capable system font fallback
+- Theme selector with System / Light / Dark
+- Persisted Theme selection
+
 ### Compatibility safety
 
 The Editor permanently displays the detected Bridge and compatibility state:
@@ -133,7 +192,7 @@ The Editor permanently displays the detected Bridge and compatibility state:
 
 Known unsupported combinations disconnect active game-data access and block reads and writes until a compatible Bridge is active.
 
-The older **v0.4.2 generation is not compatible with v0.5.0**. Update both the Editor and Bridge together.
+Older release generations are not compatible with the v0.5.2 release combination. Update both the Editor and Bridge together.
 
 ## Installation
 
@@ -141,19 +200,32 @@ The older **v0.4.2 generation is not compatible with v0.5.0**. Update both the E
 
 1. Subscribe to [TFM2 Editor Bridge](https://steamcommunity.com/sharedfiles/filedetails/?id=3775240765) on Steam Workshop.
 2. Download the latest desktop Editor from [GitHub Releases](https://github.com/jal-io/tfm2-editor/releases/latest).
-3. Extract the release archive.
-4. Start Teamfight Manager 2 v0.5.5.
+3. Extract `TFM2.Editor.v0.5.2.Release.0.5.6.zip`.
+4. Start Teamfight Manager 2 v0.5.6.
 5. Enable **TFM2 Editor Bridge** in the Mods menu.
 6. Restart the game.
 7. Load your career.
-8. Start `tfm2_editor_0.5.0.exe`.
+8. Start `tfm2_editor_0.5.2.exe`.
 9. Confirm the Editor header shows:
 
 ```text
-Connected · Bridge v0.2.59 · Compatibility: OK
+Connected · Bridge v0.2.75 · Compatibility: OK
 ```
 
 If the Editor shows **Disconnected**, click **Reconnect**.
+
+### Optional Simplified Chinese language pack
+
+Download `lang.zh-cn.zip` from the same GitHub release and extract it into the same folder as `tfm2_editor_0.5.2.exe`.
+
+The result should contain:
+
+```text
+TFM2 Editor/
+├── tfm2_editor_0.5.2.exe
+└── locales/
+    └── zh-CN.json
+```
 
 ### Manual Bridge installation
 
