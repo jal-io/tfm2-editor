@@ -319,6 +319,8 @@ Available actions include:
 
 TFM2 Editor v0.5.2 adds **Training XP multipliers** for the player-controlled team.
 
+![Team Training XP multipliers](images/team-training-multipiler-v0.5.2.png)
+
 The Team workspace shows the current roster multipliers and provides a dedicated Training window.
 
 Training supports:
@@ -500,6 +502,8 @@ English is built into TFM2 Editor.
 
 TFM2 Editor v0.5.2 adds optional **Simplified Chinese (`简体中文`)** support through the separate `lang.zh-cn.zip` release asset.
 
+![Simplified Chinese support](images/simplified-chinese-v0.5.2.png)
+
 After the language pack is installed, the Language selector in the Editor header can switch between:
 
 - English
@@ -512,6 +516,8 @@ The Editor also includes CJK-capable system font fallback so Chinese text can re
 ### Theme
 
 The Theme selector is positioned directly after Language in the Editor header.
+
+![Theme settings](images/theme-settnings-v0.5.2.png)
 
 Available options are:
 
