@@ -40,12 +40,15 @@ Only additional languages such as `zh-CN.json` are distributed beside the EXE.
 The selected language is stored in `tfm2_editor_settings.json` beside the
 executable.
 
-## Current migration status
+## Current release status
 
-The first full Community UI pass covers Economy, Player Editor, Staff Editor,
-Communication, Champion Mastery, Edit Contract, Recruitment, Player Search,
-Advanced Search and Saved Filters. Dynamic status/error messages, domain enums
-and some generated table labels are migrated in the next pass.
+Community v0.5.2 includes:
 
-For a quick Development test, edit a visible value in `dist/locales/en-US.json`
-and click **Reload locales**. Restore the English file after testing.
+- embedded English (`en-US`) fallback
+- Simplified Chinese (`zh-CN`) as the first additional language
+- persisted language selection
+- Windows CJK system-font fallback for Simplified Chinese rendering
+
+Development keeps external `en-US.json` for hot-reload/diagnostics. Community
+packages only approved additional locale files; embedded English remains the
+authoritative fallback.

@@ -22,21 +22,20 @@ use currency::{
     format_display_amount, format_internal_amount, format_internal_for_command,
     parse_display_amount, parse_display_to_internal,
 };
-use localization::Localization;
+use localization::{AppThemePreference, Localization};
 
 const BRIDGE_ADDR: &str = "127.0.0.1:28452";
-const REQUIRED_BRIDGE_VERSION: &str = "0.2.59";
-const BRIDGE_PROTOCOL_VERSION: u32 = 19;
-const MINIMUM_SAFE_BRIDGE_PROTOCOL: u32 = 19;
+const REQUIRED_BRIDGE_VERSION: &str = "0.2.75";
+const BRIDGE_PROTOCOL_VERSION: u32 = 20;
+const MINIMUM_SAFE_BRIDGE_PROTOCOL: u32 = 20;
 const MAXIMUM_SAFE_BRIDGE_PROTOCOL: u32 = BRIDGE_PROTOCOL_VERSION;
-const SUPPORTED_TFM2_VERSION: &str = "0.5.5";
+const SUPPORTED_TFM2_VERSION: &str = "0.5.6";
 const GITHUB_RELEASES_URL: &str = "https://github.com/jal-io/tfm2-editor/releases/latest";
 const STEAM_WORKSHOP_URL: &str =
     "https://steamcommunity.com/sharedfiles/filedetails/?id=3775240765";
 
-// Public v0.5.0 is released from the TFM2 0.5.5 migration/stabilization line
-// while Development remains v0.5.4-dev from the runtime-approved v0.5.37-dev
-// feature/UI baseline. Visual and functional behavior stays unchanged.
+// Community v0.5.2 is the current TFM2 0.5.6 public release generation.
+// Development continues from v0.5.7-dev on the same shared Bridge/protocol generation.
 const DEV_BG_PRIMARY: egui::Color32 = egui::Color32::from_rgb(0x0B, 0x0F, 0x14);
 const DEV_TEXT_PRIMARY: egui::Color32 = egui::Color32::from_rgb(0xDE, 0xDE, 0xDE);
 const DEV_ACCENT: egui::Color32 = egui::Color32::from_rgb(0x3D, 0xF3, 0xE0);
@@ -44,6 +43,57 @@ const DEV_SELECTION_BG: egui::Color32 = egui::Color32::from_rgb(0x12, 0x3B, 0x3A
 const POTENTIAL_STAR_COLOR: egui::Color32 = egui::Color32::from_rgb(0xF0, 0xBF, 0x15);
 const DEV_TABLE_ALT_ROW: egui::Color32 = egui::Color32::from_rgb(0x12, 0x19, 0x21);
 const DEV_CARD_BORDER: egui::Color32 = egui::Color32::from_rgb(0x24, 0x35, 0x3A);
+
+const SYSTEM_CJK_FONT_NAME: &str = "tfm2_system_cjk_fallback";
+const WINDOWS_SIMPLIFIED_CHINESE_FONT_FILES: [&str; 4] = [
+    "msyh.ttc",
+    "msyhl.ttc",
+    "simhei.ttf",
+    "simsun.ttc",
+];
+
+fn windows_font_directory() -> PathBuf {
+    std::env::var_os("WINDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+        .join("Fonts")
+}
+
+fn simplified_chinese_font_candidates(font_directory: &std::path::Path) -> Vec<PathBuf> {
+    WINDOWS_SIMPLIFIED_CHINESE_FONT_FILES
+        .iter()
+        .map(|filename| font_directory.join(filename))
+        .collect()
+}
+
+fn load_simplified_chinese_system_font() -> Option<(PathBuf, Vec<u8>)> {
+    let font_directory = windows_font_directory();
+    simplified_chinese_font_candidates(&font_directory)
+        .into_iter()
+        .find_map(|path| fs::read(&path).ok().map(|bytes| (path, bytes)))
+}
+
+fn install_simplified_chinese_font_fallback(egui_ctx: &egui::Context) -> Option<PathBuf> {
+    let (path, bytes) = load_simplified_chinese_system_font()?;
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        SYSTEM_CJK_FONT_NAME.to_string(),
+        std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+    );
+
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        if let Some(fallbacks) = fonts.families.get_mut(&family) {
+            fallbacks.push(SYSTEM_CJK_FONT_NAME.to_string());
+        }
+    }
+
+    egui_ctx.set_fonts(fonts);
+    Some(path)
+}
+
+fn ensure_cjk_font_fallback(egui_ctx: &egui::Context) {
+    let _ = install_simplified_chinese_font_fallback(egui_ctx);
+}
 
 const TEAM_DASHBOARD_COLUMN_GAP: f32 = 12.0;
 const TEAM_DASHBOARD_COLUMN_1_MIN: f32 = 400.0;
@@ -93,6 +143,14 @@ fn apply_development_visual_test_theme(visuals: &mut egui::Visuals) {
     visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, DEV_ACCENT);
     visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, DEV_ACCENT);
     visuals.hyperlink_color = DEV_ACCENT;
+}
+
+fn apply_editor_theme(ctx: &egui::Context, theme: AppThemePreference) {
+    match theme {
+        AppThemePreference::System => ctx.set_theme(egui::ThemePreference::System),
+        AppThemePreference::Light => ctx.set_theme(egui::Theme::Light),
+        AppThemePreference::Dark => ctx.set_theme(egui::Theme::Dark),
+    }
 }
 
 fn team_dashboard_column_count(available_width: f32) -> usize {
@@ -154,8 +212,8 @@ fn show_team_dashboard_card<R>(
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<R> {
     egui::Frame::group(ui.style())
-        .fill(DEV_BG_PRIMARY)
-        .stroke(development_standard_border_stroke())
+        .fill(ui.visuals().window_fill())
+        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
         .show(ui, add_contents)
 }
 
@@ -196,7 +254,7 @@ struct UnsupportedBridgeRule {
 
 const KNOWN_UNSUPPORTED_BRIDGE_RULES: &[UnsupportedBridgeRule] = &[UnsupportedBridgeRule {
     minimum_bridge_version: None,
-    maximum_bridge_version: Some("0.2.58"),
+    maximum_bridge_version: Some("0.2.72"),
     requirement: UnsupportedRequirement::Bridge(REQUIRED_BRIDGE_VERSION),
 }];
 
@@ -211,9 +269,9 @@ struct CompatibilityIssue {
     required_editor_version: Option<String>,
 }
 #[cfg(feature = "dev")]
-const APP_VERSION: &str = "0.5.4";
+const APP_VERSION: &str = "0.5.7";
 #[cfg(not(feature = "dev"))]
-const APP_VERSION: &str = "0.5.0";
+const APP_VERSION: &str = "0.5.2";
 
 const TEAM_CONTRACT_EXTENSION_DEFAULT_YEARS: &str = "2";
 
@@ -624,6 +682,8 @@ enum TeamNavigationAction {
     #[cfg(feature = "dev")]
     TeamDataProbe,
     #[cfg(feature = "dev")]
+    TrainingXpProbe,
+    #[cfg(feature = "dev")]
     ChampionSetup,
 }
 
@@ -651,8 +711,9 @@ const COMPETITION_MENU_ACTIONS: [TeamNavigationAction; 2] = [
 ];
 
 #[cfg(feature = "dev")]
-const DEVELOPMENT_MENU_ACTIONS: [TeamNavigationAction; 2] = [
+const DEVELOPMENT_MENU_ACTIONS: [TeamNavigationAction; 3] = [
     TeamNavigationAction::TeamDataProbe,
+    TeamNavigationAction::TrainingXpProbe,
     TeamNavigationAction::ChampionSetup,
 ];
 
@@ -672,6 +733,8 @@ fn team_navigation_action_label_key(action: TeamNavigationAction) -> &'static st
         #[cfg(feature = "dev")]
         TeamNavigationAction::TeamDataProbe => "team_workspace.open_data_probe",
         #[cfg(feature = "dev")]
+        TeamNavigationAction::TrainingXpProbe => "team_workspace.open_training_xp_probe",
+        #[cfg(feature = "dev")]
         TeamNavigationAction::ChampionSetup => "team_workspace.open_champion_setup",
     }
 }
@@ -680,7 +743,7 @@ fn team_navigation_action_available(action: TeamNavigationAction, is_player_team
     match action {
         TeamNavigationAction::PreMatchAnalysis => is_player_team,
         #[cfg(feature = "dev")]
-        TeamNavigationAction::ChampionSetup => is_player_team,
+        TeamNavigationAction::TrainingXpProbe | TeamNavigationAction::ChampionSetup => is_player_team,
         _ => true,
     }
 }
@@ -691,6 +754,45 @@ fn team_navigation_dropdown_anchor(button_response: &egui::Response) -> egui::Re
     let mut anchor = button_response.clone();
     anchor.rect.max.y += TEAM_NAVIGATION_DROPDOWN_GAP;
     anchor
+}
+
+fn team_navigation_button(
+    ui: &mut egui::Ui,
+    title: String,
+    enabled: bool,
+    is_open: bool,
+    dropdown_indicator: bool,
+) -> egui::Response {
+    // All top-level Team navigation controls share this button construction.
+    // Dropdowns reserve a small trailing area and paint their chevron instead
+    // of relying on a font glyph, which keeps English and CJK rendering alike.
+    let button_title = if dropdown_indicator {
+        format!("{title}   ")
+    } else {
+        title
+    };
+    let mut button = egui::Button::new(button_title);
+    if is_open {
+        button = button
+            .fill(ui.visuals().widgets.open.weak_bg_fill)
+            .stroke(ui.visuals().widgets.open.bg_stroke);
+    }
+    let response = ui.add_enabled(enabled, button);
+
+    if dropdown_indicator {
+        let center = egui::pos2(response.rect.right() - 8.0, response.rect.center().y + 0.5);
+        let stroke = egui::Stroke::new(1.25_f32, ui.visuals().text_color());
+        ui.painter().line_segment(
+            [center + egui::vec2(-3.0, -1.5), center + egui::vec2(0.0, 1.5)],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [center + egui::vec2(0.0, 1.5), center + egui::vec2(3.0, -1.5)],
+            stroke,
+        );
+    }
+
+    response
 }
 
 fn team_navigation_dropdown<R, I, S>(
@@ -706,16 +808,9 @@ fn team_navigation_dropdown<R, I, S>(
     let popup_id = ui.make_persistent_id(("team_navigation_dropdown", id_source));
     let is_open = ui.memory(|memory| memory.is_popup_open(popup_id));
 
-    // Match egui's normal menu-button open-state visuals while using a strict
-    // widget-relative popup anchor. This keeps the approved button appearance
-    // unchanged; only popup positioning differs from Ui::menu_button.
-    let mut button = egui::Button::new(title);
-    if is_open {
-        button = button
-            .fill(ui.visuals().widgets.open.weak_bg_fill)
-            .stroke(ui.visuals().widgets.open.bg_stroke);
-    }
-    let response = ui.add(button);
+    // Keep the validated widget-relative popup anchor while sharing the exact
+    // same base button path with direct Team actions such as Training/Finance.
+    let response = team_navigation_button(ui, title, true, is_open, true);
 
     if response.clicked() {
         ui.memory_mut(|memory| memory.toggle_popup(popup_id));
@@ -1400,7 +1495,7 @@ struct TeamStrategyEntry {
     value: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct TeamStrategyPreset {
     format_version: u32,
     name: String,
@@ -1427,6 +1522,32 @@ impl TeamStrategyPreset {
     }
 }
 
+#[derive(Debug, Clone)]
+struct TeamStrategyPresetSaveConfirmation {
+    original_name: String,
+    preset: TeamStrategyPreset,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TeamStrategyPresetSaveChoice {
+    Overwrite,
+    SaveAsNew,
+    Cancel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TeamStrategyPresetSavePlan {
+    Overwrite {
+        original_name: String,
+        preset: TeamStrategyPreset,
+    },
+    Create {
+        preset: TeamStrategyPreset,
+    },
+    Cancel,
+}
+
+#[cfg(feature = "dev")]
 #[derive(Debug, Clone)]
 struct TeamStrategyProbeBackup {
     team_id: usize,
@@ -4331,15 +4452,56 @@ struct ModifierApp {
     team_data_probe_team_id: Option<usize>,
     #[cfg(feature = "dev")]
     team_data_probe_raw: String,
+    team_training_window_open: bool,
+    team_training_team_id: Option<usize>,
+    team_training_authoritative_multipliers: HashMap<usize, u32>,
+    team_training_draft_multipliers: HashMap<usize, String>,
+    team_training_set_all_multiplier_tenths: u32,
+    team_training_status: String,
+    #[cfg(feature = "dev")]
+    team_training_xp_probe_window_open: bool,
+    #[cfg(feature = "dev")]
+    team_training_xp_probe_team_id: Option<usize>,
+    #[cfg(feature = "dev")]
+    team_training_xp_probe_raw: String,
+    #[cfg(feature = "dev")]
+    team_training_xp_research_enabled: bool,
+    #[cfg(feature = "dev")]
+    team_training_xp_x2_armed: bool,
+    #[cfg(feature = "dev")]
+    team_training_xp_x1_5_armed: bool,
+    #[cfg(feature = "dev")]
+    team_training_xp_x2_athlete_id: String,
+    #[cfg(feature = "dev")]
+    team_training_xp_probe_last_auto_refresh_time: f64,
+    #[cfg(feature = "dev")]
+    team_training_xp_probe_ui_cleared: bool,
     team_management_data: Option<TeamManagementData>,
     team_management_last_request_team_id: Option<usize>,
     team_strategy_window_open: bool,
+    #[cfg(feature = "dev")]
     team_strategy_probe_backup: Option<TeamStrategyProbeBackup>,
+    #[cfg(feature = "dev")]
     team_strategy_probe_status: String,
+    #[cfg(feature = "dev")]
+    team_strategy_apply_diagnostic_status: String,
+    #[cfg(feature = "dev")]
+    team_strategy_server_snapshot_status: String,
+    #[cfg(feature = "dev")]
+    team_strategy_diagnostic_apply_sequence: u64,
+    #[cfg(feature = "dev")]
+    team_strategy_diagnostic_last_apply_team_id: Option<usize>,
+    #[cfg(feature = "dev")]
+    team_strategy_diagnostic_last_requested: Vec<TeamStrategyEntry>,
+    #[cfg(feature = "dev")]
+    team_strategy_diagnostic_last_normal_read_team_id: Option<usize>,
+    #[cfg(feature = "dev")]
+    team_strategy_diagnostic_last_normal_read: Vec<TeamStrategyEntry>,
     team_strategy_presets: Vec<TeamStrategyPreset>,
     team_strategy_selected_preset: Option<String>,
     team_strategy_preset_name: String,
     team_strategy_preset_status: String,
+    team_strategy_preset_save_confirmation: Option<TeamStrategyPresetSaveConfirmation>,
     team_strategy_options: HashMap<String, Vec<String>>,
     team_strategy_options_attempted: bool,
     team_strategy_edit_team_id: Option<usize>,
@@ -4597,15 +4759,56 @@ impl Default for ModifierApp {
             team_data_probe_team_id: None,
             #[cfg(feature = "dev")]
             team_data_probe_raw: String::new(),
+            team_training_window_open: false,
+            team_training_team_id: None,
+            team_training_authoritative_multipliers: HashMap::new(),
+            team_training_draft_multipliers: HashMap::new(),
+            team_training_set_all_multiplier_tenths: 10,
+            team_training_status: String::new(),
+            #[cfg(feature = "dev")]
+            team_training_xp_probe_window_open: false,
+            #[cfg(feature = "dev")]
+            team_training_xp_probe_team_id: None,
+            #[cfg(feature = "dev")]
+            team_training_xp_probe_raw: String::new(),
+            #[cfg(feature = "dev")]
+            team_training_xp_research_enabled: false,
+            #[cfg(feature = "dev")]
+            team_training_xp_x2_armed: false,
+            #[cfg(feature = "dev")]
+            team_training_xp_x1_5_armed: false,
+            #[cfg(feature = "dev")]
+            team_training_xp_x2_athlete_id: String::new(),
+            #[cfg(feature = "dev")]
+            team_training_xp_probe_last_auto_refresh_time: 0.0,
+            #[cfg(feature = "dev")]
+            team_training_xp_probe_ui_cleared: false,
             team_management_data: None,
             team_management_last_request_team_id: None,
             team_strategy_window_open: false,
+            #[cfg(feature = "dev")]
             team_strategy_probe_backup: None,
+            #[cfg(feature = "dev")]
             team_strategy_probe_status: String::new(),
+            #[cfg(feature = "dev")]
+            team_strategy_apply_diagnostic_status: String::new(),
+            #[cfg(feature = "dev")]
+            team_strategy_server_snapshot_status: String::new(),
+            #[cfg(feature = "dev")]
+            team_strategy_diagnostic_apply_sequence: 0,
+            #[cfg(feature = "dev")]
+            team_strategy_diagnostic_last_apply_team_id: None,
+            #[cfg(feature = "dev")]
+            team_strategy_diagnostic_last_requested: Vec::new(),
+            #[cfg(feature = "dev")]
+            team_strategy_diagnostic_last_normal_read_team_id: None,
+            #[cfg(feature = "dev")]
+            team_strategy_diagnostic_last_normal_read: Vec::new(),
             team_strategy_presets: Vec::new(),
             team_strategy_selected_preset: None,
             team_strategy_preset_name: String::new(),
             team_strategy_preset_status: String::new(),
+            team_strategy_preset_save_confirmation: None,
             team_strategy_options: HashMap::new(),
             team_strategy_options_attempted: false,
             team_strategy_edit_team_id: None,
@@ -4878,6 +5081,79 @@ fn team_strategy_entries_equal(left: &[TeamStrategyEntry], right: &[TeamStrategy
 
 fn team_strategy_presets_visible(is_player_team: bool) -> bool {
     is_player_team
+}
+
+fn team_strategy_editor_values_complete(strategy: &[TeamStrategyEntry]) -> bool {
+    TEAM_STRATEGY_KEYS.iter().all(|key| {
+        strategy
+            .iter()
+            .any(|entry| entry.key == *key && !entry.value.trim().is_empty())
+    })
+}
+
+fn team_strategy_preset_from_editor(
+    name: String,
+    strategy: &[TeamStrategyEntry],
+) -> Result<TeamStrategyPreset, String> {
+    if !team_strategy_editor_values_complete(strategy) {
+        return Err("Strategy editor is missing a value; preset was not saved.".to_string());
+    }
+    Ok(TeamStrategyPreset::new(name, strategy.to_vec()))
+}
+
+fn next_available_team_strategy_preset_name(
+    requested_name: &str,
+    presets: &[TeamStrategyPreset],
+) -> String {
+    if !presets
+        .iter()
+        .any(|preset| preset.name.eq_ignore_ascii_case(requested_name))
+    {
+        return requested_name.to_string();
+    }
+
+    for suffix in 2usize.. {
+        let candidate = format!("{requested_name} ({suffix})");
+        if !presets
+            .iter()
+            .any(|preset| preset.name.eq_ignore_ascii_case(&candidate))
+        {
+            return candidate;
+        }
+    }
+    unreachable!()
+}
+
+fn team_strategy_preset_save_plan(
+    presets: &[TeamStrategyPreset],
+    confirmation: &TeamStrategyPresetSaveConfirmation,
+    choice: TeamStrategyPresetSaveChoice,
+) -> Result<TeamStrategyPresetSavePlan, String> {
+    match choice {
+        TeamStrategyPresetSaveChoice::Overwrite => {
+            let target_name = confirmation.preset.name.as_str();
+            if !confirmation.original_name.eq_ignore_ascii_case(target_name)
+                && presets.iter().any(|preset| {
+                    preset.name.eq_ignore_ascii_case(target_name)
+                        && !preset
+                            .name
+                            .eq_ignore_ascii_case(&confirmation.original_name)
+                })
+            {
+                return Err(format!("Strategy preset '{target_name}' already exists."));
+            }
+            Ok(TeamStrategyPresetSavePlan::Overwrite {
+                original_name: confirmation.original_name.clone(),
+                preset: confirmation.preset.clone(),
+            })
+        }
+        TeamStrategyPresetSaveChoice::SaveAsNew => {
+            let mut preset = confirmation.preset.clone();
+            preset.name = next_available_team_strategy_preset_name(&preset.name, presets);
+            Ok(TeamStrategyPresetSavePlan::Create { preset })
+        }
+        TeamStrategyPresetSaveChoice::Cancel => Ok(TeamStrategyPresetSavePlan::Cancel),
+    }
 }
 
 const TEAM_STRATEGY_POSITION_ORDER: [&str; 5] = ["Top", "Jungle", "Mid", "Bottom", "Support"];
@@ -5480,6 +5756,7 @@ fn render_team_strategy_current_editor_cell(
     });
 }
 
+#[cfg(feature = "dev")]
 fn team_strategy_probe_is_swapped(
     data: &TeamManagementData,
     backup: &TeamStrategyProbeBackup,
@@ -5489,6 +5766,7 @@ fn team_strategy_probe_is_swapped(
         && team_strategy_entries_equal(&data.last_strategy, &backup.current_strategy)
 }
 
+#[cfg(feature = "dev")]
 fn team_strategy_probe_is_restored(
     data: &TeamManagementData,
     backup: &TeamStrategyProbeBackup,
@@ -5600,6 +5878,7 @@ impl ModifierApp {
         if let Some((language_code, language_name)) = selected_language {
             match self.localization.select_language(&language_code) {
                 Ok(()) => {
+                    ensure_cjk_font_fallback(ui.ctx());
                     self.status = self.localization.tr_with(
                         "settings.language_changed",
                         &[("language", language_name.as_str())],
@@ -5613,24 +5892,64 @@ impl ModifierApp {
                 }
             }
         }
+    }
 
-        #[cfg(feature = "dev")]
-        {
-            if ui
-                .small_button(self.localization.tr("localization.reload"))
-                .clicked()
-            {
-                self.localization.reload();
-                self.status = self.localization.tr("localization.reloaded");
+    fn render_theme_selector(&mut self, ui: &mut egui::Ui) {
+        ui.label(self.localization.tr("settings.theme"));
+        let current_theme = self.localization.current_theme();
+        let mut selected_theme = current_theme;
+        let selected_text = match current_theme {
+            AppThemePreference::System => self.localization.tr("settings.theme.system"),
+            AppThemePreference::Light => self.localization.tr("settings.theme.light"),
+            AppThemePreference::Dark => self.localization.tr("settings.theme.dark"),
+        };
+
+        egui::ComboBox::from_id_salt("app_theme_selector")
+            .selected_text(selected_text)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut selected_theme,
+                    AppThemePreference::System,
+                    self.localization.tr("settings.theme.system"),
+                );
+                ui.selectable_value(
+                    &mut selected_theme,
+                    AppThemePreference::Light,
+                    self.localization.tr("settings.theme.light"),
+                );
+                ui.selectable_value(
+                    &mut selected_theme,
+                    AppThemePreference::Dark,
+                    self.localization.tr("settings.theme.dark"),
+                );
+            });
+
+        if selected_theme != current_theme {
+            match self.localization.select_theme(selected_theme) {
+                Ok(()) => apply_editor_theme(ui.ctx(), selected_theme),
+                Err(error) => self.status = error,
             }
-
-            let count = self.localization.debug_issue_count().to_string();
-            ui.label(self.localization.tr_with(
-                "localization.dev_issues",
-                &[("count", count.as_str())],
-            ))
-            .on_hover_text(self.localization.debug_report());
         }
+    }
+
+    #[cfg(feature = "dev")]
+    fn render_localization_dev_controls(&mut self, ui: &mut egui::Ui) {
+        if ui
+            .small_button(self.localization.tr("localization.reload"))
+            .clicked()
+        {
+            self.localization.reload();
+            ensure_cjk_font_fallback(ui.ctx());
+            apply_editor_theme(ui.ctx(), self.localization.current_theme());
+            self.status = self.localization.tr("localization.reloaded");
+        }
+
+        let count = self.localization.debug_issue_count().to_string();
+        ui.label(self.localization.tr_with(
+            "localization.dev_issues",
+            &[("count", count.as_str())],
+        ))
+        .on_hover_text(self.localization.debug_report());
     }
 
     fn compatibility_issue_for(
@@ -6466,6 +6785,17 @@ Bridge TFM2 target: v{}",
         self.team_data_probe_window_open = false;
         self.team_data_probe_team_id = None;
         self.team_data_probe_raw.clear();
+        self.team_training_window_open = false;
+        self.team_training_team_id = None;
+        self.team_training_authoritative_multipliers.clear();
+        self.team_training_draft_multipliers.clear();
+        self.team_training_set_all_multiplier_tenths = 10;
+        self.team_training_status.clear();
+        self.team_training_xp_probe_window_open = false;
+        self.team_training_xp_probe_team_id = None;
+        self.team_training_xp_probe_raw.clear();
+        self.team_training_xp_probe_last_auto_refresh_time = 0.0;
+        self.team_training_xp_probe_ui_cleared = false;
         self.team_scouting_evidence_window_open = false;
         self.team_performance_context_window_open = false;
         self.team_own_strategy_probe_window_open = false;
@@ -6475,6 +6805,12 @@ Bridge TFM2 target: v{}",
         self.team_own_strategy_filter_match_type = TeamTacticsHistoryMatchTypeFilter::All;
         self.team_own_strategy_filter_opponent.clear();
         self.team_own_strategy_selected_replay_id = None;
+        self.team_strategy_apply_diagnostic_status.clear();
+        self.team_strategy_server_snapshot_status.clear();
+        self.team_strategy_diagnostic_last_apply_team_id = None;
+        self.team_strategy_diagnostic_last_requested.clear();
+        self.team_strategy_diagnostic_last_normal_read_team_id = None;
+        self.team_strategy_diagnostic_last_normal_read.clear();
     }
 
     #[cfg(not(feature = "dev"))]
@@ -6487,6 +6823,17 @@ Bridge TFM2 target: v{}",
         self.team_data_probe_window_open = false;
         self.team_data_probe_team_id = None;
         self.team_data_probe_raw.clear();
+        self.team_training_window_open = false;
+        self.team_training_team_id = None;
+        self.team_training_authoritative_multipliers.clear();
+        self.team_training_draft_multipliers.clear();
+        self.team_training_set_all_multiplier_tenths = 10;
+        self.team_training_status.clear();
+        self.team_training_xp_probe_window_open = false;
+        self.team_training_xp_probe_team_id = None;
+        self.team_training_xp_probe_raw.clear();
+        self.team_training_xp_probe_last_auto_refresh_time = 0.0;
+        self.team_training_xp_probe_ui_cleared = false;
     }
 
     #[cfg(not(feature = "dev"))]
@@ -6601,7 +6948,10 @@ Bridge TFM2 target: v{}",
             self.team_workspace_team_id = Some(team_id);
             self.active_tab = AppTab::Team;
             if let Some(team) = self.teams.iter().find(|team| team.id == team_id) {
-                self.status = format!("Team data loaded: {}", team.display_name);
+                self.status = self.localization.tr_with(
+                    "team_workspace.data_loaded",
+                    &[("team", team.display_name.as_str())],
+                );
             }
             if selection_changed
                 || self.team_management_last_request_team_id != Some(team_id)
@@ -6628,6 +6978,8 @@ Bridge TFM2 target: v{}",
             .and_then(|response| parse_team_management_response(&response))
         {
             Ok(data) => {
+                #[cfg(feature = "dev")]
+                self.record_team_strategy_diagnostic_normal_read(&data);
                 self.team_management_data = Some(data);
                 self.status = format!("Team management data loaded: {}", team.display_name);
             }
@@ -6957,6 +7309,8 @@ Bridge TFM2 target: v{}",
     }
 
     fn apply_team_strategy_editor_values(&mut self) {
+        #[cfg(feature = "dev")]
+        self.team_strategy_apply_diagnostic_status.clear();
         let Some((team, _)) = self.current_team_management_context() else {
             self.team_strategy_edit_status = "Select a team first.".to_string();
             return;
@@ -6985,6 +7339,8 @@ Bridge TFM2 target: v{}",
             .map(|entry| format!("{}\t{}", entry.key, entry.value))
             .collect::<Vec<_>>()
             .join("\n");
+        #[cfg(feature = "dev")]
+        self.record_team_strategy_diagnostic_apply(team.id, self.team_strategy_edit_values.clone());
         let command = format!("SET_TEAM_STRATEGY|{}|{}", team.id, hex_encode(&raw));
         match self
             .game_request(&command)
@@ -7120,7 +7476,7 @@ Bridge TFM2 target: v{}",
         let path = Self::team_strategy_preset_path(&preset.name)?;
         if path.exists() && !overwrite {
             return Err(format!(
-                "Strategy preset '{}' already exists. Select it and use Edit.",
+                "Strategy preset '{}' already exists. Select it and use Save.",
                 preset.name
             ));
         }
@@ -7136,7 +7492,7 @@ Bridge TFM2 target: v{}",
     }
 
     fn save_current_team_strategy_preset(&mut self) {
-        let Some((team, data)) = self.current_team_management_context() else {
+        let Some((team, _)) = self.current_team_management_context() else {
             self.team_strategy_preset_status = "Select a team first.".to_string();
             return;
         };
@@ -7145,8 +7501,42 @@ Bridge TFM2 target: v{}",
                 "AI teams are read-only. Strategy Presets are player-team only.".to_string();
             return;
         }
+        if self.team_strategy_edit_team_id != Some(team.id) {
+            self.team_strategy_preset_status =
+                "Load a preset or Reload Current Strategy before saving.".to_string();
+            return;
+        }
+
         let name = Self::sanitize_team_strategy_preset_name(&self.team_strategy_preset_name);
-        let preset = TeamStrategyPreset::new(name.clone(), data.current_strategy);
+        let preset = match team_strategy_preset_from_editor(
+            name.clone(),
+            &self.team_strategy_edit_values,
+        ) {
+            Ok(preset) => preset,
+            Err(error) => {
+                self.team_strategy_preset_status = error;
+                return;
+            }
+        };
+
+        if let Some(selected) = self.team_strategy_selected_preset.clone() {
+            if !self
+                .team_strategy_presets
+                .iter()
+                .any(|existing| existing.name.eq_ignore_ascii_case(&selected))
+            {
+                self.team_strategy_preset_status =
+                    "Selected strategy preset was not found.".to_string();
+                return;
+            }
+            self.team_strategy_preset_save_confirmation =
+                Some(TeamStrategyPresetSaveConfirmation {
+                    original_name: selected,
+                    preset,
+                });
+            return;
+        }
+
         match self.write_team_strategy_preset(&preset, false) {
             Ok(()) => {
                 self.team_strategy_selected_preset = Some(name.clone());
@@ -7159,27 +7549,35 @@ Bridge TFM2 target: v{}",
     }
 
     fn edit_selected_team_strategy_preset(&mut self) {
-        let Some((team, data)) = self.current_team_management_context() else {
-            self.team_strategy_preset_status = "Select a team first.".to_string();
+        let Some(confirmation) = self.team_strategy_preset_save_confirmation.clone() else {
             return;
         };
-        if !team.is_player_team {
-            self.team_strategy_preset_status =
-                "AI teams are read-only. Strategy Presets are player-team only.".to_string();
-            return;
-        }
-        let Some(old_name) = self.team_strategy_selected_preset.clone() else {
-            self.team_strategy_preset_status = "Select a strategy preset to edit.".to_string();
-            return;
+        let plan = match team_strategy_preset_save_plan(
+            &self.team_strategy_presets,
+            &confirmation,
+            TeamStrategyPresetSaveChoice::Overwrite,
+        ) {
+            Ok(plan) => plan,
+            Err(error) => {
+                self.team_strategy_preset_save_confirmation = None;
+                self.team_strategy_preset_status = error;
+                return;
+            }
+        };
+        let TeamStrategyPresetSavePlan::Overwrite {
+            original_name,
+            preset,
+        } = plan
+        else {
+            unreachable!();
         };
 
-        let new_name = Self::sanitize_team_strategy_preset_name(&self.team_strategy_preset_name);
-        let preset = TeamStrategyPreset::new(new_name.clone(), data.current_strategy);
-        if !old_name.eq_ignore_ascii_case(&new_name) {
-            if let Ok(new_path) = Self::team_strategy_preset_path(&new_name) {
+        if !original_name.eq_ignore_ascii_case(&preset.name) {
+            if let Ok(new_path) = Self::team_strategy_preset_path(&preset.name) {
                 if new_path.exists() {
+                    self.team_strategy_preset_save_confirmation = None;
                     self.team_strategy_preset_status =
-                        format!("Strategy preset '{new_name}' already exists.");
+                        format!("Strategy preset '{}' already exists.", preset.name);
                     return;
                 }
             }
@@ -7187,19 +7585,108 @@ Bridge TFM2 target: v{}",
 
         match self.write_team_strategy_preset(&preset, true) {
             Ok(()) => {
-                if !old_name.eq_ignore_ascii_case(&new_name) {
-                    if let Ok(old_path) = Self::team_strategy_preset_path(&old_name) {
+                if !original_name.eq_ignore_ascii_case(&preset.name) {
+                    if let Ok(old_path) = Self::team_strategy_preset_path(&original_name) {
                         let _ = fs::remove_file(old_path);
                     }
                 }
-                self.team_strategy_selected_preset = Some(new_name.clone());
-                self.team_strategy_preset_name = new_name.clone();
+                let saved_name = preset.name.clone();
+                self.team_strategy_selected_preset = Some(saved_name.clone());
+                self.team_strategy_preset_name = saved_name.clone();
+                self.team_strategy_preset_save_confirmation = None;
                 self.reload_team_strategy_presets();
-                self.team_strategy_preset_status = format!(
-                    "Updated strategy preset from current player-team strategy: {new_name}"
-                );
+                self.team_strategy_preset_status =
+                    format!("Overwrote strategy preset from editor values: {saved_name}");
             }
-            Err(error) => self.team_strategy_preset_status = error,
+            Err(error) => {
+                self.team_strategy_preset_save_confirmation = None;
+                self.team_strategy_preset_status = error;
+            }
+        }
+    }
+
+    fn save_as_new_team_strategy_preset(&mut self) {
+        let Some(confirmation) = self.team_strategy_preset_save_confirmation.clone() else {
+            return;
+        };
+        let plan = match team_strategy_preset_save_plan(
+            &self.team_strategy_presets,
+            &confirmation,
+            TeamStrategyPresetSaveChoice::SaveAsNew,
+        ) {
+            Ok(plan) => plan,
+            Err(error) => {
+                self.team_strategy_preset_save_confirmation = None;
+                self.team_strategy_preset_status = error;
+                return;
+            }
+        };
+        let TeamStrategyPresetSavePlan::Create { preset } = plan else {
+            unreachable!();
+        };
+        let saved_name = preset.name.clone();
+        match self.write_team_strategy_preset(&preset, false) {
+            Ok(()) => {
+                self.team_strategy_selected_preset = Some(saved_name.clone());
+                self.team_strategy_preset_name = saved_name.clone();
+                self.team_strategy_preset_save_confirmation = None;
+                self.reload_team_strategy_presets();
+                self.team_strategy_preset_status =
+                    format!("Saved new strategy preset from editor values: {saved_name}");
+            }
+            Err(error) => {
+                self.team_strategy_preset_save_confirmation = None;
+                self.team_strategy_preset_status = error;
+            }
+        }
+    }
+
+    fn render_team_strategy_preset_save_confirmation(&mut self, ctx: &egui::Context) {
+        if self.team_strategy_preset_save_confirmation.is_none() {
+            return;
+        }
+
+        let mut open = true;
+        let mut choice = None;
+        egui::Window::new("Save Strategy Preset")
+            .id(egui::Id::new("team_strategy_preset_save_confirmation_v052"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .default_width(420.0)
+            .show(ctx, |ui| {
+                ui.label("This preset already exists.");
+                ui.label("What would you like to do?");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Overwrite Preset").clicked() {
+                        choice = Some(TeamStrategyPresetSaveChoice::Overwrite);
+                    }
+                    if ui.button("Save as New").clicked() {
+                        choice = Some(TeamStrategyPresetSaveChoice::SaveAsNew);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        choice = Some(TeamStrategyPresetSaveChoice::Cancel);
+                    }
+                });
+            });
+
+        match choice {
+            Some(TeamStrategyPresetSaveChoice::Overwrite) => {
+                self.edit_selected_team_strategy_preset();
+            }
+            Some(TeamStrategyPresetSaveChoice::SaveAsNew) => {
+                self.save_as_new_team_strategy_preset();
+            }
+            Some(TeamStrategyPresetSaveChoice::Cancel) => {
+                self.team_strategy_preset_save_confirmation = None;
+                self.team_strategy_preset_status = "Strategy preset save cancelled.".to_string();
+            }
+            None if !open => {
+                self.team_strategy_preset_save_confirmation = None;
+            }
+            None => {}
         }
     }
 
@@ -7239,6 +7726,8 @@ Bridge TFM2 target: v{}",
     }
 
     fn apply_selected_team_strategy_preset(&mut self) {
+        #[cfg(feature = "dev")]
+        self.team_strategy_apply_diagnostic_status.clear();
         let Some((team, _)) = self.current_team_management_context() else {
             self.team_strategy_preset_status = "Select a team first.".to_string();
             return;
@@ -7268,6 +7757,8 @@ Bridge TFM2 target: v{}",
             .map(|entry| format!("{}\t{}", entry.key, entry.value))
             .collect::<Vec<_>>()
             .join("\n");
+        #[cfg(feature = "dev")]
+        self.record_team_strategy_diagnostic_apply(team.id, preset.strategy.clone());
         let command = format!("SET_TEAM_STRATEGY|{}|{}", team.id, hex_encode(&raw));
         match self
             .game_request(&command)
@@ -7293,6 +7784,83 @@ Bridge TFM2 target: v{}",
         }
     }
 
+    #[cfg(feature = "dev")]
+    fn record_team_strategy_diagnostic_apply(
+        &mut self,
+        team_id: usize,
+        requested: Vec<TeamStrategyEntry>,
+    ) {
+        self.team_strategy_diagnostic_apply_sequence =
+            self.team_strategy_diagnostic_apply_sequence.saturating_add(1);
+        self.team_strategy_diagnostic_last_apply_team_id = Some(team_id);
+        self.team_strategy_diagnostic_last_requested = requested;
+        self.team_strategy_diagnostic_last_normal_read_team_id = None;
+        self.team_strategy_diagnostic_last_normal_read.clear();
+        self.team_strategy_apply_diagnostic_status.clear();
+        self.team_strategy_server_snapshot_status.clear();
+    }
+
+    #[cfg(feature = "dev")]
+    fn record_team_strategy_diagnostic_normal_read(&mut self, data: &TeamManagementData) {
+        if self.team_strategy_diagnostic_last_apply_team_id == Some(data.team_id) {
+            self.team_strategy_diagnostic_last_normal_read_team_id = Some(data.team_id);
+            self.team_strategy_diagnostic_last_normal_read = data.current_strategy.clone();
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn request_team_strategy_server_snapshot(&mut self) {
+        let Some(team_id) = self.team_workspace_team_id else {
+            self.team_strategy_server_snapshot_status = "Select a team first.".to_string();
+            return;
+        };
+        let command = format!("GET_TEAM_STRATEGY_SERVER_SNAPSHOT|{team_id}");
+        match self.game_request(&command) {
+            Ok(response) => match parse_team_strategy_server_snapshot_response(&response) {
+                Ok((sequence, response_team_id, strategy)) => {
+                    if response_team_id != team_id {
+                        self.team_strategy_server_snapshot_status = format!(
+                            "SERVER_STRATEGY_SNAPSHOT team mismatch: requested {team_id}, received {response_team_id}."
+                        );
+                        return;
+                    }
+                    let mut status = format!(
+                        "SERVER_STRATEGY_SNAPSHOT|{response_team_id}|request={sequence}"
+                    );
+                    for entry in strategy {
+                        status.push('|');
+                        status.push_str(&entry.key);
+                        status.push('|');
+                        status.push_str(&entry.value);
+                    }
+                    self.team_strategy_server_snapshot_status = status;
+                }
+                Err(error) => self.team_strategy_server_snapshot_status = human_error(&error),
+            },
+            Err(error) => self.team_strategy_server_snapshot_status = human_error(&error),
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn refresh_team_strategy_apply_diagnostic(&mut self) {
+        match self.game_request("GET_TEAM_STRATEGY_APPLY_DIAGNOSTIC") {
+            Ok(response) => {
+                let parts = response.split('|').collect::<Vec<_>>();
+                if parts.len() == 3
+                    && parts[0] == "OK"
+                    && parts[1] == "TEAM_STRATEGY_APPLY_DIAGNOSTIC"
+                {
+                    self.team_strategy_apply_diagnostic_status = hex_decode(parts[2])
+                        .unwrap_or_else(|error| format!("Diagnostic decode failed: {error}"));
+                } else {
+                    self.team_strategy_apply_diagnostic_status = response;
+                }
+            }
+            Err(error) => self.team_strategy_apply_diagnostic_status = human_error(&error),
+        }
+    }
+
+    #[cfg(feature = "dev")]
     fn run_team_strategy_safe_write_probe(&mut self) {
         let Some((team, data_before)) = self.current_team_management_context() else {
             self.team_strategy_probe_status =
@@ -7613,6 +8181,455 @@ Bridge TFM2 target: v{}",
             Err(error) => {
                 self.status = human_error(&error);
             }
+        }
+    }
+
+    fn training_multiplier_supported(multiplier_tenths: u32) -> bool {
+        multiplier_tenths >= 10
+    }
+
+    fn training_multiplier_label(multiplier_tenths: u32) -> String {
+        format!("x{}.{:01}", multiplier_tenths / 10, multiplier_tenths % 10)
+    }
+
+    fn training_bulk_multiplier_label(multiplier_tenths: u32) -> String {
+        format!("x{}", multiplier_tenths / 10)
+    }
+
+    fn training_multiplier_input(multiplier_tenths: u32) -> String {
+        format!("{}.{:01}", multiplier_tenths / 10, multiplier_tenths % 10)
+    }
+
+    fn parse_training_multiplier_tenths(input: &str) -> Result<u32, &'static str> {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return Err("TRAINING_XP_MULTIPLIER_EMPTY");
+        }
+        if trimmed.starts_with('+') || trimmed.starts_with('-') {
+            return Err("TRAINING_XP_MULTIPLIER_INVALID");
+        }
+
+        let mut parts = trimmed.split('.');
+        let whole_raw = parts.next().ok_or("TRAINING_XP_MULTIPLIER_INVALID")?;
+        let fraction_raw = parts.next();
+        if parts.next().is_some() || whole_raw.is_empty() {
+            return Err("TRAINING_XP_MULTIPLIER_INVALID");
+        }
+        if !whole_raw.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err("TRAINING_XP_MULTIPLIER_INVALID");
+        }
+        let whole = whole_raw
+            .parse::<u64>()
+            .map_err(|_| "TRAINING_XP_MULTIPLIER_REPRESENTATION")?;
+        let fraction = match fraction_raw {
+            None => 0u64,
+            Some(raw) if raw.len() == 1 && raw.bytes().all(|byte| byte.is_ascii_digit()) => raw
+                .parse::<u64>()
+                .map_err(|_| "TRAINING_XP_MULTIPLIER_INVALID")?,
+            Some(_) => return Err("TRAINING_XP_MULTIPLIER_PRECISION"),
+        };
+        let multiplier_tenths = whole
+            .checked_mul(10)
+            .and_then(|value| value.checked_add(fraction))
+            .ok_or("TRAINING_XP_MULTIPLIER_REPRESENTATION")?;
+        let multiplier_tenths = u32::try_from(multiplier_tenths)
+            .map_err(|_| "TRAINING_XP_MULTIPLIER_REPRESENTATION")?;
+        if !Self::training_multiplier_supported(multiplier_tenths) {
+            return Err("TRAINING_XP_MULTIPLIER_OUT_OF_RANGE");
+        }
+        Ok(multiplier_tenths)
+    }
+
+    fn team_training_roster_for(&self, team: &TeamSummary) -> Vec<PlayerSummary> {
+        let mut roster = self
+            .players
+            .iter()
+            .filter(|player| summary_belongs_to_team(&player.team, team))
+            .cloned()
+            .collect::<Vec<_>>();
+        roster.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        roster
+    }
+
+    fn refresh_team_training_roster_state(&mut self) {
+        let Some(team_id) = self.team_training_team_id.or(self.team_workspace_team_id) else {
+            return;
+        };
+        let Some(team) = self.teams.iter().find(|team| team.id == team_id).cloned() else {
+            self.team_training_status = self.localization.tr("training.team_unavailable");
+            return;
+        };
+        if !team.is_player_team {
+            self.team_training_status = self.localization.tr("training.player_team_only");
+            return;
+        }
+        let roster = self.team_training_roster_for(&team);
+        let roster_ids = roster.iter().map(|player| player.id).collect::<BTreeSet<_>>();
+
+        match Self::request_raw(&format!("GET_TRAINING_XP_ROSTER|{team_id}")) {
+            Ok(response) => {
+                let parts = response.split('|').collect::<Vec<_>>();
+                if parts.len() != 4 || parts[0] != "OK" || parts[1] != "TRAINING_XP_ROSTER" {
+                    if let Some(reason) = response.strip_prefix("ERR|") {
+                        self.team_training_status = human_error(reason);
+                    } else {
+                        self.team_training_status = self.localization.tr_with(
+                        "training.invalid_response",
+                        &[("response", response.as_str())],
+                    );
+                    }
+                    return;
+                }
+                let Ok(count) = parts[2].parse::<usize>() else {
+                    self.team_training_status = self.localization.tr("training.invalid_response_count");
+                    return;
+                };
+                let mut authoritative = HashMap::new();
+                if !parts[3].is_empty() {
+                    for row in parts[3].split(';') {
+                        let Some((athlete_raw, multiplier_raw)) = row.split_once(':') else {
+                            self.team_training_status = self.localization.tr("training.invalid_response_row");
+                            return;
+                        };
+                        let Ok(athlete_id) = athlete_raw.parse::<usize>() else {
+                            self.team_training_status = self.localization.tr("training.invalid_athlete_id");
+                            return;
+                        };
+                        let Ok(multiplier_tenths) = multiplier_raw.parse::<u32>() else {
+                            self.team_training_status = self.localization.tr("training.invalid_multiplier");
+                            return;
+                        };
+                        if !roster_ids.contains(&athlete_id)
+                            || !Self::training_multiplier_supported(multiplier_tenths)
+                            || authoritative.insert(athlete_id, multiplier_tenths).is_some()
+                        {
+                            self.team_training_status = self.localization.tr("training.response_validation_failed");
+                            return;
+                        }
+                    }
+                }
+                if count != roster.len() || authoritative.len() != roster.len() {
+                    self.team_training_status = self.localization.tr("training.roster_mismatch");
+                    return;
+                }
+
+                self.team_training_team_id = Some(team_id);
+                self.team_training_authoritative_multipliers = authoritative.clone();
+                self.team_training_draft_multipliers = authoritative
+                    .iter()
+                    .map(|(athlete_id, multiplier_tenths)| {
+                        (*athlete_id, Self::training_multiplier_input(*multiplier_tenths))
+                    })
+                    .collect();
+                let mut distinct = self
+                    .team_training_authoritative_multipliers
+                    .values()
+                    .copied()
+                    .collect::<BTreeSet<_>>();
+                let common = if distinct.len() == 1 {
+                    distinct.pop_first().unwrap_or(10)
+                } else {
+                    10
+                };
+                self.team_training_set_all_multiplier_tenths =
+                    if matches!(common, 10 | 20 | 30 | 40 | 50) {
+                        common
+                    } else {
+                        10
+                    };
+                self.team_training_status.clear();
+            }
+            Err(error) => {
+                self.team_training_status = error;
+            }
+        }
+    }
+
+    fn apply_team_training_roster(&mut self) {
+        let Some(team_id) = self.team_training_team_id else {
+            return;
+        };
+        let Some(team) = self.teams.iter().find(|team| team.id == team_id).cloned() else {
+            self.team_training_status = self.localization.tr("training.team_unavailable");
+            return;
+        };
+        if !team.is_player_team {
+            self.team_training_status = self.localization.tr("training.player_team_only");
+            return;
+        }
+        let roster = self.team_training_roster_for(&team);
+        let mut values = Vec::with_capacity(roster.len());
+        for player in &roster {
+            let authoritative = self
+                .team_training_authoritative_multipliers
+                .get(&player.id)
+                .copied()
+                .unwrap_or(10);
+            let draft = self
+                .team_training_draft_multipliers
+                .get(&player.id)
+                .cloned()
+                .unwrap_or_else(|| Self::training_multiplier_input(authoritative));
+            let multiplier_tenths = match Self::parse_training_multiplier_tenths(&draft) {
+                Ok(value) => value,
+                Err("TRAINING_XP_MULTIPLIER_REPRESENTATION") => {
+                    self.team_training_status = self.localization.tr_with(
+                        "training.multiplier_representation_error",
+                        &[("player", player.name.as_str()), ("value", draft.as_str())],
+                    );
+                    return;
+                }
+                Err(_) => {
+                    self.team_training_status = self.localization.tr_with(
+                        "training.invalid_player_multiplier",
+                        &[("player", player.name.as_str()), ("value", draft.as_str())],
+                    );
+                    return;
+                }
+            };
+            values.push((player.id, multiplier_tenths));
+        }
+
+        let mut command = format!("SET_TRAINING_XP_ROSTER|{team_id}|{}", values.len());
+        for (athlete_id, multiplier_tenths) in &values {
+            command.push('|');
+            command.push_str(&format!("{athlete_id}:{multiplier_tenths}"));
+        }
+        match Self::request_raw(&command) {
+            Ok(response) if response == format!("OK|TRAINING_XP_ROSTER_SET|{}", values.len()) => {
+                let expected = values.iter().copied().collect::<HashMap<_, _>>();
+                self.refresh_team_training_roster_state();
+                if self.team_training_team_id == Some(team_id)
+                    && self.team_training_authoritative_multipliers == expected
+                {
+                    let count = values.len().to_string();
+                    self.team_training_status = self.localization.tr_with(
+                        "training.apply_success_roster",
+                        &[("count", count.as_str())],
+                    );
+                    self.status = self.team_training_status.clone();
+                } else {
+                    if self.team_training_status.trim().is_empty() {
+                        self.team_training_status =
+                            self.localization.tr("training.apply_not_confirmed");
+                    }
+                    self.status = self.team_training_status.clone();
+                }
+            }
+            Ok(response) => {
+                if let Some(reason) = response.strip_prefix("ERR|") {
+                    self.team_training_status = human_error(reason);
+                } else {
+                    self.team_training_status = self.localization.tr_with(
+                            "training.invalid_response",
+                            &[("response", response.as_str())],
+                        );
+                }
+            }
+            Err(error) => {
+                self.team_training_status = error;
+            }
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn refresh_team_training_xp_probe(&mut self) {
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.status = "Select a team first".to_string();
+            return;
+        };
+
+        if !team.is_player_team {
+            self.status = "Training XP research is player-team only.".to_string();
+            return;
+        }
+
+        let command = format!("GET_TRAINING_XP_PROBE|{}", team.id);
+        match self.game_request(&command).and_then(|response| {
+            let parts = response.split('|').collect::<Vec<_>>();
+            if parts.len() != 3 || parts[0] != "OK" || parts[1] != "TRAINING_XP_PROBE" {
+                return Err(response);
+            }
+            hex_decode(parts[2])
+        }) {
+            Ok(raw) => {
+                self.team_training_xp_research_enabled = raw
+                    .lines()
+                    .any(|line| line.trim() == "Research Probe: ON");
+                self.team_training_xp_x2_armed = raw
+                    .lines()
+                    .any(|line| line.trim() == "X2 Continuous: ARMED");
+                self.team_training_xp_x1_5_armed = raw
+                    .lines()
+                    .any(|line| line.trim() == "Float x1.5: ARMED");
+                self.team_training_xp_probe_raw = raw;
+                self.team_training_xp_probe_team_id = Some(team.id);
+                self.team_training_xp_probe_window_open = true;
+                self.team_training_xp_probe_ui_cleared = false;
+                self.status = format!("Training XP research status refreshed: {}", team.display_name);
+            }
+            Err(error) => {
+                self.status = human_error(&error);
+            }
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn set_team_training_xp_research_enabled(&mut self, enabled: bool) {
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.status = "Select a team first".to_string();
+            return;
+        };
+
+        if !team.is_player_team {
+            self.status = "Training XP research is player-team only.".to_string();
+            return;
+        }
+
+        let command = format!(
+            "SET_TRAINING_XP_RESEARCH|{}|{}",
+            team.id,
+            if enabled { 1 } else { 0 }
+        );
+        let expected = format!(
+            "OK|TRAINING_XP_RESEARCH|{}",
+            if enabled { "ON" } else { "OFF" }
+        );
+        match self.game_request(&command) {
+            Ok(response) if response == expected => {
+                self.status = if enabled {
+                    "Training XP Research Probe enabled.".to_string()
+                } else {
+                    "Training XP Research Probe disabled. Previous evidence remains available for export."
+                        .to_string()
+                };
+            }
+            Ok(response) => {
+                self.status = human_error(&response);
+            }
+            Err(error) => {
+                self.status = human_error(&error);
+            }
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn export_team_training_xp_probe_log(&mut self) {
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.status = "Select a team first".to_string();
+            return;
+        };
+
+        if !team.is_player_team {
+            self.status = "Training XP research is player-team only.".to_string();
+            return;
+        }
+
+        let command = format!("GET_TRAINING_XP_PROBE_LOG|{}", team.id);
+        let full_log = match self.game_request(&command).and_then(|response| {
+            let parts = response.split('|').collect::<Vec<_>>();
+            if parts.len() != 3 || parts[0] != "OK" || parts[1] != "TRAINING_XP_PROBE_LOG" {
+                return Err(response);
+            }
+            hex_decode(parts[2])
+        }) {
+            Ok(full_log) => full_log,
+            Err(error) => {
+                self.status = human_error(&error);
+                return;
+            }
+        };
+
+        let file_name = format!("training_xp_research_team_{}.log", team.id);
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Export Training XP Research Log")
+            .set_file_name(&file_name)
+            .add_filter("Log File", &["log"])
+            .save_file()
+        else {
+            return;
+        };
+
+        match fs::write(&path, full_log) {
+            Ok(()) => {
+                self.status = format!("Exported Training XP research log to {}", path.display())
+            }
+            Err(error) => {
+                self.status = format!("Could not export Training XP research log: {error}")
+            }
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn arm_team_training_xp_x2_probe(&mut self) {
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.status = "Select a team first".to_string();
+            return;
+        };
+        if !team.is_player_team {
+            self.status = "Training XP research is player-team only.".to_string();
+            return;
+        }
+        let Ok(athlete_id) = self.team_training_xp_x2_athlete_id.trim().parse::<usize>() else {
+            self.status = "Enter a valid Athlete ID for the x2 write probe.".to_string();
+            return;
+        };
+        let command = format!("SET_TRAINING_XP_X2_PROBE|{}|{}", team.id, athlete_id);
+        match self.game_request(&command) {
+            Ok(response)
+                if response == format!("OK|TRAINING_XP_X2_PROBE_ARMED|{athlete_id}") =>
+            {
+                self.status = format!(
+                    "Training XP x2 continuous probe armed for Athlete {athlete_id}."
+                );
+            }
+            Ok(response) => self.status = human_error(&response),
+            Err(error) => self.status = human_error(&error),
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn disarm_team_training_xp_x2_probe(&mut self) {
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.status = "Select a team first".to_string();
+            return;
+        };
+        if !team.is_player_team {
+            self.status = "Training XP research is player-team only.".to_string();
+            return;
+        }
+        let command = format!("CLEAR_TRAINING_XP_X2_PROBE|{}", team.id);
+        match self.game_request(&command) {
+            Ok(response) if response == "OK|TRAINING_XP_X2_PROBE_DISARMED" => {
+                self.status = "Training XP x2 continuous probe disarm requested.".to_string();
+            }
+            Ok(response) => self.status = human_error(&response),
+            Err(error) => self.status = human_error(&error),
         }
     }
 
@@ -13658,6 +14675,10 @@ Bridge TFM2 target: v{}",
         let mut condition_probe_requested = false;
         #[cfg(feature = "dev")]
         let mut team_data_probe_requested = false;
+        #[cfg(feature = "dev")]
+        let mut training_xp_probe_requested = false;
+        let mut training_open_requested = false;
+        let mut training_roster_refresh_requested = false;
         let mut team_management_requested = false;
         let mut team_history_requested = false;
         let mut team_league_standings_requested = false;
@@ -13772,12 +14793,20 @@ Bridge TFM2 target: v{}",
             // any stale player-team windows when the workspace switches to an
             // AI team so they cannot display misleading empty/stale content.
             if !team.is_player_team {
+                self.team_training_window_open = false;
+                self.team_training_team_id = None;
+                self.team_training_authoritative_multipliers.clear();
+                self.team_training_draft_multipliers.clear();
+                self.team_training_set_all_multiplier_tenths = 10;
                 self.team_merchandise_window_open = false;
                 self.close_dev_champion_setup_window();
                 self.team_pre_match_analysis_window_open = false;
             }
 
-            self.status = format!("Team data loaded: {}", team.display_name);
+            self.status = self.localization.tr_with(
+                "team_workspace.data_loaded",
+                &[("team", team.display_name.as_str())],
+            );
         }
 
         let loaded_roster_count = self
@@ -13811,6 +14840,8 @@ Bridge TFM2 target: v{}",
             self.team_league_standings_last_request_league_id != Some(team.league_id);
         let competition_auto_request = self.team_competition_window_open
             && self.team_competition_last_request_team_id != Some(team.id);
+        let training_auto_request = team.is_player_team
+            && self.team_training_team_id != Some(team.id);
 
         ui.scope(|ui| {
             // Keep the v0.5.35 one-pixel Team action-button padding. v0.5.36
@@ -13878,6 +14909,18 @@ Bridge TFM2 target: v{}",
                     }
                     },
                 );
+
+                let training_response = team_navigation_button(
+                    ui,
+                    self.localization.tr("team_workspace.open_training"),
+                    team.is_player_team,
+                    false,
+                    false,
+                )
+                .on_disabled_hover_text(self.localization.tr("training.player_team_only"));
+                if training_response.clicked() {
+                    training_open_requested = true;
+                }
 
                 team_navigation_dropdown(
                     ui,
@@ -13947,9 +14990,14 @@ Bridge TFM2 target: v{}",
                     },
                 );
 
-                if ui
-                    .button(self.localization.tr("team_workspace.open_finance_center"))
-                    .clicked()
+                if team_navigation_button(
+                    ui,
+                    self.localization.tr("team_workspace.open_finance_center"),
+                    true,
+                    false,
+                    false,
+                )
+                .clicked()
                 {
                     self.team_finance_center_window_open = true;
                     self.team_finance_last_team_id = None;
@@ -14001,6 +15049,9 @@ Bridge TFM2 target: v{}",
                             match action {
                                 TeamNavigationAction::TeamDataProbe => {
                                     team_data_probe_requested = true;
+                                }
+                                TeamNavigationAction::TrainingXpProbe => {
+                                    training_xp_probe_requested = true;
                                 }
                                 TeamNavigationAction::ChampionSetup => {
                                     self.team_champion_setup_window_open = true;
@@ -14229,7 +15280,7 @@ Bridge TFM2 target: v{}",
                                         management_open_player_id = Some(player_id);
                                     }
                                     player_response.context_menu(|ui| {
-                                        if ui.button("Open in Player Editor").clicked() {
+                                        if ui.button(self.localization.tr("search.open_in_player_editor")).clicked() {
                                             management_open_player_id = Some(player_id);
                                             ui.close_menu();
                                         }
@@ -14306,7 +15357,7 @@ Bridge TFM2 target: v{}",
         let render_team_summary_inline = |ui: &mut egui::Ui| {
             show_team_dashboard_card(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                ui.strong("Team Summary");
+                ui.strong(self.localization.tr("team_workspace.open_history_summary"));
                 ui.add_space(3.0);
                 if let Some(data) = history_data.as_ref() {
                     egui::Grid::new("team_workspace_summary_inline_grid_v0535")
@@ -14347,10 +15398,72 @@ Bridge TFM2 target: v{}",
             });
         };
 
+        let mut render_training_inline = |ui: &mut egui::Ui| {
+            if !team.is_player_team {
+                return;
+            }
+            show_team_dashboard_card(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.strong(self.localization.tr("training.dashboard_title"));
+                ui.add_space(3.0);
+
+                let roster = self.team_training_roster_for(&team);
+                let values = roster
+                    .iter()
+                    .map(|player| {
+                        self.team_training_authoritative_multipliers
+                            .get(&player.id)
+                            .copied()
+                            .unwrap_or(10)
+                    })
+                    .collect::<Vec<_>>();
+                let full_roster = if values.is_empty() {
+                    "x1.0".to_string()
+                } else if values.iter().all(|value| *value == values[0]) {
+                    Self::training_multiplier_label(values[0])
+                } else {
+                    self.localization.tr("training.mixed")
+                };
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(self.localization.tr("training.full_roster_multiplier"));
+                    ui.strong(full_roster).on_hover_text(
+                        self.localization.tr("training.full_roster_tooltip"),
+                    );
+                });
+                ui.add_space(4.0);
+
+                egui::Grid::new("team_workspace_training_summary_grid_v055_full_roster")
+                    .num_columns(3)
+                    .spacing(egui::vec2(12.0, 3.0))
+                    .show(ui, |ui| {
+                        ui.strong(self.localization.tr("common.player"));
+                        ui.strong(self.localization.tr("training.position"));
+                        ui.strong(self.localization.tr("training.multiplier_short"));
+                        ui.end_row();
+                        for player in &roster {
+                            let multiplier_tenths = self
+                                .team_training_authoritative_multipliers
+                                .get(&player.id)
+                                .copied()
+                                .unwrap_or(10);
+                            ui.label(&player.name);
+                            ui.label(value_or_dash(&player.position));
+                            ui.label(Self::training_multiplier_label(multiplier_tenths))
+                                .on_hover_text(self.localization.tr("training.multiplier_tooltip"));
+                            ui.end_row();
+                        }
+                    });
+                ui.add_space(5.0);
+                if ui.button(self.localization.tr("training.open_training")).clicked() {
+                    training_open_requested = true;
+                }
+            });
+        };
+
         let render_gaming_house_inline = |ui: &mut egui::Ui| {
             show_team_dashboard_card(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                ui.strong("Gaming House");
+                ui.strong(self.localization.tr("team_workspace.open_gaming_house"));
                 ui.add_space(3.0);
                 if let Some(data) = management_data.as_ref() {
                     let summary = &data.gaming_house;
@@ -14417,7 +15530,7 @@ Bridge TFM2 target: v{}",
         let render_league_standings_inline = |ui: &mut egui::Ui| {
             show_team_dashboard_card(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                ui.strong("League Standings");
+                ui.strong(self.localization.tr("team_workspace.open_league_standings"));
                 ui.add_space(3.0);
                 let data = self
                     .team_league_standings
@@ -14433,7 +15546,13 @@ Bridge TFM2 target: v{}",
                     .iter()
                     .find(|league| league.id == team.league_id)
                     .map(|league| league.display_label(&self.localization))
-                    .unwrap_or_else(|| format!("League {}", team.league_id));
+                    .unwrap_or_else(|| {
+                        let league_id = team.league_id.to_string();
+                        self.localization.tr_with(
+                            "common.league_number",
+                            &[("id", league_id.as_str())],
+                        )
+                    });
                 let state = if data.finalized {
                     self.localization.tr("team_standings.finalized")
                 } else {
@@ -14562,6 +15681,8 @@ Bridge TFM2 target: v{}",
                         render_facilities(ui);
                         ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
                         render_team_summary_inline(ui);
+                        ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                        render_training_inline(ui);
                     });
                     ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
                     ui.vertical(|ui| {
@@ -14602,6 +15723,8 @@ Bridge TFM2 target: v{}",
                         ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
                         render_team_summary_inline(ui);
                         ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                        render_training_inline(ui);
+                        ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
                         render_league_standings_inline(ui);
                     });
                 });
@@ -14620,6 +15743,8 @@ Bridge TFM2 target: v{}",
                 render_facilities(ui);
                 ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
                 render_team_summary_inline(ui);
+                ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
+                render_training_inline(ui);
                 ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
                 render_gaming_house_inline(ui);
                 ui.add_space(TEAM_DASHBOARD_COLUMN_GAP);
@@ -14640,6 +15765,10 @@ Bridge TFM2 target: v{}",
         if team_data_probe_requested {
             self.refresh_team_data_probe();
         }
+        #[cfg(feature = "dev")]
+        if training_xp_probe_requested {
+            self.refresh_team_training_xp_probe();
+        }
 
         if refresh_requested {
             let selected_team_id = self.team_workspace_team_id;
@@ -14655,8 +15784,24 @@ Bridge TFM2 target: v{}",
                 .team_workspace_team_id
                 .and_then(|team_id| self.teams.iter().find(|candidate| candidate.id == team_id))
             {
-                self.status = format!("Team data loaded: {}", selected_team.display_name);
+                self.status = self.localization.tr_with(
+                    "team_workspace.data_loaded",
+                    &[("team", selected_team.display_name.as_str())],
+                );
             }
+        }
+
+        if training_open_requested {
+            self.team_training_window_open = true;
+            self.team_training_team_id = Some(team.id);
+            training_roster_refresh_requested = true;
+        }
+        if selection_changed || refresh_requested || training_auto_request {
+            self.team_training_team_id = Some(team.id);
+            training_roster_refresh_requested = team.is_player_team;
+        }
+        if training_roster_refresh_requested {
+            self.refresh_team_training_roster_state();
         }
 
         if refresh_requested
@@ -14787,7 +15932,7 @@ Bridge TFM2 target: v{}",
                         }
                         table
                             .header(24.0, |mut header| {
-                                header.col(|ui| { ui.strong("Select"); });
+                                header.col(|ui| { ui.strong(self.localization.tr("team_condition.select")); });
                                 header.col(|ui| { ui.strong(self.localization.tr("common.name")); });
                                 header.col(|ui| { ui.strong(self.localization.tr("common.id")); });
                                 header.col(|ui| { ui.strong(self.localization.tr("common.age")); });
@@ -15006,7 +16151,7 @@ Bridge TFM2 target: v{}",
                         }
                         table
                             .header(24.0, |mut header| {
-                                header.col(|ui| { ui.strong("Select"); });
+                                header.col(|ui| { ui.strong(self.localization.tr("team_condition.select")); });
                                 header.col(|ui| { ui.strong(self.localization.tr("common.name")); });
                                 header.col(|ui| { ui.strong(self.localization.tr("common.id")); });
                                 header.col(|ui| { ui.strong(self.localization.tr("common.age")); });
@@ -15133,10 +16278,10 @@ Bridge TFM2 target: v{}",
                 ui.label(message);
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Yes").clicked() {
+                    if ui.button(self.localization.tr("common.yes")).clicked() {
                         confirm_yes = true;
                     }
-                    if ui.button("No").clicked() {
+                    if ui.button(self.localization.tr("common.no")).clicked() {
                         confirm_no = true;
                     }
                 });
@@ -17527,6 +18672,77 @@ Bridge TFM2 target: v{}",
         self.team_performance_context_window_open = open;
     }
 
+
+    #[cfg(feature = "dev")]
+    fn arm_team_training_xp_x1_5_probe(&mut self) {
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.status = "Select a team first".to_string();
+            return;
+        };
+        if !team.is_player_team {
+            self.status = "Training XP research is player-team only.".to_string();
+            return;
+        }
+        if !self.team_training_xp_research_enabled {
+            self.status = "Enable Training XP Research first.".to_string();
+            return;
+        }
+        let Ok(athlete_id) = self.team_training_xp_x2_athlete_id.trim().parse::<usize>() else {
+            self.status = "Enter a valid Athlete ID for the x1.5 float write probe.".to_string();
+            return;
+        };
+        let command = format!("SET_TRAINING_XP_X1_5_PROBE|{}|{}", team.id, athlete_id);
+        match self.game_request(&command) {
+            Ok(response)
+                if response == format!("OK|TRAINING_XP_X1_5_PROBE_ARMED|{athlete_id}") =>
+            {
+                self.status = format!(
+                    "Training XP x1.5 fractional-carry probe armed for Athlete {athlete_id}."
+                );
+            }
+            Ok(response) => {
+                self.status = human_error(&response);
+            }
+            Err(error) => {
+                self.status = human_error(&error);
+            }
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn disarm_team_training_xp_x1_5_probe(&mut self) {
+        let Some(team) = self
+            .team_workspace_team_id
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .cloned()
+        else {
+            self.status = "Select a team first".to_string();
+            return;
+        };
+        if !team.is_player_team {
+            self.status = "Training XP research is player-team only.".to_string();
+            return;
+        }
+        let command = format!("CLEAR_TRAINING_XP_X1_5_PROBE|{}", team.id);
+        match self.game_request(&command) {
+            Ok(response) if response == "OK|TRAINING_XP_X1_5_PROBE_DISARMED" => {
+                self.status =
+                    "Training XP x1.5 probe disarmed. Fractional carry was cleared Bridge-side."
+                        .to_string();
+            }
+            Ok(response) => {
+                self.status = human_error(&response);
+            }
+            Err(error) => {
+                self.status = human_error(&error);
+            }
+        }
+    }
+
     #[cfg(feature = "dev")]
     fn render_team_data_probe_window(&mut self, ctx: &egui::Context) {
         if !self.team_data_probe_window_open {
@@ -17567,7 +18783,7 @@ Bridge TFM2 target: v{}",
                     if ui.button(&refresh_label).clicked() {
                         refresh_requested = true;
                     }
-                    ui.weak(&help);
+                    ui.weak(help);
                 });
                 ui.separator();
 
@@ -17603,6 +18819,386 @@ Bridge TFM2 target: v{}",
         self.team_data_probe_window_open = open;
         if refresh_requested {
             self.refresh_team_data_probe();
+        }
+    }
+
+    fn render_team_training_window(&mut self, ctx: &egui::Context) {
+        if !self.team_training_window_open {
+            return;
+        }
+
+        let Some(team_id) = self.team_training_team_id else {
+            self.team_training_window_open = false;
+            return;
+        };
+        let Some(team) = self.teams.iter().find(|team| team.id == team_id).cloned() else {
+            self.team_training_window_open = false;
+            self.team_training_team_id = None;
+            return;
+        };
+        if !team.is_player_team {
+            self.team_training_window_open = false;
+            self.team_training_team_id = None;
+            return;
+        }
+        let roster = self.team_training_roster_for(&team);
+        for player in &roster {
+            let authoritative = self
+                .team_training_authoritative_multipliers
+                .get(&player.id)
+                .copied()
+                .unwrap_or(10);
+            self.team_training_draft_multipliers
+                .entry(player.id)
+                .or_insert_with(|| Self::training_multiplier_input(authoritative));
+        }
+        let roster_ids = roster.iter().map(|player| player.id).collect::<BTreeSet<_>>();
+        self.team_training_draft_multipliers
+            .retain(|athlete_id, _| roster_ids.contains(athlete_id));
+
+        let title = self.localization.tr_with(
+            "training.window_title",
+            &[("team", team.display_name.as_str())],
+        );
+        let mut open = self.team_training_window_open;
+        let mut refresh_requested = false;
+        let mut apply_requested = false;
+        let mut set_all_requested = false;
+        let mut reset_all_requested = false;
+
+        egui::Window::new(title)
+            .id(egui::Id::new("team_training_window_v055_full_roster"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size(egui::vec2(760.0, 520.0))
+            .min_size(egui::vec2(620.0, 360.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                ui.strong(self.localization.tr("training.section"));
+                ui.weak(self.localization.tr("training.full_roster_help"));
+                ui.add_space(8.0);
+
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(self.localization.tr("training.full_roster_multiplier"))
+                        .on_hover_text(self.localization.tr("training.full_roster_tooltip"));
+                    egui::ComboBox::from_id_salt("team_training_full_roster_multiplier")
+                        .selected_text(Self::training_bulk_multiplier_label(
+                            self.team_training_set_all_multiplier_tenths,
+                        ))
+                        .width(95.0)
+                        .show_ui(ui, |ui| {
+                            for value in [10, 20, 30, 40, 50] {
+                                ui.selectable_value(
+                                    &mut self.team_training_set_all_multiplier_tenths,
+                                    value,
+                                    Self::training_bulk_multiplier_label(value),
+                                );
+                            }
+                        });
+                    if ui
+                        .button(self.localization.tr("training.set_all"))
+                        .on_hover_text(self.localization.tr("training.full_roster_tooltip"))
+                        .clicked()
+                    {
+                        set_all_requested = true;
+                    }
+                    if ui.button(self.localization.tr("training.reset_all")).clicked() {
+                        reset_all_requested = true;
+                    }
+                });
+                ui.add_space(8.0);
+
+                let table_height = (ui.available_height() - 70.0).max(180.0);
+                egui::ScrollArea::both()
+                    .id_salt("team_training_full_roster_scroll_v055")
+                    .auto_shrink([false, false])
+                    .max_height(table_height)
+                    .show(ui, |ui| {
+                        ui.set_min_width(620.0);
+                        egui::Grid::new("team_training_full_roster_grid_v055")
+                            .num_columns(3)
+                            .striped(true)
+                            .spacing(egui::vec2(24.0, 7.0))
+                            .show(ui, |ui| {
+                                ui.strong(self.localization.tr("common.player"));
+                                ui.strong(self.localization.tr("training.position"));
+                                ui.strong(self.localization.tr("training.multiplier"));
+                                ui.end_row();
+
+                                for player in &roster {
+                                    ui.label(format!("{} — {}", player.name, player.id));
+                                    ui.label(value_or_dash(&player.position));
+                                    let authoritative = self
+                                        .team_training_authoritative_multipliers
+                                        .get(&player.id)
+                                        .copied()
+                                        .unwrap_or(10);
+                                    let draft = self
+                                        .team_training_draft_multipliers
+                                        .entry(player.id)
+                                        .or_insert_with(|| Self::training_multiplier_input(authoritative));
+                                    ui.add(
+                                        egui::TextEdit::singleline(draft)
+                                            .desired_width(95.0),
+                                    )
+                                    .on_hover_text(self.localization.tr("training.multiplier_tooltip"));
+                                    ui.end_row();
+                                }
+                            });
+                    });
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            !roster.is_empty(),
+                            egui::Button::new(self.localization.tr("training.apply_changes")),
+                        )
+                        .clicked()
+                    {
+                        apply_requested = true;
+                    }
+                    if ui.button(self.localization.tr("common.refresh")).clicked() {
+                        refresh_requested = true;
+                    }
+                });
+
+                if !self.team_training_status.trim().is_empty() {
+                    ui.add_space(8.0);
+                    ui.weak(&self.team_training_status);
+                }
+            });
+
+        self.team_training_window_open = open;
+        if set_all_requested {
+            for player in &roster {
+                self.team_training_draft_multipliers
+                    .insert(
+                        player.id,
+                        Self::training_multiplier_input(self.team_training_set_all_multiplier_tenths),
+                    );
+            }
+        }
+        if reset_all_requested {
+            for player in &roster {
+                self.team_training_draft_multipliers
+                    .insert(player.id, "1.0".to_string());
+            }
+        }
+        if apply_requested {
+            self.apply_team_training_roster();
+        } else if refresh_requested {
+            self.refresh_team_training_roster_state();
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn render_team_training_xp_probe_window(&mut self, ctx: &egui::Context) {
+        if !self.team_training_xp_probe_window_open {
+            return;
+        }
+
+        let Some(team) = self
+            .team_training_xp_probe_team_id
+            .filter(|team_id| self.team_workspace_team_id == Some(*team_id))
+            .and_then(|team_id| self.teams.iter().find(|team| team.id == team_id))
+            .filter(|team| team.is_player_team)
+            .cloned()
+        else {
+            self.team_training_xp_probe_window_open = false;
+            self.team_training_xp_probe_team_id = None;
+            self.team_training_xp_probe_raw.clear();
+            return;
+        };
+
+        let now = ctx.input(|input| input.time);
+        let auto_refresh_due = now - self.team_training_xp_probe_last_auto_refresh_time >= 1.0;
+        let mut open = self.team_training_xp_probe_window_open;
+        let mut enable_research_requested = false;
+        let mut disable_research_requested = false;
+        let mut refresh_requested = false;
+        let mut export_full_log_requested = false;
+        let mut clear_ui_requested = false;
+        let mut x2_arm_requested = false;
+        let mut x2_disarm_requested = false;
+        let mut x1_5_arm_requested = false;
+        let mut x1_5_disarm_requested = false;
+        let title = format!("Training XP Research — {}", team.display_name);
+        let help = "Development-only Training XP research. The UI auto-refreshes only bounded status/latest-event data; full evidence remains Bridge-side and is fetched only by Export Full Log. x2 and fixed x1.5 are explicit write probes.";
+        let refresh_label = self.localization.tr("training_xp_probe.refresh");
+        let clear_ui_label = self.localization.tr("training_xp_probe.clear_ui");
+        let empty_label = self.localization.tr("training_xp_probe.empty");
+        let x2_athlete_label = self.localization.tr("training_xp_probe.x2_athlete_id");
+        let x2_arm_label = self.localization.tr("training_xp_probe.x2_arm");
+        let x2_disarm_label = self.localization.tr("training_xp_probe.x2_disarm");
+        let x2_warning = self.localization.tr("training_xp_probe.x2_warning");
+        let research_enabled = self.team_training_xp_research_enabled;
+        let x2_armed = self.team_training_xp_x2_armed;
+        let x1_5_armed = self.team_training_xp_x1_5_armed;
+
+        egui::Window::new(title)
+            .id(egui::Id::new("team_training_xp_probe_window_v055"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size(egui::vec2(980.0, 680.0))
+            .min_size(egui::vec2(640.0, 380.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.strong(format!(
+                        "Research Probe: {}",
+                        if research_enabled { "ON" } else { "OFF" }
+                    ));
+                    if research_enabled {
+                        if ui.button("Disable Research Probe").clicked() {
+                            disable_research_requested = true;
+                        }
+                    } else if ui.button("Enable Research Probe").clicked() {
+                        enable_research_requested = true;
+                    }
+                });
+                if !research_enabled {
+                    ui.weak("Training XP research instrumentation is dormant.");
+                }
+                ui.weak(help);
+                ui.separator();
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(&refresh_label).clicked() {
+                        refresh_requested = true;
+                    }
+                    if ui.button("Export Full Log").clicked() {
+                        export_full_log_requested = true;
+                    }
+                    if ui.button(&clear_ui_label).clicked() {
+                        clear_ui_requested = true;
+                    }
+                });
+                ui.separator();
+                ui.add_enabled_ui(research_enabled, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(&x2_athlete_label);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.team_training_xp_x2_athlete_id)
+                                .desired_width(90.0),
+                        );
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .add_enabled(
+                                !x1_5_armed && !x2_armed,
+                                egui::Button::new(&x2_arm_label),
+                            )
+                            .clicked()
+                        {
+                            x2_arm_requested = true;
+                        }
+                        if ui
+                            .add_enabled(x2_armed, egui::Button::new(&x2_disarm_label))
+                            .clicked()
+                        {
+                            x2_disarm_requested = true;
+                        }
+                        ui.weak(&x2_warning);
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.strong(format!(
+                            "Float x1.5: {}",
+                            if x1_5_armed { "ARMED" } else { "DISARMED" }
+                        ));
+                        if ui
+                            .add_enabled(
+                                !x2_armed && !x1_5_armed,
+                                egui::Button::new("Arm x1.5"),
+                            )
+                            .clicked()
+                        {
+                            x1_5_arm_requested = true;
+                        }
+                        if ui
+                            .add_enabled(x1_5_armed, egui::Button::new("Disarm x1.5"))
+                            .clicked()
+                        {
+                            x1_5_disarm_requested = true;
+                        }
+                        ui.weak("Fixed x1.5 fractional-carry write probe; eight core TrainingExp fields only.");
+                    });
+                });
+                ui.separator();
+
+                StripBuilder::new(ui)
+                    .clip(true)
+                    .size(Size::remainder().at_least(240.0))
+                    .vertical(|mut strip| {
+                        strip.cell(|ui| {
+                            let viewport_height = ui.available_height().max(1.0);
+                            egui::ScrollArea::both()
+                                .id_salt("team_training_xp_probe_scroll_v055")
+                                .auto_shrink([false, false])
+                                .max_height(viewport_height)
+                                .show(ui, |ui| {
+                                    ui.set_min_width(920.0);
+                                    if self.team_training_xp_probe_raw.trim().is_empty() {
+                                        ui.weak(&empty_label);
+                                    } else {
+                                        ui.add(
+                                            egui::TextEdit::multiline(
+                                                &mut self.team_training_xp_probe_raw,
+                                            )
+                                            .code_editor()
+                                            .desired_width(920.0)
+                                            .desired_rows(36),
+                                        );
+                                    }
+                                });
+                        });
+                    });
+            });
+
+        // Window visibility is deliberately independent from the authoritative Bridge research state.
+        // Closing this egui window stops only local rendering/polling; it sends no Disable/Disarm command.
+        self.team_training_xp_probe_window_open = open;
+        if export_full_log_requested {
+            self.export_team_training_xp_probe_log();
+        }
+        if clear_ui_requested {
+            self.team_training_xp_probe_raw.clear();
+            self.team_training_xp_probe_ui_cleared = true;
+            self.status = "Training XP UI view cleared. Research state and full evidence log are unchanged.".to_string();
+        } else if enable_research_requested {
+            self.set_team_training_xp_research_enabled(true);
+            self.refresh_team_training_xp_probe();
+            self.team_training_xp_probe_last_auto_refresh_time = now;
+        } else if disable_research_requested {
+            self.set_team_training_xp_research_enabled(false);
+            self.refresh_team_training_xp_probe();
+            self.team_training_xp_probe_last_auto_refresh_time = now;
+        } else if x2_arm_requested {
+            self.arm_team_training_xp_x2_probe();
+            self.refresh_team_training_xp_probe();
+            self.team_training_xp_probe_last_auto_refresh_time = now;
+        } else if x2_disarm_requested {
+            self.disarm_team_training_xp_x2_probe();
+            self.refresh_team_training_xp_probe();
+            self.team_training_xp_probe_last_auto_refresh_time = now;
+        } else if x1_5_arm_requested {
+            self.arm_team_training_xp_x1_5_probe();
+            self.refresh_team_training_xp_probe();
+            self.team_training_xp_probe_last_auto_refresh_time = now;
+        } else if x1_5_disarm_requested {
+            self.disarm_team_training_xp_x1_5_probe();
+            self.refresh_team_training_xp_probe();
+            self.team_training_xp_probe_last_auto_refresh_time = now;
+        } else if refresh_requested
+            || (open
+                && research_enabled
+                && auto_refresh_due
+                && !self.team_training_xp_probe_ui_cleared)
+        {
+            self.refresh_team_training_xp_probe();
+            self.team_training_xp_probe_last_auto_refresh_time = now;
+        }
+        if open && self.team_training_xp_research_enabled {
+            ctx.request_repaint_after(Duration::from_secs(1));
         }
     }
 
@@ -18791,7 +20387,7 @@ Bridge TFM2 target: v{}",
                                                 }
                                                 if team.is_player_team {
                                                     header.col(|ui| {
-                                                        ui.strong("Apply");
+                                                        ui.strong(self.localization.tr("team_merchandise.apply"));
                                                     });
                                                 }
                                             })
@@ -19719,7 +21315,6 @@ Bridge TFM2 target: v{}",
         let mut open = self.team_strategy_window_open;
         let mut select_preset: Option<String> = None;
         let mut save_preset = false;
-        let mut edit_preset = false;
         let mut delete_preset = false;
         let mut apply_preset = false;
         let mut reload_current_strategy = false;
@@ -19946,7 +21541,65 @@ Bridge TFM2 target: v{}",
                                 }
                             }
 
-                            if cfg!(feature = "dev") {
+                            #[cfg(feature = "dev")]
+                            {
+                                ui.add_space(8.0);
+                                ui.separator();
+                                ui.strong("Strategy Apply Diagnostic");
+                                ui.weak(
+                                    "After Apply Strategy or Apply to Team, use this once to read the latest authoritative server-stage result. No retries or polling are performed.",
+                                );
+                                if ui.button("Read Latest Server Apply Result").clicked() {
+                                    self.refresh_team_strategy_apply_diagnostic();
+                                }
+                                if !self.team_strategy_apply_diagnostic_status.is_empty() {
+                                    ui.label(self.team_strategy_apply_diagnostic_status.clone());
+                                }
+
+                                if ui
+                                    .button("Read Current Authoritative Server Strategy")
+                                    .clicked()
+                                {
+                                    self.request_team_strategy_server_snapshot();
+                                }
+                                if !self.team_strategy_server_snapshot_status.is_empty() {
+                                    ui.add(
+                                        egui::Label::new(
+                                            self.team_strategy_server_snapshot_status.clone(),
+                                        )
+                                        .wrap(),
+                                    );
+                                }
+                                if let Some(last_team_id) =
+                                    self.team_strategy_diagnostic_last_apply_team_id
+                                {
+                                    ui.weak(format!(
+                                        "Correlation: Apply #{} · Team {}",
+                                        self.team_strategy_diagnostic_apply_sequence, last_team_id
+                                    ));
+                                    if !self.team_strategy_diagnostic_last_requested.is_empty() {
+                                        ui.collapsing("Last requested Strategy", |ui| {
+                                            for entry in &self.team_strategy_diagnostic_last_requested {
+                                                ui.monospace(format!(
+                                                    "{} = {}", entry.key, entry.value
+                                                ));
+                                            }
+                                        });
+                                    }
+                                    if self.team_strategy_diagnostic_last_normal_read_team_id
+                                        == Some(last_team_id)
+                                        && !self.team_strategy_diagnostic_last_normal_read.is_empty()
+                                    {
+                                        ui.collapsing("Last normal client Refresh", |ui| {
+                                            for entry in &self.team_strategy_diagnostic_last_normal_read {
+                                                ui.monospace(format!(
+                                                    "{} = {}", entry.key, entry.value
+                                                ));
+                                            }
+                                        });
+                                    }
+                                }
+
                                 ui.add_space(8.0);
                                 ui.separator();
                                 ui.strong(self.localization.tr("team_strategy.safe_write_probe"));
@@ -20014,20 +21667,11 @@ Bridge TFM2 target: v{}",
                                     if ui
                                         .button("Save")
                                         .on_hover_text(
-                                            "Save the player team's current live Strategy as a named preset.",
+                                            "Save the Strategy values currently shown in the editor. Existing presets ask whether to overwrite or save as new.",
                                         )
                                         .clicked()
                                     {
                                         save_preset = true;
-                                    }
-                                    if ui
-                                        .add_enabled(has_selected, egui::Button::new("Edit"))
-                                        .on_hover_text(
-                                            "Rename the selected preset and update it from the player team's current live Strategy.",
-                                        )
-                                        .clicked()
-                                    {
-                                        edit_preset = true;
                                     }
                                     if ui
                                         .add_enabled(has_selected, egui::Button::new("Delete"))
@@ -20138,15 +21782,30 @@ Bridge TFM2 target: v{}",
             self.apply_team_strategy_editor_values();
         }
         if let Some(name) = select_preset {
-            self.team_strategy_selected_preset = Some(name.clone());
-            self.team_strategy_preset_name = name;
-            self.team_strategy_preset_status.clear();
+            if let Some(preset) = self
+                .team_strategy_presets
+                .iter()
+                .find(|preset| preset.name.eq_ignore_ascii_case(&name))
+                .cloned()
+            {
+                self.team_strategy_selected_preset = Some(preset.name.clone());
+                self.team_strategy_preset_name = preset.name.clone();
+                if team.is_player_team {
+                    self.team_strategy_edit_team_id = Some(team.id);
+                    self.team_strategy_edit_values = preset.strategy.clone();
+                    self.team_strategy_split_player_ids = [None, None];
+                    self.team_strategy_edit_status =
+                        format!("Loaded strategy preset into editor: {}", preset.name);
+                }
+                self.team_strategy_preset_status =
+                    format!("Loaded strategy preset: {}", preset.name);
+            } else {
+                self.team_strategy_preset_status =
+                    "Selected strategy preset was not found.".to_string();
+            }
         }
         if save_preset {
             self.save_current_team_strategy_preset();
-        }
-        if edit_preset {
-            self.edit_selected_team_strategy_preset();
         }
         if delete_preset {
             self.delete_selected_team_strategy_preset();
@@ -20260,7 +21919,7 @@ Bridge TFM2 target: v{}",
                                     "team_merchandise.yearly_revenue", "team_merchandise.total_sales", "team_merchandise.total_revenue",
                                     "team_merchandise.daily_rate",
                                 ] { header.col(|ui| { ui.strong(self.localization.tr(key)); }); }
-                                if team.is_player_team { header.col(|ui| { ui.strong("Apply"); }); }
+                                if team.is_player_team { header.col(|ui| { ui.strong(self.localization.tr("team_merchandise.apply")); }); }
                             })
                             .body(|body| {
                                 body.rows(28.0, edit_entries.len(), |mut row| {
@@ -20283,7 +21942,7 @@ Bridge TFM2 target: v{}",
                                     row.col(|ui| { ui.label(format_internal_amount(&entry.total_revenue)); });
                                     row.col(|ui| { ui.label(value_or_dash(&entry.daily_purchase_rate)); });
                                     if team.is_player_team {
-                                        row.col(|ui| { if ui.button("Apply").clicked() { apply_row = Some(row_index); } });
+                                        row.col(|ui| { if ui.button(self.localization.tr("team_merchandise.apply")).clicked() { apply_row = Some(row_index); } });
                                     }
                                 });
                             });
@@ -23262,6 +24921,9 @@ impl eframe::App for ModifierApp {
 
                 ui.separator();
                 self.render_language_selector(ui);
+                self.render_theme_selector(ui);
+                #[cfg(feature = "dev")]
+                self.render_localization_dev_controls(ui);
             });
 
             ui.add_space(8.0);
@@ -23344,6 +25006,9 @@ impl eframe::App for ModifierApp {
         self.render_team_performance_context_window(ctx);
         #[cfg(feature = "dev")]
         self.render_team_data_probe_window(ctx);
+        self.render_team_training_window(ctx);
+        #[cfg(feature = "dev")]
+        self.render_team_training_xp_probe_window(ctx);
         self.render_team_league_standings_window(ctx);
         self.render_team_performance_window(ctx);
         self.render_team_contract_center_window(ctx);
@@ -23353,6 +25018,7 @@ impl eframe::App for ModifierApp {
         self.render_team_recruitment_window(ctx);
         self.render_team_competition_window(ctx);
         self.render_team_strategy_window(ctx);
+        self.render_team_strategy_preset_save_confirmation(ctx);
         self.render_team_merchandise_window(ctx);
         #[cfg(feature = "dev")]
         self.render_team_champion_setup_window(ctx);
@@ -25617,6 +27283,38 @@ fn parse_team_champion_setup_section(raw: &str) -> Vec<TeamChampionSetupEntry> {
         .collect()
 }
 
+#[cfg(feature = "dev")]
+fn parse_team_strategy_server_snapshot_response(
+    response: &str,
+) -> Result<(usize, usize, Vec<TeamStrategyEntry>), String> {
+    if let Some(error) = response.strip_prefix("ERR|") {
+        return Err(error.to_string());
+    }
+    let parts = response.split('|').collect::<Vec<_>>();
+    if parts.len() != 5
+        || parts[0] != "OK"
+        || parts[1] != "TEAM_STRATEGY_SERVER_SNAPSHOT"
+    {
+        return Err(format!("Unexpected Strategy server snapshot response: {response}"));
+    }
+    let sequence = parts[2]
+        .parse::<usize>()
+        .map_err(|_| "Invalid Strategy server snapshot sequence".to_string())?;
+    let team_id = parts[3]
+        .parse::<usize>()
+        .map_err(|_| "Invalid Strategy server snapshot Team ID".to_string())?;
+    let raw = hex_decode(parts[4])?;
+    let strategy = parse_team_strategy_section(&raw)?;
+    if strategy.len() != TEAM_STRATEGY_KEYS.len()
+        || !TEAM_STRATEGY_KEYS
+            .iter()
+            .all(|key| strategy.iter().any(|entry| entry.key == *key))
+    {
+        return Err("Authoritative Strategy snapshot did not contain all 12 fields.".to_string());
+    }
+    Ok((sequence, team_id, strategy))
+}
+
 fn parse_team_management_response(response: &str) -> Result<TeamManagementData, String> {
     if let Some(error) = response.strip_prefix("ERR|") {
         return Err(error.to_string());
@@ -26560,6 +28258,10 @@ fn human_error(error: &str) -> String {
         "STAFF_ALREADY_FREE_AGENT" => "The selected staff member is already a free agent".to_string(),
         "TEAM_NOT_FOUND" => "Could not find the selected team in the active career".to_string(),
         "PLAYER_TEAM_ONLY" => "This Team field is writable only for the Player Team".to_string(),
+        "TRAINING_XP_MULTIPLIER_NOT_VALIDATED" =>
+            "Only x1.0 and x1.5 are enabled in this Development validation build".to_string(),
+        "TRAINING_XP_RESEARCH_MULTIPLIER_ACTIVE" =>
+            "Disarm the Training XP x2/x1.5 research multiplier before applying the normal Training feature".to_string(),
         "INVALID_MERCHANDISE_TYPE" => "Merchandise product type is missing".to_string(),
         "INVALID_MERCHANDISE_STOCK" => "Merchandise Stock must be a non-negative whole number".to_string(),
         "INVALID_MERCHANDISE_SELL_PRICE" => "Merchandise Sell Price must be numeric".to_string(),
@@ -26600,20 +28302,85 @@ fn human_error(error: &str) -> String {
 mod compatibility_tests {
     use super::*;
 
+
+    #[test]
+    fn cjk_font_fallback_registration_is_locale_independent() {
+        fn accepts_global_installer(_: fn(&egui::Context)) {}
+        accepts_global_installer(ensure_cjk_font_fallback);
+    }
+
+    #[test]
+    fn simplified_chinese_font_candidates_prefer_microsoft_yahei() {
+        let root = PathBuf::from(r"C:\Windows\Fonts");
+        let candidates = simplified_chinese_font_candidates(&root);
+        assert_eq!(candidates.len(), WINDOWS_SIMPLIFIED_CHINESE_FONT_FILES.len());
+        assert_eq!(candidates[0], root.join("msyh.ttc"));
+        assert_eq!(candidates[1], root.join("msyhl.ttc"));
+        assert_eq!(candidates[2], root.join("simhei.ttf"));
+        assert_eq!(candidates[3], root.join("simsun.ttc"));
+    }
+
     #[cfg(not(feature = "dev"))]
     #[test]
-    fn community_release_identity_is_v0_5_0() {
-        assert_eq!(APP_VERSION, "0.5.0");
-        assert_eq!(display_version(), "v0.5.0");
-        assert_eq!(window_title(), "TFM2 Editor v0.5.0");
+    fn community_release_identity_is_v0_5_2() {
+        assert_eq!(APP_VERSION, "0.5.2");
+        assert_eq!(display_version(), "v0.5.2");
+        assert_eq!(window_title(), "TFM2 Editor v0.5.2");
     }
 
     #[cfg(feature = "dev")]
     #[test]
-    fn development_identity_remains_v0_5_4_dev() {
-        assert_eq!(APP_VERSION, "0.5.4");
-        assert_eq!(display_version(), "v0.5.4-dev");
-        assert_eq!(window_title(), "TFM2 Editor v0.5.4-dev");
+    fn development_identity_is_v0_5_7_dev() {
+        assert_eq!(APP_VERSION, "0.5.7");
+        assert_eq!(display_version(), "v0.5.7-dev");
+        assert_eq!(window_title(), "TFM2 Editor v0.5.7-dev");
+    }
+
+    #[test]
+    fn training_multiplier_parser_accepts_open_ended_tenths_and_integer_input() {
+        let cases = [
+            ("1", 10),
+            ("1.0", 10),
+            ("1.1", 11),
+            ("5", 50),
+            ("5.0", 50),
+            ("10", 100),
+            ("10.0", 100),
+            ("23", 230),
+            ("23.4", 234),
+            ("100", 1000),
+            ("1000", 10000),
+            ("10000", 100000),
+            ("10000.0", 100000),
+            ("429496729.5", u32::MAX),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(ModifierApp::parse_training_multiplier_tenths(raw), Ok(expected));
+            assert_eq!(
+                ModifierApp::training_multiplier_input(expected),
+                format!("{}.{:01}", expected / 10, expected % 10),
+            );
+        }
+    }
+
+    #[test]
+    fn training_multiplier_parser_rejects_below_minimum_malformed_extra_precision_and_representation_overflow() {
+        for raw in [
+            "0", "0.9", "-1", "-5.0", "NaN", "Inf", "text", "1.25", "23.45",
+            "1.", ".5",
+        ] {
+            assert!(
+                ModifierApp::parse_training_multiplier_tenths(raw).is_err(),
+                "{raw} should be rejected",
+            );
+        }
+        for raw in ["429496729.6", "429496730", "18446744073709551616"] {
+            assert_eq!(
+                ModifierApp::parse_training_multiplier_tenths(raw),
+                Err("TRAINING_XP_MULTIPLIER_REPRESENTATION"),
+                "{raw} should fail the u32-tenths representation boundary",
+            );
+        }
     }
 
     fn future_bridge_version() -> String {
@@ -27252,7 +29019,7 @@ mod compatibility_tests {
     }
 
     #[test]
-    fn last_protocol_18_bridge_is_hard_blocked_by_0_5_5_migration_boundary() {
+    fn old_public_protocol_18_bridge_is_hard_blocked_by_v0_5_2_release_boundary() {
         let issue = ModifierApp::compatibility_issue_for(
             "0.2.58",
             Some(18),
@@ -27317,6 +29084,18 @@ mod compatibility_tests {
     }
 
     #[test]
+    fn previous_development_protocol_19_is_hard_blocked_by_v0_5_2_release_boundary() {
+        let issue = ModifierApp::compatibility_issue_for(
+            REQUIRED_BRIDGE_VERSION,
+            Some(19),
+            Some(SUPPORTED_TFM2_VERSION),
+        )
+        .unwrap();
+        assert_eq!(issue.severity, CompatibilitySeverity::NotSupported);
+        assert_eq!(issue.reason, CompatibilityReason::ProtocolMismatch);
+    }
+
+    #[test]
     fn unsupported_future_protocol_requires_verification() {
         let issue = ModifierApp::compatibility_issue_for(
             REQUIRED_BRIDGE_VERSION,
@@ -27335,6 +29114,19 @@ mod compatibility_tests {
             REQUIRED_BRIDGE_VERSION,
             Some(BRIDGE_PROTOCOL_VERSION),
             Some("0.5.4"),
+        )
+        .unwrap();
+        assert_eq!(issue.severity, CompatibilitySeverity::NotSupported);
+        assert_eq!(issue.action, CompatibilityAction::GameVersionMismatch);
+        assert_eq!(issue.reason, CompatibilityReason::GameTargetMismatch);
+    }
+
+    #[test]
+    fn tfm2_0_5_5_target_is_hard_blocked_after_0_5_6_migration() {
+        let issue = ModifierApp::compatibility_issue_for(
+            REQUIRED_BRIDGE_VERSION,
+            Some(BRIDGE_PROTOCOL_VERSION),
+            Some("0.5.5"),
         )
         .unwrap();
         assert_eq!(issue.severity, CompatibilitySeverity::NotSupported);
@@ -27485,7 +29277,7 @@ Team {
         let korea = r#"{"division":0,"id":0,"name":"TACK","region_id":0}"#;
         let korea_two = r#"{"division":1,"id":6,"name":"TACK2","region_id":0}"#;
         let response = format!(
-            "OK|GLOBAL_LEAGUES|0.2.59|0.5.5|1|2|{};{}",
+            "OK|GLOBAL_LEAGUES|0.2.75|0.5.6|1|2|{};{}",
             hex_encode(korea),
             hex_encode(korea_two)
         );
@@ -27519,7 +29311,7 @@ Team {
     fn global_league_competition_parser_orders_standings_and_keeps_totals() {
         let competition = r#"{"finalized":false,"id":0,"league_type":"Spring","standings":{"0":{"assist":275,"death":110,"kill":152,"lose":1,"set_lose":2,"set_win":8,"win":4},"1":{"assist":387,"death":130,"kill":210,"lose":1,"set_lose":4,"set_win":8,"win":4},"2":{"assist":279,"death":73,"kill":162,"lose":1,"set_lose":2,"set_win":8,"win":4}}}"#;
         let response = format!(
-            "OK|GLOBAL_LEAGUE_COMPETITION|0.2.59|0.5.5|1|0|{}",
+            "OK|GLOBAL_LEAGUE_COMPETITION|0.2.75|0.5.6|1|0|{}",
             hex_encode(competition)
         );
         let parsed = parse_global_league_competition_response(&response, 0, &[]).unwrap();
@@ -27539,7 +29331,7 @@ Team {
     fn global_league_competition_parser_reads_player_and_champion_performance() {
         let competition = r#"{"finalized":false,"id":0,"league_type":"Spring","standings":{"0":{"assist":20,"death":5,"kill":12,"lose":0,"set_lose":0,"set_win":2,"win":1}},"statistics":{"11":{"assists":8,"champion_detail":{"archer":{"dealing":12000,"healing":0,"matches":2,"rating":160,"tanking":4000,"wins":2}},"dealing":12000,"deaths":1,"gold":15000,"healing":0,"kills":7,"matches":2,"mvp":1,"rating":160,"solo_kill":2,"solo_killed":0,"tanking":4000,"wins":2}}}"#;
         let response = format!(
-            "OK|GLOBAL_LEAGUE_COMPETITION|0.2.59|0.5.5|1|0|{}",
+            "OK|GLOBAL_LEAGUE_COMPETITION|0.2.75|0.5.6|1|0|{}",
             hex_encode(competition)
         );
         let parsed = parse_global_league_competition_response(&response, 0, &[]).unwrap();
@@ -27625,7 +29417,7 @@ Team {
         let running = r#"{"date":"2026-02-20T16:30:00","id":805,"is_practice":false,"running_state":"Running","team1":{"Normal":85},"team2":{"Normal":82}}"#;
         let upcoming = r#"{"date":"2026-02-22T16:30:00","id":809,"is_practice":false,"running_state":"Wait","team1":{"Normal":85},"team2":{"Normal":84}}"#;
         let response = format!(
-            "OK|GLOBAL_TEAM_SCHEDULE|0.2.59|0.5.5|1|85|85|3|{};{};{}",
+            "OK|GLOBAL_TEAM_SCHEDULE|0.2.75|0.5.6|1|85|85|3|{};{};{}",
             hex_encode(completed),
             hex_encode(running),
             hex_encode(upcoming)
@@ -27701,7 +29493,7 @@ Team {
         let official = r#"{"date":"2026-02-07T16:30:00","id":787,"is_practice":false,"replays":[87,88],"running_state":{"End":{"loser":89,"team1_score":0,"team2_score":2,"winner":85}},"team1":{"Normal":89},"team2":{"Normal":85}}"#;
         let practice = r#"{"date":"2026-01-07T11:00:00","id":1176,"is_practice":true,"replays":[301],"running_state":{"End":{"loser":85,"team1_score":0,"team2_score":1,"winner":87}},"team1":{"Normal":85},"team2":{"Normal":87}}"#;
         let response = format!(
-            "OK|GLOBAL_TEAM_HISTORY|0.2.59|0.5.5|1|85|85|2|{};{}",
+            "OK|GLOBAL_TEAM_HISTORY|0.2.75|0.5.6|1|85|85|2|{};{}",
             hex_encode(official),
             hex_encode(practice)
         );
@@ -27973,6 +29765,33 @@ Team {
 
     #[cfg(feature = "dev")]
     #[test]
+    fn parse_team_strategy_server_snapshot_response_requires_all_twelve_fields() {
+        let raw = TEAM_STRATEGY_KEYS
+            .iter()
+            .enumerate()
+            .map(|(index, key)| format!("{key}\tValue{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let response = format!(
+            "OK|TEAM_STRATEGY_SERVER_SNAPSHOT|17|92|{}",
+            test_hex_encode(&raw)
+        );
+        let (sequence, team_id, parsed) =
+            parse_team_strategy_server_snapshot_response(&response).unwrap();
+        assert_eq!(sequence, 17);
+        assert_eq!(team_id, 92);
+        assert_eq!(parsed.len(), 12);
+
+        let incomplete = "focused\tBottom";
+        let response = format!(
+            "OK|TEAM_STRATEGY_SERVER_SNAPSHOT|18|92|{}",
+            test_hex_encode(incomplete)
+        );
+        assert!(parse_team_strategy_server_snapshot_response(&response).is_err());
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
     fn team_strategy_probe_helpers_detect_swap_and_restore() {
         let current = vec![
             TeamStrategyEntry {
@@ -28061,6 +29880,201 @@ Team {
             ModifierApp::sanitize_team_strategy_preset_name("   "),
             "Strategy Preset"
         );
+    }
+
+    fn strategy_test_values(tag: &str) -> Vec<TeamStrategyEntry> {
+        TEAM_STRATEGY_KEYS
+            .iter()
+            .map(|key| TeamStrategyEntry {
+                key: (*key).to_string(),
+                value: format!("{tag}-{key}"),
+            })
+            .collect()
+    }
+
+    fn apply_strategy_save_plan_for_test(
+        mut presets: Vec<TeamStrategyPreset>,
+        plan: TeamStrategyPresetSavePlan,
+    ) -> Vec<TeamStrategyPreset> {
+        match plan {
+            TeamStrategyPresetSavePlan::Overwrite {
+                original_name,
+                preset,
+            } => {
+                presets.retain(|existing| !existing.name.eq_ignore_ascii_case(&original_name));
+                presets.push(preset);
+            }
+            TeamStrategyPresetSavePlan::Create { preset } => presets.push(preset),
+            TeamStrategyPresetSavePlan::Cancel => {}
+        }
+        presets.sort_by_key(|preset| preset.name.to_lowercase());
+        presets
+    }
+
+    #[test]
+    fn strategy_preset_new_save_uses_exact_current_editor_values() {
+        let editor_values = strategy_test_values("new");
+        let preset = team_strategy_preset_from_editor(
+            ModifierApp::sanitize_team_strategy_preset_name("Fresh Preset"),
+            &editor_values,
+        )
+        .unwrap();
+
+        assert_eq!(preset.name, "Fresh Preset");
+        assert_eq!(preset.strategy, editor_values);
+    }
+
+    #[test]
+    fn strategy_preset_overwrite_updates_same_preset_without_duplicate() {
+        let original = TeamStrategyPreset::new(
+            "Existing".to_string(),
+            strategy_test_values("old"),
+        );
+        let confirmation = TeamStrategyPresetSaveConfirmation {
+            original_name: original.name.clone(),
+            preset: TeamStrategyPreset::new(
+                "Existing".to_string(),
+                strategy_test_values("updated"),
+            ),
+        };
+        let plan = team_strategy_preset_save_plan(
+            std::slice::from_ref(&original),
+            &confirmation,
+            TeamStrategyPresetSaveChoice::Overwrite,
+        )
+        .unwrap();
+        let result = apply_strategy_save_plan_for_test(vec![original], plan);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "Existing");
+        assert_eq!(result[0].strategy, strategy_test_values("updated"));
+    }
+
+    #[test]
+    fn strategy_preset_rename_and_overwrite_updates_same_preset_name() {
+        let original = TeamStrategyPreset::new(
+            "Original".to_string(),
+            strategy_test_values("old"),
+        );
+        let confirmation = TeamStrategyPresetSaveConfirmation {
+            original_name: original.name.clone(),
+            preset: TeamStrategyPreset::new(
+                "Renamed".to_string(),
+                strategy_test_values("renamed"),
+            ),
+        };
+        let plan = team_strategy_preset_save_plan(
+            std::slice::from_ref(&original),
+            &confirmation,
+            TeamStrategyPresetSaveChoice::Overwrite,
+        )
+        .unwrap();
+        let result = apply_strategy_save_plan_for_test(vec![original], plan);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "Renamed");
+        assert_eq!(result[0].strategy, strategy_test_values("renamed"));
+    }
+
+    #[test]
+    fn strategy_preset_save_as_new_keeps_original_and_creates_second_preset() {
+        let original = TeamStrategyPreset::new(
+            "Original".to_string(),
+            strategy_test_values("old"),
+        );
+        let confirmation = TeamStrategyPresetSaveConfirmation {
+            original_name: original.name.clone(),
+            preset: TeamStrategyPreset::new(
+                "Copy".to_string(),
+                strategy_test_values("copy"),
+            ),
+        };
+        let plan = team_strategy_preset_save_plan(
+            std::slice::from_ref(&original),
+            &confirmation,
+            TeamStrategyPresetSaveChoice::SaveAsNew,
+        )
+        .unwrap();
+        let result = apply_strategy_save_plan_for_test(vec![original.clone()], plan);
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&original));
+        assert!(result.iter().any(|preset| {
+            preset.name == "Copy" && preset.strategy == strategy_test_values("copy")
+        }));
+    }
+
+    #[test]
+    fn strategy_preset_save_as_new_auto_suffixes_when_current_name_is_unchanged() {
+        let original = TeamStrategyPreset::new(
+            "Original".to_string(),
+            strategy_test_values("old"),
+        );
+        let confirmation = TeamStrategyPresetSaveConfirmation {
+            original_name: original.name.clone(),
+            preset: TeamStrategyPreset::new(
+                "Original".to_string(),
+                strategy_test_values("copy"),
+            ),
+        };
+        let plan = team_strategy_preset_save_plan(
+            std::slice::from_ref(&original),
+            &confirmation,
+            TeamStrategyPresetSaveChoice::SaveAsNew,
+        )
+        .unwrap();
+        let result = apply_strategy_save_plan_for_test(vec![original.clone()], plan);
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&original));
+        assert!(result.iter().any(|preset| {
+            preset.name == "Original (2)" && preset.strategy == strategy_test_values("copy")
+        }));
+    }
+
+    #[test]
+    fn strategy_preset_cancel_changes_nothing() {
+        let original = TeamStrategyPreset::new(
+            "Original".to_string(),
+            strategy_test_values("old"),
+        );
+        let confirmation = TeamStrategyPresetSaveConfirmation {
+            original_name: original.name.clone(),
+            preset: TeamStrategyPreset::new(
+                "Renamed".to_string(),
+                strategy_test_values("changed"),
+            ),
+        };
+        let plan = team_strategy_preset_save_plan(
+            std::slice::from_ref(&original),
+            &confirmation,
+            TeamStrategyPresetSaveChoice::Cancel,
+        )
+        .unwrap();
+        let result = apply_strategy_save_plan_for_test(vec![original.clone()], plan);
+
+        assert_eq!(result, vec![original]);
+    }
+
+    #[test]
+    fn strategy_preset_apply_to_team_does_not_save_or_modify_preset_storage() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("fn apply_selected_team_strategy_preset(&mut self)")
+            .unwrap();
+        let tail = &source[start..];
+        let end = tail
+            .find("fn record_team_strategy_diagnostic_apply(")
+            .unwrap_or(tail.len());
+        let apply_block = &tail[..end];
+
+        assert!(apply_block.contains("SET_TEAM_STRATEGY"));
+        assert!(!apply_block.contains("write_team_strategy_preset"));
+        assert!(!apply_block.contains("save_current_team_strategy_preset"));
+        assert!(!apply_block.contains("edit_selected_team_strategy_preset"));
+        assert!(!apply_block.contains("save_as_new_team_strategy_preset"));
+        assert!(!apply_block.contains("fs::write"));
+        assert!(!apply_block.contains("fs::remove_file"));
     }
 
     #[cfg(feature = "dev")]
@@ -29701,6 +31715,7 @@ Team {
             DEVELOPMENT_MENU_ACTIONS,
             [
                 TeamNavigationAction::TeamDataProbe,
+                TeamNavigationAction::TrainingXpProbe,
                 TeamNavigationAction::ChampionSetup,
             ]
         );
@@ -29834,10 +31849,14 @@ fn main() -> eframe::Result<()> {
         &title,
         options,
         Box::new(|cc| {
-            let mut visuals = egui::Visuals::dark();
-            apply_development_visual_test_theme(&mut visuals);
-            cc.egui_ctx.set_visuals(visuals);
-            Ok(Box::new(ModifierApp::default()))
+            let mut dark_visuals = egui::Visuals::dark();
+            apply_development_visual_test_theme(&mut dark_visuals);
+            cc.egui_ctx
+                .set_visuals_of(egui::Theme::Dark, dark_visuals);
+            ensure_cjk_font_fallback(&cc.egui_ctx);
+            let app = ModifierApp::default();
+            apply_editor_theme(&cc.egui_ctx, app.localization.current_theme());
+            Ok(Box::new(app))
         }),
     )
 }

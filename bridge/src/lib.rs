@@ -13,10 +13,12 @@ use game_core::{Contract, Incentive, PaperState, SquadStatus, StaffRole};
 
 const MOD_ID: &str = "tfm2_modifier_bridge";
 const BRIDGE_ADDR: &str = "127.0.0.1:28452";
-const BRIDGE_VERSION: &str = "0.2.59";
-const BRIDGE_PROTOCOL_VERSION: u32 = 19;
-const TFM2_TARGET_VERSION: &str = "0.5.5";
+const BRIDGE_VERSION: &str = "0.2.75";
+const BRIDGE_PROTOCOL_VERSION: u32 = 20;
+const TFM2_TARGET_VERSION: &str = "0.5.6";
 const GLOBAL_HISTORY_RECORD_CAP: usize = 10_000;
+const TEAM_STRATEGY_APPLY_EVENT: &str = "team_strategy_apply_result";
+const TEAM_STRATEGY_SNAPSHOT_EVENT: &str = "team_strategy_snapshot_result";
 
 #[derive(Debug, Clone, Copy)]
 struct EconomyValues {
@@ -195,6 +197,12 @@ struct TeamManagementSnapshot {
     merchandise: String,
     champion_setup: String,
     gaming_house: String,
+}
+
+struct PendingTeamStrategySnapshot {
+    sequence: usize,
+    team_id: usize,
+    reply: Sender<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -396,6 +404,46 @@ enum GameRequest {
         team_id: usize,
         reply: Sender<String>,
     },
+    GetTrainingXpProbe {
+        team_id: usize,
+        reply: Sender<String>,
+    },
+    GetTrainingXpProbeLog {
+        team_id: usize,
+        reply: Sender<String>,
+    },
+    GetTrainingXpRoster {
+        team_id: usize,
+        reply: Sender<String>,
+    },
+    SetTrainingXpRoster {
+        team_id: usize,
+        values: Vec<(usize, u32)>,
+        reply: Sender<String>,
+    },
+    SetTrainingXpResearch {
+        team_id: usize,
+        enabled: bool,
+        reply: Sender<String>,
+    },
+    SetTrainingXpX2Probe {
+        team_id: usize,
+        athlete_id: usize,
+        reply: Sender<String>,
+    },
+    ClearTrainingXpX2Probe {
+        team_id: usize,
+        reply: Sender<String>,
+    },
+    SetTrainingXpX15Probe {
+        team_id: usize,
+        athlete_id: usize,
+        reply: Sender<String>,
+    },
+    ClearTrainingXpX15Probe {
+        team_id: usize,
+        reply: Sender<String>,
+    },
     GetTeamManagement {
         team_id: usize,
         reply: Sender<String>,
@@ -429,6 +477,13 @@ enum GameRequest {
     SetTeamStrategy {
         team_id: usize,
         raw_strategy: String,
+        reply: Sender<String>,
+    },
+    GetTeamStrategyApplyDiagnostic {
+        reply: Sender<String>,
+    },
+    GetTeamStrategyServerSnapshot {
+        team_id: usize,
         reply: Sender<String>,
     },
     GetContractDefaults {
@@ -608,7 +663,1990 @@ static TRANSFER_ALWAYS_SUCCESS: AtomicBool = AtomicBool::new(false);
 static TRANSFER_ALWAYS_SUCCESS_TEAM_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
 static RECRUITMENT_INSTANT_RETRY: AtomicBool = AtomicBool::new(false);
 static RECRUITMENT_INSTANT_RETRY_TEAM_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
+static TRAINING_XP_RESEARCH_ENABLED: AtomicBool = AtomicBool::new(false);
+static TRAINING_XP_LIFECYCLE_TEAM_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
+static TRAINING_XP_LIFECYCLE_ARMED: OnceLock<Mutex<Option<TrainingXpLifecycleSnapshot>>> =
+    OnceLock::new();
+static TRAINING_XP_LIFECYCLE_BEFORE: OnceLock<Mutex<Option<TrainingXpLifecycleSnapshot>>> =
+    OnceLock::new();
+static TRAINING_XP_LIFECYCLE_REPORT: OnceLock<Mutex<String>> = OnceLock::new();
+static TRAINING_XP_LIFECYCLE_LATEST_EVENT: OnceLock<Mutex<String>> = OnceLock::new();
+static TRAINING_XP_ROLLOVER_OBSERVED: AtomicBool = AtomicBool::new(false);
+static TRAINING_XP_LAST_ROLLOVER: OnceLock<Mutex<String>> = OnceLock::new();
+static TRAINING_XP_X2_TEAM_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
+static TRAINING_XP_X2_ATHLETE_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
+static TRAINING_XP_X1_5_STATE: OnceLock<Mutex<Option<TrainingXpX15State>>> = OnceLock::new();
+static TRAINING_XP_ROSTER_STATE: OnceLock<Mutex<Option<TrainingXpRosterState>>> = OnceLock::new();
+static TRAINING_XP_PLAYER_TEAM_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
+static TRAINING_XP_PLAYER_TEAM_CONFIRMED: AtomicBool = AtomicBool::new(false);
 static REQUEST_RX: OnceLock<Mutex<Receiver<GameRequest>>> = OnceLock::new();
+static TEAM_STRATEGY_APPLY_DIAGNOSTIC: OnceLock<Mutex<String>> = OnceLock::new();
+static TEAM_STRATEGY_SNAPSHOT_SEQUENCE: AtomicUsize = AtomicUsize::new(1);
+static TEAM_STRATEGY_SNAPSHOT_PENDING: OnceLock<Mutex<Option<PendingTeamStrategySnapshot>>> =
+    OnceLock::new();
+
+const TRAINING_XP_FRACTION_SCALE: i64 = 10;
+const TRAINING_XP_X1_5_EXTRA_TENTHS: i64 = 5;
+const TRAINING_XP_PERSISTENCE_SCHEMA: u32 = 1;
+const TRAINING_XP_PERSISTENCE_KEY: &str = "training_xp_roster_v1";
+
+fn training_xp_roster_multiplier_supported(multiplier_tenths: u32) -> bool {
+    multiplier_tenths >= 10
+}
+
+#[derive(Debug, Clone)]
+struct TrainingXpRosterAthleteState {
+    multiplier_tenths: u32,
+    carry_tenths: [u8; 8],
+}
+
+#[derive(Debug, Clone)]
+struct TrainingXpRosterState {
+    team_id: usize,
+    athletes: HashMap<usize, TrainingXpRosterAthleteState>,
+}
+
+struct TrainingXpPersistedLoad {
+    state: TrainingXpRosterState,
+    stale_entries_removed: usize,
+}
+
+struct TrainingXpRosterWriteRequest {
+    team_id: usize,
+    values: Vec<(usize, u32)>,
+}
+
+#[derive(Debug, Clone)]
+struct TrainingXpX15State {
+    team_id: usize,
+    athlete_id: usize,
+    carry_tenths: [u8; 8],
+    feature_mode: bool,
+}
+
+#[derive(Debug, Clone)]
+struct TrainingXpLifecycleAthleteSnapshot {
+    athlete_id: usize,
+    name: String,
+    age: String,
+    actual_potential: String,
+    attribute_xp: [i64; 8],
+    attribute_stat: [i64; 8],
+    position_xp: [i64; 5],
+    language_xp: String,
+    language_stat: String,
+}
+
+#[derive(Debug, Clone)]
+struct TrainingXpLifecycleSnapshot {
+    team_id: usize,
+    plan_date_marker: String,
+    plan_raw: String,
+    training_setting_raw: String,
+    athletes: Vec<TrainingXpLifecycleAthleteSnapshot>,
+}
+
+fn training_xp_lifecycle_armed_store() -> &'static Mutex<Option<TrainingXpLifecycleSnapshot>> {
+    TRAINING_XP_LIFECYCLE_ARMED.get_or_init(|| Mutex::new(None))
+}
+
+fn training_xp_lifecycle_before_store() -> &'static Mutex<Option<TrainingXpLifecycleSnapshot>> {
+    TRAINING_XP_LIFECYCLE_BEFORE.get_or_init(|| Mutex::new(None))
+}
+
+fn training_xp_lifecycle_report_store() -> &'static Mutex<String> {
+    TRAINING_XP_LIFECYCLE_REPORT.get_or_init(|| {
+        Mutex::new(
+            "Training XP event log initialized. Static baseline data is recorded once; later lifecycle ticks append compact events only."
+                .to_string(),
+        )
+    })
+}
+
+fn training_xp_lifecycle_latest_event_store() -> &'static Mutex<String> {
+    TRAINING_XP_LIFECYCLE_LATEST_EVENT.get_or_init(|| {
+        Mutex::new("No Training XP lifecycle event has been captured yet.".to_string())
+    })
+}
+
+fn training_xp_last_rollover_store() -> &'static Mutex<String> {
+    TRAINING_XP_LAST_ROLLOVER.get_or_init(|| Mutex::new(String::new()))
+}
+
+fn training_xp_x1_5_state_store() -> &'static Mutex<Option<TrainingXpX15State>> {
+    TRAINING_XP_X1_5_STATE.get_or_init(|| Mutex::new(None))
+}
+
+fn training_xp_x1_5_state() -> Option<TrainingXpX15State> {
+    training_xp_x1_5_state_store()
+        .lock()
+        .ok()
+        .and_then(|state| state.as_ref().cloned())
+}
+
+fn clear_training_xp_x1_5_state() -> Option<TrainingXpX15State> {
+    training_xp_x1_5_state_store()
+        .lock()
+        .ok()
+        .and_then(|mut state| state.take())
+}
+
+fn training_xp_roster_state_store() -> &'static Mutex<Option<TrainingXpRosterState>> {
+    TRAINING_XP_ROSTER_STATE.get_or_init(|| Mutex::new(None))
+}
+
+fn training_xp_roster_state() -> Option<TrainingXpRosterState> {
+    training_xp_roster_state_store()
+        .lock()
+        .ok()
+        .and_then(|state| state.as_ref().cloned())
+}
+
+fn clear_training_xp_roster_state() -> Option<TrainingXpRosterState> {
+    training_xp_roster_state_store()
+        .lock()
+        .ok()
+        .and_then(|mut state| state.take())
+}
+
+fn training_xp_roster_has_active_multiplier() -> bool {
+    training_xp_roster_state()
+        .map(|state| !state.athletes.is_empty())
+        .unwrap_or(false)
+}
+
+fn training_xp_roster_entry_for_apply(
+    previous: Option<&TrainingXpRosterAthleteState>,
+    multiplier_tenths: u32,
+) -> Option<TrainingXpRosterAthleteState> {
+    if multiplier_tenths == 10 {
+        return None;
+    }
+    let carry_tenths = previous
+        .filter(|entry| entry.multiplier_tenths == multiplier_tenths)
+        .map(|entry| entry.carry_tenths)
+        .unwrap_or([0; 8]);
+    Some(TrainingXpRosterAthleteState {
+        multiplier_tenths,
+        carry_tenths,
+    })
+}
+
+fn build_training_xp_roster_state_for_apply(
+    previous: Option<&TrainingXpRosterState>,
+    team_id: usize,
+    values: &[(usize, u32)],
+) -> Result<TrainingXpRosterState, &'static str> {
+    let mut submitted_ids = BTreeSet::new();
+    let mut athletes = HashMap::new();
+    for (athlete_id, multiplier_tenths) in values {
+        if !submitted_ids.insert(*athlete_id) {
+            return Err("TRAINING_XP_DUPLICATE_ATHLETE");
+        }
+        if !training_xp_roster_multiplier_supported(*multiplier_tenths) {
+            return Err("TRAINING_XP_MULTIPLIER_NOT_VALIDATED");
+        }
+        let previous_entry = previous
+            .filter(|state| state.team_id == team_id)
+            .and_then(|state| state.athletes.get(athlete_id));
+        if let Some(entry) =
+            training_xp_roster_entry_for_apply(previous_entry, *multiplier_tenths)
+        {
+            athletes.insert(*athlete_id, entry);
+        }
+    }
+    Ok(TrainingXpRosterState { team_id, athletes })
+}
+
+fn serialize_training_xp_persisted_state(state: &TrainingXpRosterState) -> String {
+    let mut athlete_ids = state.athletes.keys().copied().collect::<Vec<_>>();
+    athlete_ids.sort_unstable();
+    let rows = athlete_ids
+        .into_iter()
+        .filter_map(|athlete_id| {
+            let entry = state.athletes.get(&athlete_id)?;
+            let carry = entry
+                .carry_tenths
+                .iter()
+                .map(u8::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            Some(format!(
+                "{athlete_id}:{}:{carry}",
+                entry.multiplier_tenths
+            ))
+        })
+        .collect::<Vec<_>>();
+    format!(
+        "{}|{}|{}|{}",
+        TRAINING_XP_PERSISTENCE_SCHEMA,
+        state.team_id,
+        rows.len(),
+        rows.join(";")
+    )
+}
+
+fn parse_training_xp_persisted_state(
+    raw: &str,
+) -> Result<TrainingXpRosterState, &'static str> {
+    let mut parts = raw.splitn(4, '|');
+    let schema = parts
+        .next()
+        .ok_or("TRAINING_XP_PERSISTENCE_MALFORMED")?
+        .parse::<u32>()
+        .map_err(|_| "TRAINING_XP_PERSISTENCE_MALFORMED")?;
+    if schema != TRAINING_XP_PERSISTENCE_SCHEMA {
+        return Err("TRAINING_XP_PERSISTENCE_SCHEMA_UNSUPPORTED");
+    }
+    let team_id = parts
+        .next()
+        .ok_or("TRAINING_XP_PERSISTENCE_MALFORMED")?
+        .parse::<usize>()
+        .map_err(|_| "TRAINING_XP_PERSISTENCE_MALFORMED")?;
+    let count = parts
+        .next()
+        .ok_or("TRAINING_XP_PERSISTENCE_MALFORMED")?
+        .parse::<usize>()
+        .map_err(|_| "TRAINING_XP_PERSISTENCE_MALFORMED")?;
+    let rows_raw = parts
+        .next()
+        .ok_or("TRAINING_XP_PERSISTENCE_MALFORMED")?;
+
+    let mut athletes = HashMap::new();
+    if count == 0 {
+        if !rows_raw.is_empty() {
+            return Err("TRAINING_XP_PERSISTENCE_MALFORMED");
+        }
+        return Ok(TrainingXpRosterState { team_id, athletes });
+    }
+    if rows_raw.is_empty() {
+        return Err("TRAINING_XP_PERSISTENCE_MALFORMED");
+    }
+
+    for row in rows_raw.split(';') {
+        let mut row_parts = row.split(':');
+        let athlete_id = row_parts
+            .next()
+            .ok_or("TRAINING_XP_PERSISTENCE_MALFORMED")?
+            .parse::<usize>()
+            .map_err(|_| "TRAINING_XP_PERSISTENCE_MALFORMED")?;
+        let multiplier_tenths = row_parts
+            .next()
+            .ok_or("TRAINING_XP_PERSISTENCE_MALFORMED")?
+            .parse::<u32>()
+            .map_err(|_| "TRAINING_XP_PERSISTENCE_MALFORMED")?;
+        let carry_raw = row_parts
+            .next()
+            .ok_or("TRAINING_XP_PERSISTENCE_MALFORMED")?;
+        if row_parts.next().is_some()
+            || multiplier_tenths == 10
+            || !training_xp_roster_multiplier_supported(multiplier_tenths)
+        {
+            return Err("TRAINING_XP_PERSISTENCE_INVALID_ENTRY");
+        }
+
+        let carry_values = carry_raw
+            .split(',')
+            .map(|value| {
+                value
+                    .parse::<u8>()
+                    .map_err(|_| "TRAINING_XP_PERSISTENCE_INVALID_CARRY")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if carry_values.len() != 8 || carry_values.iter().any(|value| *value >= 10) {
+            return Err("TRAINING_XP_PERSISTENCE_INVALID_CARRY");
+        }
+        let carry_tenths: [u8; 8] = carry_values
+            .try_into()
+            .map_err(|_| "TRAINING_XP_PERSISTENCE_INVALID_CARRY")?;
+        if athletes
+            .insert(
+                athlete_id,
+                TrainingXpRosterAthleteState {
+                    multiplier_tenths,
+                    carry_tenths,
+                },
+            )
+            .is_some()
+        {
+            return Err("TRAINING_XP_PERSISTENCE_DUPLICATE_ATHLETE");
+        }
+    }
+    if athletes.len() != count {
+        return Err("TRAINING_XP_PERSISTENCE_COUNT_MISMATCH");
+    }
+    Ok(TrainingXpRosterState { team_id, athletes })
+}
+
+fn parse_training_xp_persisted_slot(
+    raw: Option<&str>,
+) -> Result<Option<TrainingXpRosterState>, &'static str> {
+    raw.map(parse_training_xp_persisted_state).transpose()
+}
+
+fn validate_training_xp_persisted_state(
+    ctx: &ServerModContext,
+    state: &TrainingXpRosterState,
+) -> Result<(), &'static str> {
+    if ctx.database.teams.get(state.team_id).is_none() {
+        return Err("TRAINING_XP_PERSISTENCE_TEAM_NOT_FOUND");
+    }
+    if state.athletes.values().any(|entry| {
+        entry.multiplier_tenths == 10
+            || !training_xp_roster_multiplier_supported(entry.multiplier_tenths)
+            || entry.carry_tenths.iter().any(|carry| *carry >= 10)
+    }) {
+        return Err("TRAINING_XP_PERSISTENCE_INVALID_ENTRY");
+    }
+    Ok(())
+}
+
+fn retain_training_xp_persisted_athletes<F>(
+    state: &mut TrainingXpRosterState,
+    mut belongs_to_team: F,
+) -> usize
+where
+    F: FnMut(usize) -> bool,
+{
+    let previous_len = state.athletes.len();
+    state
+        .athletes
+        .retain(|athlete_id, _| belongs_to_team(*athlete_id));
+    previous_len.saturating_sub(state.athletes.len())
+}
+
+fn reconcile_loaded_training_xp_persisted_state(
+    ctx: &ServerModContext,
+    state: &mut TrainingXpRosterState,
+) -> usize {
+    let team_id = state.team_id;
+    retain_training_xp_persisted_athletes(state, |athlete_id| {
+        ctx.database
+            .athletes
+            .get(athlete_id)
+            .map(|athlete| {
+                matches!(
+                    &athlete.contract,
+                    Contract::InContract {
+                        team_id: athlete_team_id,
+                        ..
+                    } if *athlete_team_id == team_id
+                )
+            })
+            .unwrap_or(false)
+    })
+}
+
+fn load_training_xp_persisted_state(
+    ctx: &ServerModContext,
+) -> Result<Option<TrainingXpPersistedLoad>, &'static str> {
+    let raw = ctx
+        .database
+        .mod_save_data
+        .get_string(MOD_ID, TRAINING_XP_PERSISTENCE_KEY);
+    let Some(mut state) = parse_training_xp_persisted_slot(raw.as_deref())? else {
+        return Ok(None);
+    };
+    validate_training_xp_persisted_state(ctx, &state)?;
+    let stale_entries_removed = reconcile_loaded_training_xp_persisted_state(ctx, &mut state);
+    Ok(Some(TrainingXpPersistedLoad {
+        state,
+        stale_entries_removed,
+    }))
+}
+
+fn persist_training_xp_roster_state(
+    ctx: &mut ServerModContext,
+    state: Option<&TrainingXpRosterState>,
+) -> Result<(), &'static str> {
+    let Some(state) = state.filter(|state| !state.athletes.is_empty()) else {
+        if ctx
+            .database
+            .mod_save_data
+            .contains_key(MOD_ID, TRAINING_XP_PERSISTENCE_KEY)
+            && !ctx
+                .database
+                .mod_save_data
+                .remove_key(MOD_ID, TRAINING_XP_PERSISTENCE_KEY)
+        {
+            return Err("TRAINING_XP_PERSISTENCE_REMOVE_FAILED");
+        }
+        return Ok(());
+    };
+
+    let raw = serialize_training_xp_persisted_state(state);
+    if ctx
+        .database
+        .mod_save_data
+        .get_string(MOD_ID, TRAINING_XP_PERSISTENCE_KEY)
+        .as_deref()
+        == Some(raw.as_str())
+    {
+        return Ok(());
+    }
+    if ctx
+        .database
+        .mod_save_data
+        .set_string(MOD_ID, TRAINING_XP_PERSISTENCE_KEY, raw)
+    {
+        Ok(())
+    } else {
+        Err("TRAINING_XP_PERSISTENCE_WRITE_FAILED")
+    }
+}
+
+fn clear_training_xp_research_x1_5_state(team_id: usize) -> Option<TrainingXpX15State> {
+    let Ok(mut slot) = training_xp_x1_5_state_store().lock() else {
+        return None;
+    };
+    if slot
+        .as_ref()
+        .map(|state| !state.feature_mode && state.team_id == team_id)
+        .unwrap_or(false)
+    {
+        slot.take()
+    } else {
+        None
+    }
+}
+
+fn format_training_xp_carry_tenths(value: u8) -> String {
+    format!("{}.{:01}", value / 10, value % 10)
+}
+
+fn format_training_xp_x1_5_carry_summary(carry_tenths: &[u8; 8]) -> String {
+    const ATTRIBUTE_NAMES: [&str; 8] = [
+        "last_hit",
+        "skill_avoid",
+        "skill_hit",
+        "positioning",
+        "control_speed",
+        "concentration",
+        "mental",
+        "judgement",
+    ];
+    ATTRIBUTE_NAMES
+        .iter()
+        .zip(carry_tenths.iter())
+        .map(|(name, carry)| format!("{name}={}", format_training_xp_carry_tenths(*carry)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn format_training_xp_multiplier(multiplier_tenths: u32) -> String {
+    format!("x{}.{:01}", multiplier_tenths / 10, multiplier_tenths % 10)
+}
+
+fn reconcile_training_xp_roster_state(ctx: &mut ServerModContext) {
+    if !TRAINING_XP_PLAYER_TEAM_CONFIRMED.load(Ordering::SeqCst) {
+        return;
+    }
+    let active_player_team_id = TRAINING_XP_PLAYER_TEAM_ID.load(Ordering::SeqCst);
+    let mut persistence_update: Option<Option<TrainingXpRosterState>> = None;
+
+    {
+        let Ok(mut slot) = training_xp_roster_state_store().lock() else {
+            return;
+        };
+        let Some(state) = slot.as_mut() else {
+            return;
+        };
+        if active_player_team_id == usize::MAX || state.team_id != active_player_team_id {
+            *slot = None;
+            persistence_update = Some(None);
+        } else {
+            let state_team_id = state.team_id;
+            let previous_len = state.athletes.len();
+            state.athletes.retain(|athlete_id, entry| {
+                let belongs_to_team = ctx
+                    .database
+                    .athletes
+                    .get(*athlete_id)
+                    .map(|athlete| {
+                        matches!(
+                            &athlete.contract,
+                            Contract::InContract {
+                                team_id: athlete_team_id,
+                                ..
+                            } if *athlete_team_id == state_team_id
+                        )
+                    })
+                    .unwrap_or(false);
+                belongs_to_team
+                    && entry.multiplier_tenths != 10
+                    && training_xp_roster_multiplier_supported(entry.multiplier_tenths)
+                    && entry.carry_tenths.iter().all(|carry| *carry < 10)
+            });
+            if state.athletes.len() != previous_len {
+                persistence_update = Some(Some(state.clone()));
+            }
+        }
+    }
+
+    if let Some(update) = persistence_update {
+        if let Err(reason) = persist_training_xp_roster_state(ctx, update.as_ref()) {
+            append_training_xp_lifecycle_report(&format!(
+                "=== TRAINING XP PERSISTENCE EVENT ===\nState: RECONCILE_PERSIST_FAILED\nReason: {reason}\nRuntime stale-state purge remained fail-closed; no carry payout was performed."
+            ));
+        }
+    }
+}
+
+fn split_training_xp_multiplier_bonus(
+    vanilla_award: i64,
+    multiplier_tenths: u32,
+    previous_carry_tenths: u8,
+) -> Option<(i64, u8, i64)> {
+    if vanilla_award <= 0
+        || multiplier_tenths <= 10
+        || !training_xp_roster_multiplier_supported(multiplier_tenths)
+        || i64::from(previous_carry_tenths) >= TRAINING_XP_FRACTION_SCALE
+    {
+        return None;
+    }
+
+    let extra_tenths = i64::from(multiplier_tenths.checked_sub(10)?);
+    let raw_bonus_tenths = vanilla_award
+        .checked_mul(extra_tenths)?
+        .checked_add(i64::from(previous_carry_tenths))?;
+    let integer_bonus = raw_bonus_tenths / TRAINING_XP_FRACTION_SCALE;
+    let new_carry_tenths = (raw_bonus_tenths % TRAINING_XP_FRACTION_SCALE) as u8;
+    Some((integer_bonus, new_carry_tenths, raw_bonus_tenths))
+}
+
+fn split_training_xp_x1_5_bonus(
+    vanilla_award: i64,
+    previous_carry_tenths: u8,
+) -> Option<(i64, u8, i64)> {
+    // Preserve the already runtime-proven x1.5 research semantics through the generalized
+    // fixed-point tenths helper used by the normal full-roster feature.
+    debug_assert_eq!(TRAINING_XP_X1_5_EXTRA_TENTHS, 5);
+    split_training_xp_multiplier_bonus(vanilla_award, 15, previous_carry_tenths)
+}
+
+fn append_training_xp_lifecycle_report(entry: &str) {
+    if let Ok(mut report) = training_xp_lifecycle_report_store().lock() {
+        if !report.trim().is_empty() {
+            report.push_str("\n\n");
+        }
+        report.push_str(entry);
+    }
+    if let Ok(mut latest) = training_xp_lifecycle_latest_event_store().lock() {
+        latest.clear();
+        latest.push_str(entry);
+    }
+}
+
+fn training_xp_lifecycle_latest_event() -> String {
+    training_xp_lifecycle_latest_event_store()
+        .lock()
+        .map(|event| event.clone())
+        .unwrap_or_else(|_| "Training XP latest event unavailable.".to_string())
+}
+
+fn set_training_xp_last_rollover(value: String) {
+    TRAINING_XP_ROLLOVER_OBSERVED.store(true, Ordering::SeqCst);
+    if let Ok(mut rollover) = training_xp_last_rollover_store().lock() {
+        *rollover = value;
+    }
+}
+
+fn clear_training_xp_rollover_status() {
+    TRAINING_XP_ROLLOVER_OBSERVED.store(false, Ordering::SeqCst);
+    if let Ok(mut rollover) = training_xp_last_rollover_store().lock() {
+        rollover.clear();
+    }
+}
+
+fn clear_training_xp_lifecycle_probe() {
+    let was_enabled = TRAINING_XP_RESEARCH_ENABLED.swap(false, Ordering::SeqCst);
+    let x2_team_id = TRAINING_XP_X2_TEAM_ID.load(Ordering::SeqCst);
+    let x2_athlete_id = TRAINING_XP_X2_ATHLETE_ID.load(Ordering::SeqCst);
+    let x2_was_armed = x2_team_id != usize::MAX && x2_athlete_id != usize::MAX;
+    let x1_5_state = clear_training_xp_x1_5_state();
+
+    if was_enabled || x2_was_armed || x1_5_state.is_some() {
+        let x1_5_detail = x1_5_state
+            .as_ref()
+            .map(|state| {
+                let state_name = if state.feature_mode {
+                    "Training feature x1.5"
+                } else {
+                    "Float x1.5 research"
+                };
+                format!(
+                    "{state_name}: CLEARED\nPrevious x1.5 Team key: {}\nPrevious x1.5 Athlete ID: {}\nDiscarded carry: {}\n",
+                    state.team_id,
+                    state.athlete_id,
+                    format_training_xp_x1_5_carry_summary(&state.carry_tenths),
+                )
+            })
+            .unwrap_or_else(|| "Float x1.5 research: DISARMED\n".to_string());
+        append_training_xp_lifecycle_report(&format!(
+            "=== TRAINING XP LIFECYCLE EVENT ===\nState: SERVER_START_RESET\nResearch Probe: OFF\nPrevious research state: {}\nX2 Continuous: {}\n{}{}The server lifecycle reset disabled Training XP research and cleared manual research multiplier state. Normal Training roster state is restored separately from per-save mod data when valid.",
+            if was_enabled { "ON" } else { "OFF" },
+            if x2_was_armed { "CLEARED" } else { "DISARMED" },
+            if x2_was_armed {
+                format!("Previous x2 Team key: {x2_team_id}\nPrevious x2 Athlete ID: {x2_athlete_id}\n")
+            } else {
+                String::new()
+            },
+            x1_5_detail,
+        ));
+    }
+
+    TRAINING_XP_LIFECYCLE_TEAM_ID.store(usize::MAX, Ordering::SeqCst);
+    TRAINING_XP_X2_TEAM_ID.store(usize::MAX, Ordering::SeqCst);
+    TRAINING_XP_X2_ATHLETE_ID.store(usize::MAX, Ordering::SeqCst);
+    clear_training_xp_rollover_status();
+    if let Ok(mut armed) = training_xp_lifecycle_armed_store().lock() {
+        *armed = None;
+    }
+    if let Ok(mut before) = training_xp_lifecycle_before_store().lock() {
+        *before = None;
+    }
+}
+
+fn enable_training_xp_research(ctx: &ServerModContext, team_id: usize) {
+    if ctx.database.teams.get(team_id).is_none() {
+        return;
+    }
+    if TRAINING_XP_RESEARCH_ENABLED.load(Ordering::SeqCst)
+        && TRAINING_XP_LIFECYCLE_TEAM_ID.load(Ordering::SeqCst) == team_id
+    {
+        return;
+    }
+
+    TRAINING_XP_RESEARCH_ENABLED.store(true, Ordering::SeqCst);
+    TRAINING_XP_LIFECYCLE_TEAM_ID.store(team_id, Ordering::SeqCst);
+    TRAINING_XP_X2_TEAM_ID.store(usize::MAX, Ordering::SeqCst);
+    TRAINING_XP_X2_ATHLETE_ID.store(usize::MAX, Ordering::SeqCst);
+    let _ = clear_training_xp_x1_5_state();
+    clear_training_xp_rollover_status();
+
+    let armed_snapshot = capture_training_xp_lifecycle_snapshot(ctx, team_id);
+    let armed_marker = armed_snapshot.plan_date_marker.clone();
+    let baseline_report = format_training_xp_session_baseline(&armed_snapshot);
+    if let Ok(mut armed) = training_xp_lifecycle_armed_store().lock() {
+        *armed = Some(armed_snapshot);
+    }
+    if let Ok(mut before) = training_xp_lifecycle_before_store().lock() {
+        *before = None;
+    }
+
+    append_training_xp_lifecycle_report(&baseline_report);
+    let feature_status = training_xp_roster_state()
+        .filter(|state| state.team_id == team_id && !state.athletes.is_empty())
+        .map(|state| {
+            format!(
+                "Normal Training roster multipliers remain ACTIVE for {} athlete(s). Research multiplier probes remain DISARMED until explicitly armed.",
+                state.athletes.len()
+            )
+        })
+        .unwrap_or_else(|| {
+            "Normal Training roster is vanilla x1.0. Research multiplier probes remain DISARMED until explicitly armed.".to_string()
+        });
+    append_training_xp_lifecycle_report(&format!(
+        "=== TRAINING XP RESEARCH EVENT ===\nState: RESEARCH_ENABLED\nTeam key: {team_id}\nResearch Probe: ON\nServer baseline comp-test marker: {armed_marker}\nLifecycle capture is active. {feature_status}"
+    ));
+}
+
+fn disable_training_xp_research(team_id: usize) {
+    let was_enabled = TRAINING_XP_RESEARCH_ENABLED.load(Ordering::SeqCst);
+    let x2_team_id = TRAINING_XP_X2_TEAM_ID.load(Ordering::SeqCst);
+    let x2_athlete_id = TRAINING_XP_X2_ATHLETE_ID.load(Ordering::SeqCst);
+    let x2_was_armed = x2_team_id == team_id && x2_athlete_id != usize::MAX;
+    let x1_5_state = training_xp_x1_5_state()
+        .filter(|state| !state.feature_mode && state.team_id == team_id);
+
+    if x2_was_armed {
+        append_training_xp_lifecycle_report(&format!(
+            "=== X2 CONTINUOUS WRITE PROBE EVENT ===\nState: X2_DISARMED_RESEARCH_DISABLED\nTeam key: {team_id}\nAthlete ID: {x2_athlete_id}\nContinuous x2 was safely disarmed because Training XP Research was explicitly disabled. No further multiplier writes will occur until research is enabled and x2 is explicitly armed again."
+        ));
+    }
+
+    if let Some(state) = x1_5_state.as_ref() {
+        append_training_xp_lifecycle_report(&format!(
+            "=== FLOAT X1.5 WRITE PROBE EVENT ===\nState: FLOAT_X1_5_DISARMED_RESEARCH_DISABLED\nTeam key: {team_id}\nAthlete ID: {}\nDiscarded fractional carry: {}\nNo fractional carry was converted into TrainingExp. Float x1.5 was safely disarmed because Training XP Research was explicitly disabled.",
+            state.athlete_id,
+            format_training_xp_x1_5_carry_summary(&state.carry_tenths),
+        ));
+    }
+
+    if was_enabled {
+        append_training_xp_lifecycle_report(&format!(
+            "=== TRAINING XP RESEARCH EVENT ===\nState: RESEARCH_DISABLED\nTeam key: {team_id}\nResearch Probe: OFF\nTraining XP research instrumentation is now dormant. Previous evidence remains available through Export Full Log."
+        ));
+    }
+
+    TRAINING_XP_RESEARCH_ENABLED.store(false, Ordering::SeqCst);
+    TRAINING_XP_LIFECYCLE_TEAM_ID.store(usize::MAX, Ordering::SeqCst);
+    TRAINING_XP_X2_TEAM_ID.store(usize::MAX, Ordering::SeqCst);
+    TRAINING_XP_X2_ATHLETE_ID.store(usize::MAX, Ordering::SeqCst);
+    let _ = clear_training_xp_research_x1_5_state(team_id);
+    if let Ok(mut armed) = training_xp_lifecycle_armed_store().lock() {
+        *armed = None;
+    }
+    if let Ok(mut before) = training_xp_lifecycle_before_store().lock() {
+        *before = None;
+    }
+}
+
+fn normalize_training_plan_date_marker(plan_raw: &str) -> String {
+    const FIELD: &str = "comp_test_count_date:";
+    let Some(start) = plan_raw.find(FIELD) else {
+        return "UNKNOWN".to_string();
+    };
+    let tail = &plan_raw[start + FIELD.len()..];
+    let end = tail.find("comp_test_history:").unwrap_or(tail.len());
+    let normalized = tail[..end]
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .trim_end_matches(',')
+        .to_string();
+    if normalized.is_empty() {
+        "UNKNOWN".to_string()
+    } else {
+        normalized
+    }
+}
+
+fn training_xp_attribute_values(athlete: &Athlete) -> [i64; 8] {
+    [
+        athlete.training_exp.last_hit as i64,
+        athlete.training_exp.skill_avoid as i64,
+        athlete.training_exp.skill_hit as i64,
+        athlete.training_exp.positioning as i64,
+        athlete.training_exp.control_speed as i64,
+        athlete.training_exp.concentration as i64,
+        athlete.training_exp.mental as i64,
+        athlete.training_exp.judgement as i64,
+    ]
+}
+
+fn athlete_attribute_values(athlete: &Athlete) -> [i64; 8] {
+    [
+        athlete.stat.last_hit as i64,
+        athlete.stat.skill_avoid as i64,
+        athlete.stat.skill_hit as i64,
+        athlete.stat.positioning as i64,
+        athlete.stat.control_speed as i64,
+        athlete.stat.concentration as i64,
+        athlete.stat.mental as i64,
+        athlete.stat.judgement as i64,
+    ]
+}
+
+fn training_xp_position_values(athlete: &Athlete) -> [i64; 5] {
+    [
+        athlete.training_exp.top as i64,
+        athlete.training_exp.jungle as i64,
+        athlete.training_exp.mid as i64,
+        athlete.training_exp.bottom as i64,
+        athlete.training_exp.support as i64,
+    ]
+}
+
+fn capture_training_xp_lifecycle_snapshot(
+    ctx: &ServerModContext,
+    team_id: usize,
+) -> TrainingXpLifecycleSnapshot {
+    let plan_raw = ctx
+        .database
+        .training_plans
+        .get(team_id)
+        .map(|plan| format!("{plan:#?}"))
+        .unwrap_or_else(|| "TRAINING_PLAN_NOT_FOUND".to_string());
+    let plan_date_marker = normalize_training_plan_date_marker(&plan_raw);
+    let training_setting = &ctx.server_state.training_setting;
+    let training_setting_raw = format!(
+        "TrainingSetting {{\n  training_point_coef: {:?},\n  exp_table_start_age: {:?},\n  exp_table: {:?},\n  base_exp_added: {:?},\n  exp_table_mental: {:?},\n  base_exp_added_mental: {:?},\n  need_exp_table: {:?},\n}}",
+        training_setting.training_point_coef,
+        training_setting.exp_table_start_age,
+        training_setting.exp_table,
+        training_setting.base_exp_added,
+        training_setting.exp_table_mental,
+        training_setting.base_exp_added_mental,
+        training_setting.need_exp_table,
+    );
+
+    let mut athlete_ids = ctx.database.athletes.keys();
+    athlete_ids.sort_unstable();
+    let mut athletes = Vec::new();
+    for athlete_id in athlete_ids {
+        let Some(athlete) = ctx.database.athletes.get(athlete_id) else {
+            continue;
+        };
+        let belongs_to_team = matches!(
+            &athlete.contract,
+            Contract::InContract {
+                team_id: athlete_team_id,
+                ..
+            } if *athlete_team_id == team_id
+        );
+        if !belongs_to_team {
+            continue;
+        }
+        athletes.push(TrainingXpLifecycleAthleteSnapshot {
+            athlete_id,
+            name: athlete.name.clone(),
+            age: athlete.age.to_string(),
+            actual_potential: athlete.hidden.potential.to_string(),
+            attribute_xp: training_xp_attribute_values(athlete),
+            attribute_stat: athlete_attribute_values(athlete),
+            position_xp: training_xp_position_values(athlete),
+            language_xp: communication_xp_raw(athlete),
+            language_stat: communication_raw(athlete),
+        });
+    }
+
+    TrainingXpLifecycleSnapshot {
+        team_id,
+        plan_date_marker,
+        plan_raw,
+        training_setting_raw,
+        athletes,
+    }
+}
+
+fn format_training_xp_session_baseline(snapshot: &TrainingXpLifecycleSnapshot) -> String {
+    const ATTRIBUTE_NAMES: [&str; 8] = [
+        "last_hit",
+        "skill_avoid",
+        "skill_hit",
+        "positioning",
+        "control_speed",
+        "concentration",
+        "mental",
+        "judgement",
+    ];
+
+    let mut raw = format!(
+        "=== TRAINING XP RESEARCH SESSION BASELINE ===\nTeam key: {}\nComp-test marker: {}\n\n=== TRAINING SETTING — CAPTURED ONCE ===\n{}\n\n=== TRAINING PLAN — CAPTURED ONCE ===\n{}\n\n=== PLAYER-TEAM CORE TRAINING BASELINE ===\n",
+        snapshot.team_id,
+        snapshot.plan_date_marker,
+        snapshot.training_setting_raw,
+        snapshot.plan_raw,
+    );
+
+    for athlete in &snapshot.athletes {
+        raw.push_str(&format!(
+            "Athlete {}: {} | Age {} | Actual Potential {}\n",
+            athlete.athlete_id, athlete.name, athlete.age, athlete.actual_potential
+        ));
+        for (index, name) in ATTRIBUTE_NAMES.iter().enumerate() {
+            raw.push_str(&format!(
+                "  {name}: XP {} | Stat {}\n",
+                athlete.attribute_xp[index], athlete.attribute_stat[index]
+            ));
+        }
+        raw.push_str(&format!(
+            "  Position XP: top={} jungle={} mid={} bottom={} support={}\n  Language XP: {}\n  Language stat: {}\n",
+            athlete.position_xp[0],
+            athlete.position_xp[1],
+            athlete.position_xp[2],
+            athlete.position_xp[3],
+            athlete.position_xp[4],
+            athlete.language_xp,
+            athlete.language_stat,
+        ));
+    }
+
+    raw.push_str(
+        "\nStatic TrainingSetting and TrainingPlan data are not repeated on every tick. They are logged again only if a captured change is detected.",
+    );
+    raw
+}
+
+fn signed_delta(value: i64) -> String {
+    if value >= 0 {
+        format!("+{value}")
+    } else {
+        value.to_string()
+    }
+}
+
+fn append_training_xp_lifecycle_phase(
+    raw: &mut String,
+    phase_name: &str,
+    before: &TrainingXpLifecycleSnapshot,
+    after: &TrainingXpLifecycleSnapshot,
+) -> usize {
+    const ATTRIBUTE_NAMES: [&str; 8] = [
+        "last_hit",
+        "skill_avoid",
+        "skill_hit",
+        "positioning",
+        "control_speed",
+        "concentration",
+        "mental",
+        "judgement",
+    ];
+    const POSITION_NAMES: [&str; 5] = ["top", "jungle", "mid", "bottom", "support"];
+
+    raw.push_str(&format!(
+        "\n=== {phase_name} ===\nFrom marker: {}\nTo marker: {}\n",
+        before.plan_date_marker, after.plan_date_marker
+    ));
+
+    let before_by_id = before
+        .athletes
+        .iter()
+        .map(|athlete| (athlete.athlete_id, athlete))
+        .collect::<HashMap<_, _>>();
+    let mut changed_players = 0usize;
+
+    for after_athlete in &after.athletes {
+        let Some(before_athlete) = before_by_id.get(&after_athlete.athlete_id) else {
+            continue;
+        };
+        let core_changed = before_athlete.attribute_xp != after_athlete.attribute_xp
+            || before_athlete.attribute_stat != after_athlete.attribute_stat;
+        let position_changed = before_athlete.position_xp != after_athlete.position_xp;
+        let language_changed = before_athlete.language_xp != after_athlete.language_xp
+            || before_athlete.language_stat != after_athlete.language_stat;
+        if !core_changed && !position_changed && !language_changed {
+            continue;
+        }
+
+        changed_players += 1;
+        raw.push_str(&format!(
+            "\nAthlete {}: {}\n",
+            after_athlete.athlete_id, after_athlete.name,
+        ));
+
+        if core_changed {
+            raw.push_str("  Core TrainingExp/stat deltas:\n");
+            for (index, name) in ATTRIBUTE_NAMES.iter().enumerate() {
+                let xp_before = before_athlete.attribute_xp[index];
+                let xp_after = after_athlete.attribute_xp[index];
+                let stat_before = before_athlete.attribute_stat[index];
+                let stat_after = after_athlete.attribute_stat[index];
+                if xp_before == xp_after && stat_before == stat_after {
+                    continue;
+                }
+                let rollover = if xp_after < xp_before && stat_after > stat_before {
+                    " | ROLLOVER_CANDIDATE"
+                } else {
+                    ""
+                };
+                raw.push_str(&format!(
+                    "    {name}: XP {xp_before} -> {xp_after} ({}) | Stat {stat_before} -> {stat_after} ({}){rollover}\n",
+                    signed_delta(xp_after - xp_before),
+                    signed_delta(stat_after - stat_before),
+                ));
+            }
+        }
+
+        if position_changed {
+            raw.push_str("  Position TrainingExp deltas:\n");
+            for (index, name) in POSITION_NAMES.iter().enumerate() {
+                let value_before = before_athlete.position_xp[index];
+                let value_after = after_athlete.position_xp[index];
+                if value_before == value_after {
+                    continue;
+                }
+                raw.push_str(&format!(
+                    "    {name}: {value_before} -> {value_after} ({})\n",
+                    signed_delta(value_after - value_before)
+                ));
+            }
+        }
+
+        if language_changed {
+            raw.push_str(&format!(
+                "  Communication/language: XP {} -> {} | Stat {} -> {}\n",
+                before_athlete.language_xp,
+                after_athlete.language_xp,
+                before_athlete.language_stat,
+                after_athlete.language_stat,
+            ));
+        }
+    }
+
+    raw.push_str(&format!(
+        "Phase summary: roster {} -> {}, changed players = {}\n",
+        before.athletes.len(),
+        after.athletes.len(),
+        changed_players
+    ));
+    changed_players
+}
+
+fn format_training_xp_lifecycle_report(
+    armed: &TrainingXpLifecycleSnapshot,
+    before_hook: &TrainingXpLifecycleSnapshot,
+    after_hook: &TrainingXpLifecycleSnapshot,
+) -> String {
+    let mut raw = format!(
+        "=== TRAINING XP LIFECYCLE EVENT ===\nTeam key: {}\nArmed marker: {}\nBefore marker: {}\nAfter marker: {}\n",
+        after_hook.team_id,
+        armed.plan_date_marker,
+        before_hook.plan_date_marker,
+        after_hook.plan_date_marker,
+    );
+
+    let before_hook_changes = append_training_xp_lifecycle_phase(
+        &mut raw,
+        "PHASE A — BASELINE -> BEFORE_MANAGEMENT_TICK",
+        armed,
+        before_hook,
+    );
+    let after_hook_changes = append_training_xp_lifecycle_phase(
+        &mut raw,
+        "PHASE B — BEFORE_MANAGEMENT_TICK -> AFTER_MANAGEMENT_TICK",
+        before_hook,
+        after_hook,
+    );
+
+    raw.push_str("\nHook signal: ");
+    match (before_hook_changes > 0, after_hook_changes > 0) {
+        (true, false) => raw.push_str("changes were already visible at before_management_tick.\n"),
+        (false, true) => raw.push_str("changes appeared between before_management_tick and after_management_tick.\n"),
+        (true, true) => raw.push_str("changes occurred in both captured intervals.\n"),
+        (false, false) => raw.push_str("no TrainingExp/stat changes in either captured interval.\n"),
+    }
+
+    let training_setting_changed = armed.training_setting_raw != before_hook.training_setting_raw
+        || before_hook.training_setting_raw != after_hook.training_setting_raw;
+    if training_setting_changed {
+        raw.push_str("\n=== TRAINING SETTING CHANGED ===\n");
+        raw.push_str(&after_hook.training_setting_raw);
+        raw.push('\n');
+    }
+
+    let plan_changed = armed.plan_raw != before_hook.plan_raw || before_hook.plan_raw != after_hook.plan_raw;
+    if plan_changed {
+        raw.push_str("\n=== TRAINING PLAN CHANGED — CURRENT AFTER SNAPSHOT ===\n");
+        raw.push_str(&after_hook.plan_raw);
+        raw.push('\n');
+    }
+
+    raw.push_str(
+        "Lifecycle event is compact by design. Static TrainingSetting/TrainingPlan data are captured in the session baseline and repeated only when changed.\n",
+    );
+    raw
+}
+
+fn capture_training_xp_lifecycle_before(ctx: &ServerModContext) {
+    let research_enabled = TRAINING_XP_RESEARCH_ENABLED.load(Ordering::SeqCst);
+    let research_team_id = TRAINING_XP_LIFECYCLE_TEAM_ID.load(Ordering::SeqCst);
+    let feature_state = TRAINING_XP_PLAYER_TEAM_CONFIRMED
+        .load(Ordering::SeqCst)
+        .then(training_xp_roster_state)
+        .flatten()
+        .filter(|state| !state.athletes.is_empty());
+
+    let team_id = if research_enabled && research_team_id != usize::MAX {
+        research_team_id
+    } else if let Some(state) = feature_state {
+        state.team_id
+    } else {
+        return;
+    };
+
+    let snapshot = capture_training_xp_lifecycle_snapshot(ctx, team_id);
+    if let Ok(mut before) = training_xp_lifecycle_before_store().lock() {
+        *before = Some(snapshot);
+    }
+}
+
+fn training_xp_threshold_for_stat(ctx: &ServerModContext, stat: i64) -> Option<i64> {
+    if !(0..100).contains(&stat) {
+        return None;
+    }
+    let index = (stat as usize) / 5;
+    ctx.server_state
+        .training_setting
+        .need_exp_table
+        .get(index)
+        .map(|value| *value as i64)
+}
+
+fn reconstructed_training_award(
+    ctx: &ServerModContext,
+    xp_before: i64,
+    xp_after: i64,
+    stat_before: i64,
+    stat_after: i64,
+) -> Option<i64> {
+    if stat_after < stat_before {
+        return None;
+    }
+    let mut consumed = 0i64;
+    for stat in stat_before..stat_after {
+        consumed = consumed.checked_add(training_xp_threshold_for_stat(ctx, stat)?)?;
+    }
+    xp_after.checked_sub(xp_before)?.checked_add(consumed)
+}
+
+fn set_training_xp_attribute_value(
+    athlete: &mut Athlete,
+    index: usize,
+    value: i64,
+) -> Result<(), &'static str> {
+    match index {
+        0 => athlete.training_exp.last_hit = value.try_into().map_err(|_| "TRAINING_XP_RANGE")?,
+        1 => athlete.training_exp.skill_avoid = value.try_into().map_err(|_| "TRAINING_XP_RANGE")?,
+        2 => athlete.training_exp.skill_hit = value.try_into().map_err(|_| "TRAINING_XP_RANGE")?,
+        3 => athlete.training_exp.positioning = value.try_into().map_err(|_| "TRAINING_XP_RANGE")?,
+        4 => athlete.training_exp.control_speed = value.try_into().map_err(|_| "TRAINING_XP_RANGE")?,
+        5 => athlete.training_exp.concentration = value.try_into().map_err(|_| "TRAINING_XP_RANGE")?,
+        6 => athlete.training_exp.mental = value.try_into().map_err(|_| "TRAINING_XP_RANGE")?,
+        7 => athlete.training_exp.judgement = value.try_into().map_err(|_| "TRAINING_XP_RANGE")?,
+        _ => return Err("TRAINING_XP_FIELD"),
+    }
+    Ok(())
+}
+
+fn set_athlete_attribute_value(
+    athlete: &mut Athlete,
+    index: usize,
+    value: i64,
+) -> Result<(), &'static str> {
+    match index {
+        0 => athlete.stat.last_hit = value.try_into().map_err(|_| "TRAINING_STAT_RANGE")?,
+        1 => athlete.stat.skill_avoid = value.try_into().map_err(|_| "TRAINING_STAT_RANGE")?,
+        2 => athlete.stat.skill_hit = value.try_into().map_err(|_| "TRAINING_STAT_RANGE")?,
+        3 => athlete.stat.positioning = value.try_into().map_err(|_| "TRAINING_STAT_RANGE")?,
+        4 => athlete.stat.control_speed = value.try_into().map_err(|_| "TRAINING_STAT_RANGE")?,
+        5 => athlete.stat.concentration = value.try_into().map_err(|_| "TRAINING_STAT_RANGE")?,
+        6 => athlete.stat.mental = value.try_into().map_err(|_| "TRAINING_STAT_RANGE")?,
+        7 => athlete.stat.judgement = value.try_into().map_err(|_| "TRAINING_STAT_RANGE")?,
+        _ => return Err("TRAINING_STAT_FIELD"),
+    }
+    Ok(())
+}
+
+fn apply_training_xp_x2_probe(
+    ctx: &mut ServerModContext,
+    before_hook: &TrainingXpLifecycleSnapshot,
+    vanilla_after: &TrainingXpLifecycleSnapshot,
+) -> Option<String> {
+    if !TRAINING_XP_RESEARCH_ENABLED.load(Ordering::SeqCst) {
+        return None;
+    }
+
+    const ATTRIBUTE_NAMES: [&str; 8] = [
+        "last_hit",
+        "skill_avoid",
+        "skill_hit",
+        "positioning",
+        "control_speed",
+        "concentration",
+        "mental",
+        "judgement",
+    ];
+
+    let team_id = TRAINING_XP_X2_TEAM_ID.load(Ordering::SeqCst);
+    let athlete_id = TRAINING_XP_X2_ATHLETE_ID.load(Ordering::SeqCst);
+    if team_id == usize::MAX || athlete_id == usize::MAX || team_id != vanilla_after.team_id {
+        return None;
+    }
+
+    let before = before_hook
+        .athletes
+        .iter()
+        .find(|snapshot| snapshot.athlete_id == athlete_id)?;
+    let after = vanilla_after
+        .athletes
+        .iter()
+        .find(|snapshot| snapshot.athlete_id == athlete_id)?;
+
+    let mut awards = [0i64; 8];
+    let mut any_positive_award = false;
+    for (index, award_slot) in awards.iter_mut().enumerate() {
+        let award = reconstructed_training_award(
+            ctx,
+            before.attribute_xp[index],
+            after.attribute_xp[index],
+            before.attribute_stat[index],
+            after.attribute_stat[index],
+        )?;
+        if award > 0 {
+            any_positive_award = true;
+            *award_slot = award;
+        }
+    }
+
+    if !any_positive_award {
+        return Some(format!(
+            "=== X2 CONTINUOUS WRITE PROBE ===\nState: ZERO_AWARD\nTeam key: {team_id}\nAthlete ID: {athlete_id}\nNo positive core Training award observed. Continuous x2 remains ARMED."
+        ));
+    }
+
+    let need_exp_table = ctx
+        .server_state
+        .training_setting
+        .need_exp_table
+        .iter()
+        .map(|value| *value as i64)
+        .collect::<Vec<_>>();
+
+    let Some(athlete) = ctx.database.athletes.get_mut(athlete_id) else {
+        return Some(format!(
+            "=== X2 CONTINUOUS WRITE PROBE ===\nState: ERROR\nTeam key: {team_id}\nAthlete ID: {athlete_id}\nAthlete not found at write stage. No write performed."
+        ));
+    };
+    let belongs_to_team = matches!(
+        &athlete.contract,
+        Contract::InContract {
+            team_id: athlete_team_id,
+            ..
+        } if *athlete_team_id == team_id
+    );
+    if !belongs_to_team {
+        return Some(format!(
+            "=== X2 CONTINUOUS WRITE PROBE ===\nState: ERROR\nTeam key: {team_id}\nAthlete ID: {athlete_id}\nAthlete no longer belongs to the armed player team. No write performed."
+        ));
+    }
+
+    let mut report = format!(
+        "=== X2 CONTINUOUS WRITE PROBE ===\nState: APPLIED\nTeam key: {team_id}\nAthlete {athlete_id}: {}\nMultiplier: x2.0\nScope: eight core TrainingExp attributes only. Position XP and Communication/language are untouched.\n",
+        athlete.name
+    );
+
+    let current_xp = training_xp_attribute_values(athlete);
+    let current_stat = athlete_attribute_values(athlete);
+    let mut rollover_lines = Vec::new();
+
+    for (index, &vanilla_award) in awards.iter().enumerate() {
+        if vanilla_award <= 0 {
+            report.push_str(&format!(
+                "  {}: vanilla award {vanilla_award}; unchanged\n",
+                ATTRIBUTE_NAMES[index]
+            ));
+            continue;
+        }
+
+        // x2.0 is intentionally exact for this research probe. The bonus is one integer copy
+        // of the reconstructed vanilla award, so no float-rounding policy is involved yet.
+        let bonus = vanilla_award;
+        let mut final_xp = match current_xp[index].checked_add(bonus) {
+            Some(value) => value,
+            None => {
+                report.push_str(&format!(
+                    "  {}: overflow while adding x2 bonus; skipped\n",
+                    ATTRIBUTE_NAMES[index]
+                ));
+                continue;
+            }
+        };
+        let mut final_stat = current_stat[index];
+        let stat_start = final_stat;
+        let mut thresholds_consumed = Vec::new();
+        while final_stat < 100 {
+            let threshold_index = (final_stat as usize) / 5;
+            let Some(threshold) = need_exp_table.get(threshold_index).copied() else {
+                break;
+            };
+            if final_xp < threshold {
+                break;
+            }
+            final_xp -= threshold;
+            thresholds_consumed.push(threshold);
+            final_stat += 1;
+        }
+
+        if set_training_xp_attribute_value(athlete, index, final_xp).is_err()
+            || set_athlete_attribute_value(athlete, index, final_stat).is_err()
+        {
+            report.push_str(&format!(
+                "  {}: target value conversion failed; probe write aborted for this field\n",
+                ATTRIBUTE_NAMES[index]
+            ));
+            continue;
+        }
+
+        if thresholds_consumed.is_empty() {
+            report.push_str(&format!(
+                "  {}: vanilla award +{}; x2 bonus +{}; XP {} -> {}; Stat {} -> {}\n",
+                ATTRIBUTE_NAMES[index],
+                vanilla_award,
+                bonus,
+                current_xp[index],
+                final_xp,
+                stat_start,
+                final_stat,
+            ));
+        } else {
+            let thresholds = thresholds_consumed
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            report.push_str(&format!(
+                "  {}: vanilla award +{}; x2 bonus +{}; thresholds consumed [{}]; XP {} -> {}; Stat {} -> {} | ROLLOVER\n",
+                ATTRIBUTE_NAMES[index],
+                vanilla_award,
+                bonus,
+                thresholds,
+                current_xp[index],
+                final_xp,
+                stat_start,
+                final_stat,
+            ));
+            rollover_lines.push(format!(
+                "{}: Stat {} -> {}; XP {} -> {}; thresholds [{}]",
+                ATTRIBUTE_NAMES[index], stat_start, final_stat, current_xp[index], final_xp, thresholds
+            ));
+        }
+    }
+
+    if rollover_lines.is_empty() {
+        report.push_str("Rollover: NO\n");
+    } else {
+        report.push_str("Rollover: YES\n");
+        let summary = rollover_lines.join(" | ");
+        report.push_str(&format!("Rollover summary: {summary}\n"));
+        set_training_xp_last_rollover(summary);
+    }
+
+    report.push_str(
+        "Continuous x2 remains ARMED after this positive core Training award. Use Disarm x2 explicitly when the rollover test is complete.",
+    );
+    Some(report)
+}
+
+fn apply_training_xp_x1_5_probe(
+    ctx: &mut ServerModContext,
+    before_hook: &TrainingXpLifecycleSnapshot,
+    vanilla_after: &TrainingXpLifecycleSnapshot,
+) -> Option<String> {
+    const ATTRIBUTE_NAMES: [&str; 8] = [
+        "last_hit",
+        "skill_avoid",
+        "skill_hit",
+        "positioning",
+        "control_speed",
+        "concentration",
+        "mental",
+        "judgement",
+    ];
+
+    let state = training_xp_x1_5_state()?;
+    if state.team_id != vanilla_after.team_id {
+        return None;
+    }
+    let team_id = state.team_id;
+    let athlete_id = state.athlete_id;
+    let event_title = if state.feature_mode {
+        "TRAINING XP SINGLE-PLAYER MULTIPLIER"
+    } else {
+        "FLOAT X1.5 WRITE PROBE"
+    };
+    let zero_state = if state.feature_mode {
+        "ACTIVE_ZERO_AWARD"
+    } else {
+        "ZERO_AWARD"
+    };
+    let applied_state = if state.feature_mode {
+        "X1_5_APPLIED"
+    } else {
+        "FLOAT_X1_5_APPLIED"
+    };
+    let remains_active = if state.feature_mode {
+        "Single-player x1.5 remains ACTIVE after this positive core Training award."
+    } else {
+        "Float x1.5 remains ARMED after this positive core Training award."
+    };
+
+    let before = before_hook
+        .athletes
+        .iter()
+        .find(|snapshot| snapshot.athlete_id == athlete_id)?;
+    let after = vanilla_after
+        .athletes
+        .iter()
+        .find(|snapshot| snapshot.athlete_id == athlete_id)?;
+
+    let mut awards = [0i64; 8];
+    let mut any_positive_award = false;
+    for (index, award_slot) in awards.iter_mut().enumerate() {
+        let award = reconstructed_training_award(
+            ctx,
+            before.attribute_xp[index],
+            after.attribute_xp[index],
+            before.attribute_stat[index],
+            after.attribute_stat[index],
+        )?;
+        if award > 0 {
+            any_positive_award = true;
+            *award_slot = award;
+        }
+    }
+
+    if !any_positive_award {
+        return Some(format!(
+            "=== {event_title} ===\nState: {zero_state}\nTeam key: {team_id}\nAthlete ID: {athlete_id}\nMultiplier: x1.5\nCarry unchanged: {}\nNo positive core Training award observed. {}",
+            format_training_xp_x1_5_carry_summary(&state.carry_tenths),
+            if state.feature_mode {
+                "Single-player x1.5 remains ACTIVE and no carry was consumed or modified."
+            } else {
+                "Float x1.5 remains ARMED and no carry was consumed or modified."
+            },
+        ));
+    }
+
+    let need_exp_table = ctx
+        .server_state
+        .training_setting
+        .need_exp_table
+        .iter()
+        .map(|value| *value as i64)
+        .collect::<Vec<_>>();
+
+    let Some(athlete) = ctx.database.athletes.get_mut(athlete_id) else {
+        return Some(format!(
+            "=== {event_title} ===\nState: ERROR\nTeam key: {team_id}\nAthlete ID: {athlete_id}\nAthlete not found at write stage. No write or carry change performed."
+        ));
+    };
+    let belongs_to_team = matches!(
+        &athlete.contract,
+        Contract::InContract {
+            team_id: athlete_team_id,
+            ..
+        } if *athlete_team_id == team_id
+    );
+    if !belongs_to_team {
+        return Some(format!(
+            "=== {event_title} ===\nState: ERROR\nTeam key: {team_id}\nAthlete ID: {athlete_id}\nAthlete no longer belongs to the selected player team. No write or carry change performed."
+        ));
+    }
+
+    let mut report = format!(
+        "=== {event_title} ===\nState: {applied_state}\nTeam key: {team_id}\nAthlete {athlete_id}: {}\nMultiplier: x1.5\nFractional carry: per-athlete + per-field, Bridge runtime only\nScope: eight core TrainingExp attributes only. Position XP and Communication/language are untouched.\n",
+        athlete.name
+    );
+
+    let current_xp = training_xp_attribute_values(athlete);
+    let current_stat = athlete_attribute_values(athlete);
+    let mut updated_carry = state.carry_tenths;
+    let mut rollover_lines = Vec::new();
+
+    for (index, &vanilla_award) in awards.iter().enumerate() {
+        if vanilla_award <= 0 {
+            report.push_str(&format!(
+                "  {}: vanilla award {vanilla_award}; carry unchanged {}\n",
+                ATTRIBUTE_NAMES[index],
+                format_training_xp_carry_tenths(updated_carry[index]),
+            ));
+            continue;
+        }
+
+        let previous_carry = updated_carry[index];
+        let Some((integer_bonus, new_carry, raw_bonus_tenths)) =
+            split_training_xp_x1_5_bonus(vanilla_award, previous_carry)
+        else {
+            report.push_str(&format!(
+                "  {}: invalid/overflowing float bonus calculation; no write or carry change\n",
+                ATTRIBUTE_NAMES[index]
+            ));
+            continue;
+        };
+
+        let mut final_xp = match current_xp[index].checked_add(integer_bonus) {
+            Some(value) => value,
+            None => {
+                report.push_str(&format!(
+                    "  {}: overflow while adding x1.5 integer bonus; no write or carry change\n",
+                    ATTRIBUTE_NAMES[index]
+                ));
+                continue;
+            }
+        };
+        let mut final_stat = current_stat[index];
+        let stat_start = final_stat;
+        let mut thresholds_consumed = Vec::new();
+        while final_stat < 100 {
+            let threshold_index = (final_stat as usize) / 5;
+            let Some(threshold) = need_exp_table.get(threshold_index).copied() else {
+                break;
+            };
+            if final_xp < threshold {
+                break;
+            }
+            final_xp -= threshold;
+            thresholds_consumed.push(threshold);
+            final_stat += 1;
+        }
+
+        if set_training_xp_attribute_value(athlete, index, final_xp).is_err()
+            || set_athlete_attribute_value(athlete, index, final_stat).is_err()
+        {
+            report.push_str(&format!(
+                "  {}: target value conversion failed; no carry change for this field\n",
+                ATTRIBUTE_NAMES[index]
+            ));
+            continue;
+        }
+
+        updated_carry[index] = new_carry;
+        let raw_bonus = format!(
+            "{}.{:01}",
+            raw_bonus_tenths / TRAINING_XP_FRACTION_SCALE,
+            raw_bonus_tenths % TRAINING_XP_FRACTION_SCALE
+        );
+        report.push_str(&format!(
+            "  {}:\n    Vanilla award: +{}\n    Previous carry: {}\n    Raw bonus: {}\n    Written bonus: +{}\n    New carry: {}\n    TrainingExp XP: {} -> {}\n    Stat: {} -> {}\n",
+            ATTRIBUTE_NAMES[index],
+            vanilla_award,
+            format_training_xp_carry_tenths(previous_carry),
+            raw_bonus,
+            integer_bonus,
+            format_training_xp_carry_tenths(new_carry),
+            current_xp[index],
+            final_xp,
+            stat_start,
+            final_stat,
+        ));
+
+        if thresholds_consumed.is_empty() {
+            report.push_str("    Threshold crossed: NO\n");
+        } else {
+            let thresholds = thresholds_consumed
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            report.push_str(&format!(
+                "    Threshold crossed: YES\n    Thresholds consumed: [{thresholds}]\n"
+            ));
+            rollover_lines.push(format!(
+                "{}: Stat {} -> {}; XP {} -> {}; thresholds [{}]; carry {}",
+                ATTRIBUTE_NAMES[index],
+                stat_start,
+                final_stat,
+                current_xp[index],
+                final_xp,
+                thresholds,
+                format_training_xp_carry_tenths(new_carry),
+            ));
+        }
+    }
+
+    if let Ok(mut slot) = training_xp_x1_5_state_store().lock() {
+        if let Some(active) = slot.as_mut() {
+            if active.team_id == team_id && active.athlete_id == athlete_id {
+                active.carry_tenths = updated_carry;
+            }
+        }
+    }
+
+    if rollover_lines.is_empty() {
+        report.push_str("Rollover: NO\n");
+    } else {
+        report.push_str("Rollover: YES\n");
+        let summary = rollover_lines.join(" | ");
+        report.push_str(&format!("Rollover summary: {summary}\n"));
+        set_training_xp_last_rollover(summary);
+    }
+
+    report.push_str(&format!(
+        "Carry after event: {}\n{}",
+        format_training_xp_x1_5_carry_summary(&updated_carry),
+        remains_active,
+    ));
+    Some(report)
+}
+
+fn apply_training_xp_roster_athlete(
+    ctx: &mut ServerModContext,
+    before_hook: &TrainingXpLifecycleSnapshot,
+    vanilla_after: &TrainingXpLifecycleSnapshot,
+    team_id: usize,
+    athlete_id: usize,
+    state: &TrainingXpRosterAthleteState,
+) -> Option<(String, [u8; 8])> {
+    const ATTRIBUTE_NAMES: [&str; 8] = [
+        "last_hit",
+        "skill_avoid",
+        "skill_hit",
+        "positioning",
+        "control_speed",
+        "concentration",
+        "mental",
+        "judgement",
+    ];
+
+    let before = before_hook
+        .athletes
+        .iter()
+        .find(|snapshot| snapshot.athlete_id == athlete_id)?;
+    let after = vanilla_after
+        .athletes
+        .iter()
+        .find(|snapshot| snapshot.athlete_id == athlete_id)?;
+
+    let mut awards = [0i64; 8];
+    let mut any_positive_award = false;
+    for (index, award_slot) in awards.iter_mut().enumerate() {
+        let award = reconstructed_training_award(
+            ctx,
+            before.attribute_xp[index],
+            after.attribute_xp[index],
+            before.attribute_stat[index],
+            after.attribute_stat[index],
+        )?;
+        if award > 0 {
+            any_positive_award = true;
+            *award_slot = award;
+        }
+    }
+
+    let multiplier = format_training_xp_multiplier(state.multiplier_tenths);
+    if !any_positive_award {
+        return Some((
+            format!(
+                "=== TRAINING XP ROSTER MULTIPLIER ===\nState: ACTIVE_ZERO_AWARD\nTeam key: {team_id}\nAthlete ID: {athlete_id}\nMultiplier: {multiplier}\nCarry unchanged: {}\nNo positive core Training award observed. Roster multiplier remains ACTIVE and no carry was consumed or modified.",
+                format_training_xp_x1_5_carry_summary(&state.carry_tenths),
+            ),
+            state.carry_tenths,
+        ));
+    }
+
+    let need_exp_table = ctx
+        .server_state
+        .training_setting
+        .need_exp_table
+        .iter()
+        .map(|value| *value as i64)
+        .collect::<Vec<_>>();
+
+    let Some(athlete) = ctx.database.athletes.get_mut(athlete_id) else {
+        return Some((
+            format!(
+                "=== TRAINING XP ROSTER MULTIPLIER ===\nState: ERROR\nTeam key: {team_id}\nAthlete ID: {athlete_id}\nAthlete not found at write stage. No write or carry change performed."
+            ),
+            state.carry_tenths,
+        ));
+    };
+    let belongs_to_team = matches!(
+        &athlete.contract,
+        Contract::InContract {
+            team_id: athlete_team_id,
+            ..
+        } if *athlete_team_id == team_id
+    );
+    if !belongs_to_team {
+        return Some((
+            format!(
+                "=== TRAINING XP ROSTER MULTIPLIER ===\nState: STALE_ROSTER_ENTRY\nTeam key: {team_id}\nAthlete ID: {athlete_id}\nAthlete no longer belongs to the current Player Team. No write or carry payout performed."
+            ),
+            state.carry_tenths,
+        ));
+    }
+
+    let mut report = format!(
+        "=== TRAINING XP ROSTER MULTIPLIER ===\nState: APPLIED\nTeam key: {team_id}\nAthlete {athlete_id}: {}\nMultiplier: {multiplier}\nFractional carry: per-athlete + per-field, persisted with this save slot\nScope: eight core TrainingExp attributes only. Position XP and Communication/language are untouched.\n",
+        athlete.name
+    );
+    let current_xp = training_xp_attribute_values(athlete);
+    let current_stat = athlete_attribute_values(athlete);
+    let mut updated_carry = state.carry_tenths;
+    let mut rollover_lines = Vec::new();
+
+    for (index, &vanilla_award) in awards.iter().enumerate() {
+        if vanilla_award <= 0 {
+            report.push_str(&format!(
+                "  {}: vanilla award {vanilla_award}; carry unchanged {}\n",
+                ATTRIBUTE_NAMES[index],
+                format_training_xp_carry_tenths(updated_carry[index]),
+            ));
+            continue;
+        }
+
+        let previous_carry = updated_carry[index];
+        let Some((integer_bonus, new_carry, raw_bonus_tenths)) =
+            split_training_xp_multiplier_bonus(
+                vanilla_award,
+                state.multiplier_tenths,
+                previous_carry,
+            )
+        else {
+            report.push_str(&format!(
+                "  {}: invalid/overflowing multiplier bonus calculation; no write or carry change\n",
+                ATTRIBUTE_NAMES[index]
+            ));
+            continue;
+        };
+
+        let mut final_xp = match current_xp[index].checked_add(integer_bonus) {
+            Some(value) => value,
+            None => {
+                report.push_str(&format!(
+                    "  {}: overflow while adding multiplier integer bonus; no write or carry change\n",
+                    ATTRIBUTE_NAMES[index]
+                ));
+                continue;
+            }
+        };
+        let mut final_stat = current_stat[index];
+        let stat_start = final_stat;
+        let mut thresholds_consumed = Vec::new();
+        while final_stat < 100 {
+            let threshold_index = (final_stat as usize) / 5;
+            let Some(threshold) = need_exp_table.get(threshold_index).copied() else {
+                break;
+            };
+            if final_xp < threshold {
+                break;
+            }
+            final_xp -= threshold;
+            thresholds_consumed.push(threshold);
+            final_stat += 1;
+        }
+
+        if set_training_xp_attribute_value(athlete, index, final_xp).is_err()
+            || set_athlete_attribute_value(athlete, index, final_stat).is_err()
+        {
+            report.push_str(&format!(
+                "  {}: target value conversion failed; no carry change for this field\n",
+                ATTRIBUTE_NAMES[index]
+            ));
+            continue;
+        }
+
+        updated_carry[index] = new_carry;
+        let raw_bonus = format!(
+            "{}.{:01}",
+            raw_bonus_tenths / TRAINING_XP_FRACTION_SCALE,
+            raw_bonus_tenths % TRAINING_XP_FRACTION_SCALE
+        );
+        report.push_str(&format!(
+            "  {}:\n    Vanilla award: +{}\n    Previous carry: {}\n    Raw bonus: {}\n    Written bonus: +{}\n    New carry: {}\n    TrainingExp XP: {} -> {}\n    Stat: {} -> {}\n",
+            ATTRIBUTE_NAMES[index],
+            vanilla_award,
+            format_training_xp_carry_tenths(previous_carry),
+            raw_bonus,
+            integer_bonus,
+            format_training_xp_carry_tenths(new_carry),
+            current_xp[index],
+            final_xp,
+            stat_start,
+            final_stat,
+        ));
+
+        if thresholds_consumed.is_empty() {
+            report.push_str("    Threshold crossed: NO\n");
+        } else {
+            let thresholds = thresholds_consumed
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            report.push_str(&format!(
+                "    Threshold crossed: YES\n    Thresholds consumed: [{thresholds}]\n"
+            ));
+            rollover_lines.push(format!(
+                "athlete {athlete_id} {}: Stat {} -> {}; XP {} -> {}; thresholds [{}]; carry {}",
+                ATTRIBUTE_NAMES[index],
+                stat_start,
+                final_stat,
+                current_xp[index],
+                final_xp,
+                thresholds,
+                format_training_xp_carry_tenths(new_carry),
+            ));
+        }
+    }
+
+    if rollover_lines.is_empty() {
+        report.push_str("Rollover: NO\n");
+    } else {
+        report.push_str("Rollover: YES\n");
+        let summary = rollover_lines.join(" | ");
+        report.push_str(&format!("Rollover summary: {summary}\n"));
+        set_training_xp_last_rollover(summary);
+    }
+    report.push_str(&format!(
+        "Carry after event: {}\nRoster multiplier remains ACTIVE after this event.",
+        format_training_xp_x1_5_carry_summary(&updated_carry),
+    ));
+    Some((report, updated_carry))
+}
+
+fn apply_training_xp_roster_feature(
+    ctx: &mut ServerModContext,
+    before_hook: &TrainingXpLifecycleSnapshot,
+    vanilla_after: &TrainingXpLifecycleSnapshot,
+) -> Vec<String> {
+    if !TRAINING_XP_PLAYER_TEAM_CONFIRMED.load(Ordering::SeqCst) {
+        return Vec::new();
+    }
+    reconcile_training_xp_roster_state(ctx);
+    let Some(state) = training_xp_roster_state() else {
+        return Vec::new();
+    };
+    if state.team_id != vanilla_after.team_id || state.athletes.is_empty() {
+        return Vec::new();
+    }
+
+    let mut athlete_ids = state.athletes.keys().copied().collect::<Vec<_>>();
+    athlete_ids.sort_unstable();
+    let mut reports = Vec::new();
+    let mut carry_updates = Vec::new();
+    for athlete_id in athlete_ids {
+        let Some(entry) = state.athletes.get(&athlete_id) else {
+            continue;
+        };
+        if let Some((report, updated_carry)) = apply_training_xp_roster_athlete(
+            ctx,
+            before_hook,
+            vanilla_after,
+            state.team_id,
+            athlete_id,
+            entry,
+        ) {
+            reports.push(report);
+            if updated_carry != entry.carry_tenths {
+                carry_updates.push((athlete_id, entry.multiplier_tenths, updated_carry));
+            }
+        }
+    }
+
+    if carry_updates.is_empty() {
+        return reports;
+    }
+
+    let updated_state = if let Ok(mut slot) = training_xp_roster_state_store().lock() {
+        if let Some(active) = slot.as_mut() {
+            if active.team_id == state.team_id {
+                for (athlete_id, multiplier_tenths, carry_tenths) in carry_updates {
+                    if let Some(entry) = active.athletes.get_mut(&athlete_id) {
+                        if entry.multiplier_tenths == multiplier_tenths {
+                            entry.carry_tenths = carry_tenths;
+                        }
+                    }
+                }
+                Some(active.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if let Some(updated_state) = updated_state.as_ref() {
+        if let Err(reason) = persist_training_xp_roster_state(ctx, Some(updated_state)) {
+            append_training_xp_lifecycle_report(&format!(
+                "=== TRAINING XP PERSISTENCE EVENT ===\nState: CARRY_PERSIST_FAILED\nTeam key: {}\nReason: {reason}\nRuntime Training state remains active; persisted carry was not updated.",
+                updated_state.team_id,
+            ));
+        }
+    }
+    reports
+}
+
+fn capture_training_xp_lifecycle_after(ctx: &mut ServerModContext) {
+    reconcile_training_xp_roster_state(ctx);
+    let research_enabled = TRAINING_XP_RESEARCH_ENABLED.load(Ordering::SeqCst);
+    let research_team_id = TRAINING_XP_LIFECYCLE_TEAM_ID.load(Ordering::SeqCst);
+    let feature_state = TRAINING_XP_PLAYER_TEAM_CONFIRMED
+        .load(Ordering::SeqCst)
+        .then(training_xp_roster_state)
+        .flatten()
+        .filter(|state| !state.athletes.is_empty());
+
+    let team_id = if research_enabled && research_team_id != usize::MAX {
+        research_team_id
+    } else if let Some(state) = feature_state.as_ref() {
+        state.team_id
+    } else {
+        return;
+    };
+
+    let before_hook = training_xp_lifecycle_before_store()
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().cloned());
+    let Some(before_hook) = before_hook else {
+        return;
+    };
+
+    let vanilla_after = capture_training_xp_lifecycle_snapshot(ctx, team_id);
+
+    if research_enabled {
+        let armed = training_xp_lifecycle_armed_store()
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().cloned());
+        if let Some(armed) = armed {
+            let report = format_training_xp_lifecycle_report(&armed, &before_hook, &vanilla_after);
+            append_training_xp_lifecycle_report(&report);
+        }
+    }
+
+    let x2_active = research_enabled
+        && TRAINING_XP_X2_TEAM_ID.load(Ordering::SeqCst) == team_id
+        && TRAINING_XP_X2_ATHLETE_ID.load(Ordering::SeqCst) != usize::MAX;
+    let x1_5_state = training_xp_x1_5_state()
+        .filter(|state| !state.feature_mode && state.team_id == team_id);
+    let x1_5_active = research_enabled && x1_5_state.is_some();
+    let roster_active = feature_state
+        .as_ref()
+        .map(|state| state.team_id == team_id && !state.athletes.is_empty())
+        .unwrap_or(false);
+
+    if roster_active && (x2_active || x1_5_active) {
+        if research_enabled {
+            append_training_xp_lifecycle_report(
+                "=== TRAINING XP MULTIPLIER EVENT ===\nState: ERROR_RESEARCH_AND_ROSTER_MULTIPLIERS_ACTIVE\nNo multiplier write was performed for this tick. Disarm the manual research multiplier probe before continuing.",
+            );
+        }
+    } else if roster_active {
+        for report in apply_training_xp_roster_feature(ctx, &before_hook, &vanilla_after) {
+            if research_enabled {
+                append_training_xp_lifecycle_report(&report);
+            }
+        }
+    } else if x1_5_active {
+        if let Some(float_report) =
+            apply_training_xp_x1_5_probe(ctx, &before_hook, &vanilla_after)
+        {
+            if research_enabled {
+                append_training_xp_lifecycle_report(&float_report);
+            }
+        }
+    } else if x2_active {
+        if let Some(x2_report) = apply_training_xp_x2_probe(ctx, &before_hook, &vanilla_after) {
+            append_training_xp_lifecycle_report(&x2_report);
+        }
+    }
+
+    if research_enabled {
+        let final_after = capture_training_xp_lifecycle_snapshot(ctx, team_id);
+        if let Ok(mut baseline) = training_xp_lifecycle_armed_store().lock() {
+            *baseline = Some(final_after);
+        }
+    }
+}
+
+fn training_xp_lifecycle_report() -> String {
+    training_xp_lifecycle_report_store()
+        .lock()
+        .map(|report| report.clone())
+        .unwrap_or_else(|_| "Training XP lifecycle report unavailable.".to_string())
+}
+
+fn training_xp_lifecycle_report_bytes() -> usize {
+    training_xp_lifecycle_report_store()
+        .lock()
+        .map(|report| report.len())
+        .unwrap_or(0)
+}
+
+fn training_xp_last_rollover() -> String {
+    training_xp_last_rollover_store()
+        .lock()
+        .map(|rollover| rollover.clone())
+        .unwrap_or_default()
+}
 
 #[derive(Debug, Clone)]
 struct ContractEndOverride {
@@ -1093,6 +3131,14 @@ fn response_ok_teams(teams: &[TeamListEntry]) -> String {
 
 fn response_ok_team_probe(raw: &str) -> String {
     format!("OK|TEAM_PROBE|{}", hex_encode(raw))
+}
+
+fn response_ok_training_xp_probe(raw: &str) -> String {
+    format!("OK|TRAINING_XP_PROBE|{}", hex_encode(raw))
+}
+
+fn response_ok_training_xp_probe_log(raw: &str) -> String {
+    format!("OK|TRAINING_XP_PROBE_LOG|{}", hex_encode(raw))
 }
 
 fn response_ok_team_management(snapshot: TeamManagementSnapshot) -> String {
@@ -1922,6 +3968,424 @@ fn read_team_probe(scene: &mut Scene, team_id: usize) -> Result<String, &'static
     Ok(raw)
 }
 
+fn read_training_xp_probe(scene: &mut Scene, team_id: usize) -> Result<String, &'static str> {
+    let player_team_id = current_player_team_id(scene)?;
+    if team_id != player_team_id {
+        return Err("PLAYER_TEAM_ONLY");
+    }
+
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+    let db = data.db();
+    let Some(team) = db.teams.get(&team_id) else {
+        return Err("TEAM_NOT_FOUND");
+    };
+
+    let research_enabled = TRAINING_XP_RESEARCH_ENABLED.load(Ordering::SeqCst);
+    let lifecycle_team_id = TRAINING_XP_LIFECYCLE_TEAM_ID.load(Ordering::SeqCst);
+    let lifecycle_active = research_enabled && lifecycle_team_id == team_id;
+    let x2_team_id = TRAINING_XP_X2_TEAM_ID.load(Ordering::SeqCst);
+    let x2_athlete_id = TRAINING_XP_X2_ATHLETE_ID.load(Ordering::SeqCst);
+    let x2_active = research_enabled && x2_team_id == team_id && x2_athlete_id != usize::MAX;
+    let x1_5_state = training_xp_x1_5_state()
+        .filter(|state| !state.feature_mode && state.team_id == team_id);
+    let x1_5_active = research_enabled && x1_5_state.is_some();
+    let x2_athlete_label = if x2_active {
+        db.athletes
+            .get(&x2_athlete_id)
+            .map(|athlete| format!("{} — {}", x2_athlete_id, athlete.name))
+            .unwrap_or_else(|| x2_athlete_id.to_string())
+    } else {
+        "—".to_string()
+    };
+
+    let x1_5_athlete_label = x1_5_state
+        .as_ref()
+        .and_then(|state| {
+            db.athletes
+                .get(&state.athlete_id)
+                .map(|athlete| format!("{} — {}", state.athlete_id, athlete.name))
+        })
+        .or_else(|| x1_5_state.as_ref().map(|state| state.athlete_id.to_string()))
+        .unwrap_or_else(|| "—".to_string());
+    let x1_5_carry = x1_5_state
+        .as_ref()
+        .map(|state| format_training_xp_x1_5_carry_summary(&state.carry_tenths))
+        .unwrap_or_else(|| "—".to_string());
+
+    let feature_state = training_xp_roster_state().filter(|state| state.team_id == team_id);
+    let mut feature_entries = feature_state
+        .as_ref()
+        .map(|state| {
+            state
+                .athletes
+                .iter()
+                .map(|(athlete_id, entry)| {
+                    let name = db
+                        .athletes
+                        .get(athlete_id)
+                        .map(|athlete| athlete.name.as_str())
+                        .unwrap_or("?");
+                    format!(
+                        "{} — {}: {} | carry {}",
+                        athlete_id,
+                        name,
+                        format_training_xp_multiplier(entry.multiplier_tenths),
+                        format_training_xp_x1_5_carry_summary(&entry.carry_tenths),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    feature_entries.sort();
+    let feature_status = if feature_entries.is_empty() { "VANILLA" } else { "ACTIVE" };
+    let feature_summary = if feature_entries.is_empty() {
+        "All current roster athletes x1.0".to_string()
+    } else {
+        feature_entries.join("\n")
+    };
+
+    let rollover_observed = TRAINING_XP_ROLLOVER_OBSERVED.load(Ordering::SeqCst);
+    let rollover = training_xp_last_rollover();
+    let latest_event = training_xp_lifecycle_latest_event();
+    let latest_event = if latest_event.chars().count() > 12_000 {
+        let shortened = latest_event.chars().take(12_000).collect::<String>();
+        format!("{shortened}\n[Latest event truncated in UI status. Export Full Log preserves the complete event.]")
+    } else {
+        latest_event
+    };
+
+    Ok(format!(
+        "=== TRAINING XP RESEARCH STATUS ===\nTeam key: {team_id}\nDisplay name: {}\nResearch Probe: {}\nLifecycle capture: {}\nFeature Roster: {feature_status}\nFeature Entries:\n{feature_summary}\nX2 Continuous: {}\nX2 Athlete: {x2_athlete_label}\nFloat x1.5 Research: {}\nFloat Research Athlete: {x1_5_athlete_label}\nFloat Research Carry: {x1_5_carry}\nRollover observed in current multiplier arm: {}\nLast rollover: {}\nFull evidence log size: {} bytes\n\n=== LATEST EVENT ===\n{}\n\nUI STATUS IS BOUNDED. Research activity is Bridge-authoritative and independent of this window. Use Export Full Log for the complete append-only evidence history.",
+        db.team_display_name(team),
+        if research_enabled { "ON" } else { "OFF" },
+        if lifecycle_active { "ACTIVE" } else { "DORMANT" },
+        if x2_active { "ARMED" } else { "DISARMED" },
+        if x1_5_active { "ARMED" } else { "DISARMED" },
+        if rollover_observed { "YES" } else { "NO" },
+        if rollover.is_empty() { "—" } else { rollover.as_str() },
+        training_xp_lifecycle_report_bytes(),
+        latest_event,
+    ))
+}
+
+fn read_training_xp_probe_log(scene: &mut Scene, team_id: usize) -> Result<String, &'static str> {
+    let player_team_id = current_player_team_id(scene)?;
+    if team_id != player_team_id {
+        return Err("PLAYER_TEAM_ONLY");
+    }
+
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+    let db = data.db();
+    let Some(team) = db.teams.get(&team_id) else {
+        return Err("TEAM_NOT_FOUND");
+    };
+
+    let mut raw = format!(
+        "=== TRAINING XP RESEARCH FULL LOG EXPORT ===\nTeam key: {team_id}\nDisplay name: {}\nBridge: v{}\nProtocol: {}\nTFM2: {}\n\n",
+        db.team_display_name(team),
+        BRIDGE_VERSION,
+        BRIDGE_PROTOCOL_VERSION,
+        TFM2_TARGET_VERSION,
+    );
+    raw.push_str(&training_xp_lifecycle_report());
+
+    raw.push_str("\n\n=== CURRENT CLIENT CORE SNAPSHOT AT EXPORT ===\n");
+    let mut athlete_ids: Vec<usize> = db.athletes.keys().copied().collect();
+    athlete_ids.sort_unstable();
+    for athlete_id in athlete_ids {
+        let Some(athlete) = db.athletes.get(&athlete_id) else {
+            continue;
+        };
+        let belongs_to_team = matches!(
+            &athlete.contract,
+            Contract::InContract {
+                team_id: athlete_team_id,
+                ..
+            } if *athlete_team_id == team_id
+        );
+        if !belongs_to_team {
+            continue;
+        }
+        raw.push_str(&format!(
+            "Athlete {athlete_id}: {}\n  XP: {:?}\n  Stat: {:?}\n  Position XP: {:?}\n  Language XP: {}\n  Language stat: {}\n",
+            athlete.name,
+            training_xp_attribute_values(athlete),
+            athlete_attribute_values(athlete),
+            training_xp_position_values(athlete),
+            communication_xp_raw(athlete),
+            communication_raw(athlete),
+        ));
+    }
+    Ok(raw)
+}
+
+fn read_training_xp_roster(
+    scene: &mut Scene,
+    team_id: usize,
+) -> Result<Vec<(usize, u32)>, &'static str> {
+    let player_team_id = current_player_team_id(scene)?;
+    if team_id != player_team_id {
+        return Err("PLAYER_TEAM_ONLY");
+    }
+    TRAINING_XP_PLAYER_TEAM_ID.store(player_team_id, Ordering::SeqCst);
+    TRAINING_XP_PLAYER_TEAM_CONFIRMED.store(true, Ordering::SeqCst);
+
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+    let db = data.db();
+    let state = training_xp_roster_state().filter(|state| state.team_id == team_id);
+    let mut values = db
+        .athletes
+        .iter()
+        .filter_map(|(athlete_id, athlete)| {
+            let belongs_to_team = matches!(
+                &athlete.contract,
+                Contract::InContract {
+                    team_id: athlete_team_id,
+                    ..
+                } if *athlete_team_id == team_id
+            );
+            if !belongs_to_team {
+                return None;
+            }
+            let multiplier_tenths = state
+                .as_ref()
+                .and_then(|state| state.athletes.get(athlete_id))
+                .map(|entry| entry.multiplier_tenths)
+                .unwrap_or(10);
+            Some((*athlete_id, multiplier_tenths))
+        })
+        .collect::<Vec<_>>();
+    values.sort_unstable_by_key(|(athlete_id, _)| *athlete_id);
+    Ok(values)
+}
+
+fn set_training_xp_roster(
+    scene: &mut Scene,
+    team_id: usize,
+    values: &[(usize, u32)],
+) -> Result<(), &'static str> {
+    let player_team_id = current_player_team_id(scene)?;
+    if team_id != player_team_id {
+        return Err("PLAYER_TEAM_ONLY");
+    }
+
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+    let roster_ids = {
+        let db = data.db();
+        db.athletes
+            .iter()
+            .filter_map(|(athlete_id, athlete)| {
+                matches!(
+                    &athlete.contract,
+                    Contract::InContract {
+                        team_id: athlete_team_id,
+                        ..
+                    } if *athlete_team_id == team_id
+                )
+                .then_some(*athlete_id)
+            })
+            .collect::<BTreeSet<_>>()
+    };
+    let submitted_ids = values.iter().map(|(athlete_id, _)| *athlete_id).collect::<BTreeSet<_>>();
+    if submitted_ids.len() != values.len() {
+        return Err("TRAINING_XP_DUPLICATE_ATHLETE");
+    }
+    if roster_ids != submitted_ids {
+        return Err("TRAINING_XP_ROSTER_MISMATCH");
+    }
+    if values
+        .iter()
+        .any(|(_, multiplier_tenths)| !training_xp_roster_multiplier_supported(*multiplier_tenths))
+    {
+        return Err("TRAINING_XP_MULTIPLIER_NOT_VALIDATED");
+    }
+    if (TRAINING_XP_X2_TEAM_ID.load(Ordering::SeqCst) != usize::MAX
+        && TRAINING_XP_X2_ATHLETE_ID.load(Ordering::SeqCst) != usize::MAX)
+        || training_xp_x1_5_state().is_some()
+    {
+        return Err("TRAINING_XP_RESEARCH_MULTIPLIER_ACTIVE");
+    }
+
+    TRAINING_XP_PLAYER_TEAM_ID.store(player_team_id, Ordering::SeqCst);
+    TRAINING_XP_PLAYER_TEAM_CONFIRMED.store(true, Ordering::SeqCst);
+    let mut payload = format!("{team_id}|{}", values.len());
+    for (athlete_id, multiplier_tenths) in values {
+        payload.push('|');
+        payload.push_str(&format!("{athlete_id}:{multiplier_tenths}"));
+    }
+    if !data.send_mod_command(MOD_ID, "set_training_xp_roster", payload.into_bytes()) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+    Ok(())
+}
+
+fn set_training_xp_research_enabled(
+    scene: &mut Scene,
+    team_id: usize,
+    enabled: bool,
+) -> Result<(), &'static str> {
+    let player_team_id = current_player_team_id(scene)?;
+    if team_id != player_team_id {
+        return Err("PLAYER_TEAM_ONLY");
+    }
+
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    let command = if enabled {
+        "enable_training_xp_research"
+    } else {
+        "disable_training_xp_research"
+    };
+    let payload = team_id.to_string().into_bytes();
+    if !data.send_mod_command(MOD_ID, command, payload) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+    Ok(())
+}
+
+fn arm_training_xp_x2_probe(
+    scene: &mut Scene,
+    team_id: usize,
+    athlete_id: usize,
+) -> Result<(), &'static str> {
+    if !TRAINING_XP_RESEARCH_ENABLED.load(Ordering::SeqCst) {
+        return Err("TRAINING_XP_RESEARCH_DISABLED");
+    }
+    if training_xp_x1_5_state().is_some() {
+        return Err("TRAINING_XP_X1_5_PROBE_ALREADY_ARMED");
+    }
+    if training_xp_roster_has_active_multiplier() {
+        return Err("TRAINING_XP_FEATURE_MULTIPLIER_ACTIVE");
+    }
+    let player_team_id = current_player_team_id(scene)?;
+    if team_id != player_team_id {
+        return Err("PLAYER_TEAM_ONLY");
+    }
+
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+    {
+        let db = data.db();
+        let Some(athlete) = db.athletes.get(&athlete_id) else {
+            return Err("PLAYER_NOT_FOUND");
+        };
+        let belongs_to_team = matches!(
+            &athlete.contract,
+            Contract::InContract {
+                team_id: athlete_team_id,
+                ..
+            } if *athlete_team_id == team_id
+        );
+        if !belongs_to_team {
+            return Err("PLAYER_TEAM_ONLY");
+        }
+    }
+
+    let payload = format!("{team_id}|{athlete_id}").into_bytes();
+    if !data.send_mod_command(MOD_ID, "set_training_xp_x2_probe", payload) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+    Ok(())
+}
+
+fn disarm_training_xp_x2_probe(scene: &mut Scene, team_id: usize) -> Result<(), &'static str> {
+    let player_team_id = current_player_team_id(scene)?;
+    if team_id != player_team_id {
+        return Err("PLAYER_TEAM_ONLY");
+    }
+
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    let payload = team_id.to_string().into_bytes();
+    if !data.send_mod_command(MOD_ID, "clear_training_xp_x2_probe", payload) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+    Ok(())
+}
+
+
+fn arm_training_xp_x1_5_probe(
+    scene: &mut Scene,
+    team_id: usize,
+    athlete_id: usize,
+) -> Result<(), &'static str> {
+    if !TRAINING_XP_RESEARCH_ENABLED.load(Ordering::SeqCst) {
+        return Err("TRAINING_XP_RESEARCH_DISABLED");
+    }
+    if TRAINING_XP_X2_TEAM_ID.load(Ordering::SeqCst) != usize::MAX
+        && TRAINING_XP_X2_ATHLETE_ID.load(Ordering::SeqCst) != usize::MAX
+    {
+        return Err("TRAINING_XP_X2_PROBE_ALREADY_ARMED");
+    }
+    if training_xp_x1_5_state().is_some() {
+        return Err("TRAINING_XP_X1_5_PROBE_ALREADY_ARMED");
+    }
+    if training_xp_roster_has_active_multiplier() {
+        return Err("TRAINING_XP_FEATURE_MULTIPLIER_ACTIVE");
+    }
+
+    let player_team_id = current_player_team_id(scene)?;
+    if team_id != player_team_id {
+        return Err("PLAYER_TEAM_ONLY");
+    }
+
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+    {
+        let db = data.db();
+        let Some(athlete) = db.athletes.get(&athlete_id) else {
+            return Err("PLAYER_NOT_FOUND");
+        };
+        let belongs_to_team = matches!(
+            &athlete.contract,
+            Contract::InContract {
+                team_id: athlete_team_id,
+                ..
+            } if *athlete_team_id == team_id
+        );
+        if !belongs_to_team {
+            return Err("PLAYER_TEAM_ONLY");
+        }
+    }
+
+    let payload = format!("{team_id}|{athlete_id}").into_bytes();
+    if !data.send_mod_command(MOD_ID, "set_training_xp_x1_5_probe", payload) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+    Ok(())
+}
+
+fn disarm_training_xp_x1_5_probe(scene: &mut Scene, team_id: usize) -> Result<(), &'static str> {
+    let player_team_id = current_player_team_id(scene)?;
+    if team_id != player_team_id {
+        return Err("PLAYER_TEAM_ONLY");
+    }
+
+    let Scene::InGame { data } = scene else {
+        return Err("NOT_IN_GAME");
+    };
+
+    let payload = team_id.to_string().into_bytes();
+    if !data.send_mod_command(MOD_ID, "clear_training_xp_x1_5_probe", payload) {
+        return Err("SERVER_COMMAND_FAILED");
+    }
+    Ok(())
+}
+
 fn sanitize_tsv_cell(value: &str) -> String {
     value
         .replace(['\t', '\r', '\n'], " ")
@@ -2583,7 +5047,7 @@ fn global_json_with_id(
         serde_json::Value::Number(serde_json::Number::from(record_id as u64)),
     );
 
-    // TFM2 0.5.5 production Bridge: keep serde_json for Value construction,
+    // TFM2 0.5.6 production Bridge: keep serde_json for Value construction,
     // then encode text with the Bridge-local serializer used by global history.
     Ok(global_json_value_to_string(&value))
 }
@@ -3240,6 +5704,226 @@ fn probe_swap_team_strategy_client(
 }
 
 
+fn team_strategy_apply_diagnostic_store() -> &'static Mutex<String> {
+    TEAM_STRATEGY_APPLY_DIAGNOSTIC.get_or_init(|| Mutex::new("NO_SERVER_RESULT".to_string()))
+}
+
+fn set_team_strategy_apply_diagnostic(value: String) {
+    if let Ok(mut diagnostic) = team_strategy_apply_diagnostic_store().lock() {
+        *diagnostic = value;
+    }
+}
+
+fn team_strategy_apply_diagnostic() -> String {
+    team_strategy_apply_diagnostic_store()
+        .lock()
+        .map(|diagnostic| diagnostic.clone())
+        .unwrap_or_else(|_| "DIAGNOSTIC_LOCK_UNAVAILABLE".to_string())
+}
+
+fn team_strategy_snapshot_pending_store() -> &'static Mutex<Option<PendingTeamStrategySnapshot>> {
+    TEAM_STRATEGY_SNAPSHOT_PENDING.get_or_init(|| Mutex::new(None))
+}
+
+fn team_strategy_snapshot_command_payload(team_id: usize, sequence: usize) -> Vec<u8> {
+    format!("{team_id}|{sequence}").into_bytes()
+}
+
+fn parse_team_strategy_snapshot_command_payload(
+    payload: &[u8],
+) -> Result<(usize, usize), &'static str> {
+    let text = std::str::from_utf8(payload).map_err(|_| "INVALID_PAYLOAD")?;
+    let mut parts = text.split('|');
+    let team_id = parts
+        .next()
+        .ok_or("MISSING_TEAM_ID")?
+        .parse::<usize>()
+        .map_err(|_| "INVALID_TEAM_ID")?;
+    let sequence = parts
+        .next()
+        .ok_or("MISSING_SEQUENCE")?
+        .parse::<usize>()
+        .map_err(|_| "INVALID_SEQUENCE")?;
+    if parts.next().is_some() {
+        return Err("TOO_MANY_VALUES");
+    }
+    Ok((team_id, sequence))
+}
+
+fn team_strategy_snapshot_event_payload(sequence: usize, team_id: usize, raw: &str) -> Vec<u8> {
+    format!("OK|{sequence}|{team_id}|{}", hex_encode(raw)).into_bytes()
+}
+
+fn team_strategy_snapshot_error_event_payload(
+    sequence: usize,
+    team_id: usize,
+    reason: &str,
+) -> Vec<u8> {
+    format!("ERR|{sequence}|{team_id}|{}", hex_encode(reason)).into_bytes()
+}
+
+fn parse_team_strategy_snapshot_event_payload(
+    payload: &[u8],
+) -> Result<(usize, usize, Result<String, String>), &'static str> {
+    let text = std::str::from_utf8(payload).map_err(|_| "INVALID_EVENT_PAYLOAD")?;
+    let mut parts = text.split('|');
+    let status = parts.next().ok_or("MISSING_STATUS")?;
+    let sequence = parts
+        .next()
+        .ok_or("MISSING_SEQUENCE")?
+        .parse::<usize>()
+        .map_err(|_| "INVALID_SEQUENCE")?;
+    let team_id = parts
+        .next()
+        .ok_or("MISSING_TEAM_ID")?
+        .parse::<usize>()
+        .map_err(|_| "INVALID_TEAM_ID")?;
+    let value = hex_decode(parts.next().ok_or("MISSING_VALUE")?)?;
+    if parts.next().is_some() {
+        return Err("TOO_MANY_VALUES");
+    }
+    match status {
+        "OK" => Ok((sequence, team_id, Ok(value))),
+        "ERR" => Ok((sequence, team_id, Err(value))),
+        _ => Err("INVALID_STATUS"),
+    }
+}
+
+fn request_team_strategy_server_snapshot(
+    scene: &mut Scene,
+    team_id: usize,
+    reply: Sender<String>,
+) {
+    let Scene::InGame { data } = scene else {
+        let _ = reply.send("ERR|NOT_IN_GAME".to_string());
+        return;
+    };
+
+    let sequence = TEAM_STRATEGY_SNAPSHOT_SEQUENCE.fetch_add(1, Ordering::SeqCst);
+    {
+        let Ok(mut pending) = team_strategy_snapshot_pending_store().lock() else {
+            let _ = reply.send("ERR|SNAPSHOT_PENDING_LOCK_UNAVAILABLE".to_string());
+            return;
+        };
+        *pending = Some(PendingTeamStrategySnapshot {
+            sequence,
+            team_id,
+            reply,
+        });
+    }
+
+    if !data.send_mod_command(
+        MOD_ID,
+        "get_team_strategy_snapshot",
+        team_strategy_snapshot_command_payload(team_id, sequence),
+    ) {
+        let pending_request = team_strategy_snapshot_pending_store()
+            .lock()
+            .ok()
+            .and_then(|mut pending| {
+                if pending.as_ref().is_some_and(|request| {
+                    request.sequence == sequence && request.team_id == team_id
+                }) {
+                    pending.take()
+                } else {
+                    None
+                }
+            });
+        if let Some(request) = pending_request {
+            let _ = request.reply.send("ERR|SERVER_COMMAND_FAILED".to_string());
+        }
+    }
+}
+
+fn capture_team_strategy_diagnostic_events(scene: &mut Scene) {
+    let Scene::InGame { data } = scene else {
+        return;
+    };
+
+    for event in data.take_mod_events(MOD_ID) {
+        if event.event == TEAM_STRATEGY_APPLY_EVENT {
+            let diagnostic = String::from_utf8(event.payload)
+                .unwrap_or_else(|_| "INVALID_SERVER_EVENT_UTF8".to_string());
+            set_team_strategy_apply_diagnostic(diagnostic);
+            continue;
+        }
+
+        if event.event != TEAM_STRATEGY_SNAPSHOT_EVENT {
+            continue;
+        }
+
+        let parsed = parse_team_strategy_snapshot_event_payload(&event.payload);
+        let Ok((sequence, team_id, result)) = parsed else {
+            continue;
+        };
+        let response = match result {
+            Ok(raw) => format!(
+                "OK|TEAM_STRATEGY_SERVER_SNAPSHOT|{sequence}|{team_id}|{}",
+                hex_encode(&raw)
+            ),
+            Err(reason) => format!(
+                "ERR|TEAM_STRATEGY_SERVER_SNAPSHOT|{sequence}|{team_id}|{reason}"
+            ),
+        };
+
+        let pending_request = team_strategy_snapshot_pending_store()
+            .lock()
+            .ok()
+            .and_then(|mut pending| {
+                if pending.as_ref().is_some_and(|request| {
+                    request.sequence == sequence && request.team_id == team_id
+                }) {
+                    pending.take()
+                } else {
+                    None
+                }
+            });
+        if let Some(request) = pending_request {
+            let _ = request.reply.send(response);
+        }
+    }
+}
+
+fn team_strategy_readback_mismatches(
+    requested: &HashMap<String, String>,
+    actual_fields: &[(&str, String)],
+) -> Result<Vec<(String, String, String)>, String> {
+    let mut mismatches = Vec::new();
+    for (field, actual) in actual_fields {
+        let expected = requested
+            .get(*field)
+            .ok_or_else(|| format!("MISSING_STRATEGY_VALUE|{field}"))?;
+        if expected != actual {
+            mismatches.push(((*field).to_string(), expected.clone(), actual.clone()));
+        }
+    }
+    Ok(mismatches)
+}
+
+fn team_strategy_server_result_payload(
+    team_id: usize,
+    result: Result<Vec<(String, String, String)>, String>,
+) -> Vec<u8> {
+    match result {
+        Ok(mismatches) if mismatches.is_empty() => {
+            format!("OK|SERVER_WRITE_VERIFIED|{team_id}").into_bytes()
+        }
+        Ok(mismatches) => {
+            let mut payload = format!("WRITE_OK|READBACK_MISMATCH|{team_id}");
+            for (field, requested, actual) in mismatches {
+                payload.push('|');
+                payload.push_str(&field);
+                payload.push('|');
+                payload.push_str(&requested);
+                payload.push('|');
+                payload.push_str(&actual);
+            }
+            payload.into_bytes()
+        }
+        Err(reason) => format!("ERR|{team_id}|{reason}").into_bytes(),
+    }
+}
+
 fn set_team_strategy_client(
     scene: &mut Scene,
     team_id: usize,
@@ -3298,6 +5982,7 @@ fn set_team_strategy_client(
         strategy
     };
 
+    set_team_strategy_apply_diagnostic(format!("PENDING|CLIENT_COMMAND_QUEUED|{team_id}"));
     if !data.send_mod_command(
         MOD_ID,
         "set_team_strategy",
@@ -5666,6 +8351,8 @@ fn sync_recruitment_runtime_toggles(scene: &mut Scene) {
     };
 
     let team_id = data.player_team_id();
+    TRAINING_XP_PLAYER_TEAM_ID.store(team_id, Ordering::SeqCst);
+    TRAINING_XP_PLAYER_TEAM_CONFIRMED.store(true, Ordering::SeqCst);
 
     // Loading another save restarts the management server, but the native DLL stays
     // loaded. Keep the user's runtime preferences and re-send them once the new
@@ -5918,6 +8605,97 @@ fn process_game_requests(scene: &mut Scene) {
                 };
                 let _ = reply.send(response);
             }
+            GameRequest::GetTrainingXpProbe { team_id, reply } => {
+                let response = match read_training_xp_probe(scene, team_id) {
+                    Ok(raw) => response_ok_training_xp_probe(&raw),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::GetTrainingXpProbeLog { team_id, reply } => {
+                let response = match read_training_xp_probe_log(scene, team_id) {
+                    Ok(raw) => response_ok_training_xp_probe_log(&raw),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::GetTrainingXpRoster { team_id, reply } => {
+                let response = match read_training_xp_roster(scene, team_id) {
+                    Ok(values) => {
+                        let payload = values
+                            .iter()
+                            .map(|(athlete_id, multiplier_tenths)| {
+                                format!("{athlete_id}:{multiplier_tenths}")
+                            })
+                            .collect::<Vec<_>>()
+                            .join(";");
+                        format!("OK|TRAINING_XP_ROSTER|{}|{payload}", values.len())
+                    }
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::SetTrainingXpRoster {
+                team_id,
+                values,
+                reply,
+            } => {
+                let response = match set_training_xp_roster(scene, team_id, &values) {
+                    Ok(()) => format!("OK|TRAINING_XP_ROSTER_SET|{}", values.len()),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::SetTrainingXpResearch {
+                team_id,
+                enabled,
+                reply,
+            } => {
+                let response = match set_training_xp_research_enabled(scene, team_id, enabled) {
+                    Ok(()) => format!(
+                        "OK|TRAINING_XP_RESEARCH|{}",
+                        if enabled { "ON" } else { "OFF" }
+                    ),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::SetTrainingXpX2Probe {
+                team_id,
+                athlete_id,
+                reply,
+            } => {
+                let response = match arm_training_xp_x2_probe(scene, team_id, athlete_id) {
+                    Ok(()) => format!("OK|TRAINING_XP_X2_PROBE_ARMED|{athlete_id}"),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::ClearTrainingXpX2Probe { team_id, reply } => {
+                let response = match disarm_training_xp_x2_probe(scene, team_id) {
+                    Ok(()) => "OK|TRAINING_XP_X2_PROBE_DISARMED".to_string(),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::SetTrainingXpX15Probe {
+                team_id,
+                athlete_id,
+                reply,
+            } => {
+                let response = match arm_training_xp_x1_5_probe(scene, team_id, athlete_id) {
+                    Ok(()) => format!("OK|TRAINING_XP_X1_5_PROBE_ARMED|{athlete_id}"),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
+            GameRequest::ClearTrainingXpX15Probe { team_id, reply } => {
+                let response = match disarm_training_xp_x1_5_probe(scene, team_id) {
+                    Ok(()) => "OK|TRAINING_XP_X1_5_PROBE_DISARMED".to_string(),
+                    Err(reason) => format!("ERR|{reason}"),
+                };
+                let _ = reply.send(response);
+            }
             GameRequest::GetTeamManagement { team_id, reply } => {
                 let response = match read_team_management(scene, team_id) {
                     Ok(snapshot) => response_ok_team_management(snapshot),
@@ -5989,6 +8767,16 @@ fn process_game_requests(scene: &mut Scene) {
                     Err(reason) => format!("ERR|{reason}"),
                 };
                 let _ = reply.send(response);
+            }
+            GameRequest::GetTeamStrategyApplyDiagnostic { reply } => {
+                let raw = team_strategy_apply_diagnostic();
+                let _ = reply.send(format!(
+                    "OK|TEAM_STRATEGY_APPLY_DIAGNOSTIC|{}",
+                    hex_encode(&raw)
+                ));
+            }
+            GameRequest::GetTeamStrategyServerSnapshot { team_id, reply } => {
+                request_team_strategy_server_snapshot(scene, team_id, reply);
             }
             GameRequest::GetContractDefaults {
                 entity,
@@ -6570,6 +9358,132 @@ fn handle_client(mut stream: TcpStream, request_tx: &Sender<GameRequest>) {
             }),
             Err(reason) => format!("ERR|{reason}"),
         },
+        "GET_TRAINING_XP_PROBE" => match parse_usize(parts.next()) {
+            Ok(team_id) => send_game_request(request_tx, |reply| {
+                GameRequest::GetTrainingXpProbe { team_id, reply }
+            }),
+            Err(reason) => format!("ERR|{reason}"),
+        },
+        "GET_TRAINING_XP_PROBE_LOG" => match parse_usize(parts.next()) {
+            Ok(team_id) if parts.next().is_none() => send_game_request(request_tx, |reply| {
+                GameRequest::GetTrainingXpProbeLog { team_id, reply }
+            }),
+            Ok(_) => "ERR|TOO_MANY_VALUES".to_string(),
+            Err(reason) => format!("ERR|{reason}"),
+        },
+        "GET_TRAINING_XP_ROSTER" => match parse_usize(parts.next()) {
+            Ok(team_id) if parts.next().is_none() => send_game_request(request_tx, |reply| {
+                GameRequest::GetTrainingXpRoster { team_id, reply }
+            }),
+            Ok(_) => "ERR|TOO_MANY_VALUES".to_string(),
+            Err(reason) => format!("ERR|{reason}"),
+        },
+        "SET_TRAINING_XP_ROSTER" => {
+            let parsed: Result<TrainingXpRosterWriteRequest, &'static str> = (|| {
+                let team_id = parse_usize(parts.next())?;
+                let count = parse_usize(parts.next())?;
+                let mut values = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let raw = parts.next().ok_or("MISSING_VALUE")?;
+                    let (athlete_raw, multiplier_raw) = raw.split_once(':').ok_or("INVALID_VALUE")?;
+                    let athlete_id = athlete_raw.parse::<usize>().map_err(|_| "INVALID_PLAYER_ID")?;
+                    let multiplier_tenths = multiplier_raw.parse::<u32>().map_err(|_| "INVALID_MULTIPLIER")?;
+                    values.push((athlete_id, multiplier_tenths));
+                }
+                if parts.next().is_some() {
+                    return Err("TOO_MANY_VALUES");
+                }
+                Ok(TrainingXpRosterWriteRequest { team_id, values })
+            })();
+            match parsed {
+                Ok(parsed) => send_game_request(request_tx, |reply| {
+                    GameRequest::SetTrainingXpRoster {
+                        team_id: parsed.team_id,
+                        values: parsed.values,
+                        reply,
+                    }
+                }),
+                Err(reason) => format!("ERR|{reason}"),
+            }
+        }
+        "SET_TRAINING_XP_RESEARCH" => {
+            let parsed: Result<(usize, bool), &'static str> = (|| {
+                let team_id = parse_usize(parts.next())?;
+                let enabled = match parts.next().ok_or("MISSING_VALUE")? {
+                    "1" => true,
+                    "0" => false,
+                    _ => return Err("INVALID_BOOLEAN"),
+                };
+                if parts.next().is_some() {
+                    return Err("TOO_MANY_VALUES");
+                }
+                Ok((team_id, enabled))
+            })();
+            match parsed {
+                Ok((team_id, enabled)) => send_game_request(request_tx, |reply| {
+                    GameRequest::SetTrainingXpResearch {
+                        team_id,
+                        enabled,
+                        reply,
+                    }
+                }),
+                Err(reason) => format!("ERR|{reason}"),
+            }
+        }
+        "SET_TRAINING_XP_X2_PROBE" => {
+            let parsed: Result<(usize, usize), &'static str> = (|| {
+                let team_id = parse_usize(parts.next())?;
+                let athlete_id = parse_usize(parts.next())?;
+                if parts.next().is_some() {
+                    return Err("TOO_MANY_VALUES");
+                }
+                Ok((team_id, athlete_id))
+            })();
+            match parsed {
+                Ok((team_id, athlete_id)) => send_game_request(request_tx, |reply| {
+                    GameRequest::SetTrainingXpX2Probe {
+                        team_id,
+                        athlete_id,
+                        reply,
+                    }
+                }),
+                Err(reason) => format!("ERR|{reason}"),
+            }
+        }
+        "CLEAR_TRAINING_XP_X2_PROBE" => match parse_usize(parts.next()) {
+            Ok(team_id) if parts.next().is_none() => send_game_request(request_tx, |reply| {
+                GameRequest::ClearTrainingXpX2Probe { team_id, reply }
+            }),
+            Ok(_) => "ERR|TOO_MANY_VALUES".to_string(),
+            Err(reason) => format!("ERR|{reason}"),
+        },
+        "SET_TRAINING_XP_X1_5_PROBE" => {
+            let parsed: Result<(usize, usize), &'static str> = (|| {
+                let team_id = parse_usize(parts.next())?;
+                let athlete_id = parse_usize(parts.next())?;
+                if parts.next().is_some() {
+                    return Err("TOO_MANY_VALUES");
+                }
+                Ok((team_id, athlete_id))
+            })();
+            match parsed {
+                Ok((team_id, athlete_id)) => send_game_request(request_tx, |reply| {
+                    GameRequest::SetTrainingXpX15Probe {
+                        team_id,
+                        athlete_id,
+                        reply,
+                    }
+                }),
+                Err(reason) => format!("ERR|{reason}"),
+            }
+        }
+        "CLEAR_TRAINING_XP_X1_5_PROBE" => match parse_usize(parts.next()) {
+            Ok(team_id) if parts.next().is_none() => send_game_request(request_tx, |reply| {
+                GameRequest::ClearTrainingXpX15Probe { team_id, reply }
+            }),
+            Ok(_) => "ERR|TOO_MANY_VALUES".to_string(),
+            Err(reason) => format!("ERR|{reason}"),
+        },
         "GET_TEAM_MANAGEMENT" => match parse_usize(parts.next()) {
             Ok(team_id) => send_game_request(request_tx, |reply| {
                 GameRequest::GetTeamManagement { team_id, reply }
@@ -6673,6 +9587,16 @@ fn handle_client(mut stream: TcpStream, request_tx: &Sender<GameRequest>) {
                 Err(reason) => format!("ERR|{reason}"),
             }
         }
+        "GET_TEAM_STRATEGY_APPLY_DIAGNOSTIC" => send_game_request(request_tx, |reply| {
+            GameRequest::GetTeamStrategyApplyDiagnostic { reply }
+        }),
+        "GET_TEAM_STRATEGY_SERVER_SNAPSHOT" => match parse_usize(parts.next()) {
+            Ok(team_id) if parts.next().is_none() => send_game_request(request_tx, |reply| {
+                GameRequest::GetTeamStrategyServerSnapshot { team_id, reply }
+            }),
+            Ok(_) => "ERR|TOO_MANY_VALUES".to_string(),
+            Err(reason) => format!("ERR|{reason}"),
+        },
         "GET_CONTRACT_DEFAULTS" => {
             let parsed: Result<(ContractDefaultsEntity, usize), &'static str> = (|| {
                 let entity = match parts.next().ok_or("MISSING_VALUE")? {
@@ -7116,6 +10040,7 @@ impl ModExtension for ModifierBridgeClient {
         _dt: f32,
     ) {
         sync_recruitment_runtime_toggles(scene);
+        capture_team_strategy_diagnostic_events(scene);
         process_game_requests(scene);
     }
 }
@@ -7127,6 +10052,59 @@ impl ModServerExtension for ModifierBridgeServer {
         clear_contract_end_overrides();
         clear_staff_contract_end_overrides();
         clear_active_contract_overrides();
+        clear_training_xp_lifecycle_probe();
+        clear_training_xp_roster_state();
+        TRAINING_XP_PLAYER_TEAM_ID.store(usize::MAX, Ordering::SeqCst);
+        TRAINING_XP_PLAYER_TEAM_CONFIRMED.store(false, Ordering::SeqCst);
+        match load_training_xp_persisted_state(ctx) {
+            Ok(Some(loaded)) => {
+                let state = loaded.state;
+                let active_count = state.athletes.len();
+                let team_id = state.team_id;
+                if loaded.stale_entries_removed > 0 {
+                    if let Err(reason) = persist_training_xp_roster_state(ctx, Some(&state)) {
+                        append_training_xp_lifecycle_report(&format!(
+                            "=== TRAINING XP PERSISTENCE EVENT ===\nState: STALE_PURGE_PERSIST_FAILED\nTeam key: {team_id}\nStale entries removed in runtime: {}\nReason: {reason}\nRuntime state is safe; stale persisted entries may be encountered again on the next load.",
+                            loaded.stale_entries_removed,
+                        ));
+                    }
+                }
+
+                if active_count > 0 {
+                    match training_xp_roster_state_store().lock() {
+                        Ok(mut slot) => {
+                            *slot = Some(state);
+                            append_training_xp_lifecycle_report(&format!(
+                                "=== TRAINING XP PERSISTENCE EVENT ===\nState: PERSISTENCE_RESTORED_PENDING_PLAYER_TEAM_CONFIRMATION\nTeam key: {team_id}\nActive athletes restored: {active_count}\nStale entries purged: {}\nMultiplier and per-field fractional carry were restored from this save slot. Application remains dormant until the client runtime confirms the current Player Team.",
+                                loaded.stale_entries_removed,
+                            ));
+                        }
+                        Err(_) => append_training_xp_lifecycle_report(
+                            "=== TRAINING XP PERSISTENCE EVENT ===\nState: PERSISTENCE_RUNTIME_RESTORE_FAILED\nThe persisted state was valid but the in-memory Training state lock was unavailable. Safe fallback is vanilla x1.0.",
+                        ),
+                    }
+                } else {
+                    if let Err(reason) = persist_training_xp_roster_state(ctx, None) {
+                        append_training_xp_lifecycle_report(&format!(
+                            "=== TRAINING XP PERSISTENCE EVENT ===\nState: EMPTY_STATE_PURGE_FAILED\nTeam key: {team_id}\nReason: {reason}\nRuntime fallback remains vanilla x1.0.",
+                        ));
+                    }
+                    append_training_xp_lifecycle_report(&format!(
+                        "=== TRAINING XP PERSISTENCE EVENT ===\nState: PERSISTENCE_EMPTY\nTeam key: {team_id}\nNo active Training multiplier entries remain after load/reconciliation. Vanilla x1.0 is active.",
+                    ));
+                }
+            }
+            Ok(None) => {
+                append_training_xp_lifecycle_report(
+                    "=== TRAINING XP PERSISTENCE EVENT ===\nState: PERSISTENCE_EMPTY\nNo saved normal Training multiplier state exists for this save slot. Vanilla x1.0 is active.",
+                );
+            }
+            Err(reason) => {
+                append_training_xp_lifecycle_report(&format!(
+                    "=== TRAINING XP PERSISTENCE EVENT ===\nState: PERSISTENCE_LOAD_REJECTED\nReason: {reason}\nPersisted Training state was ignored. Safe fallback is vanilla x1.0 with no active carry.",
+                ));
+            }
+        }
 
         // Keep the two runtime toggle preferences across save/career loads. The
         // destination team is save-specific, so mark the team IDs stale; the client
@@ -7139,6 +10117,8 @@ impl ModServerExtension for ModifierBridgeServer {
     }
 
     fn before_management_tick(&self, ctx: &mut ServerModContext) {
+        reconcile_training_xp_roster_state(ctx);
+        capture_training_xp_lifecycle_before(ctx);
         enforce_active_player_contract_overrides(ctx, false);
         enforce_active_staff_contract_overrides(ctx, false);
         enforce_contract_end_overrides(ctx, false);
@@ -7148,6 +10128,7 @@ impl ModServerExtension for ModifierBridgeServer {
     }
 
     fn after_management_tick(&self, ctx: &mut ServerModContext) {
+        capture_training_xp_lifecycle_after(ctx);
         enforce_active_player_contract_overrides(ctx, true);
         enforce_active_staff_contract_overrides(ctx, true);
         enforce_contract_end_overrides(ctx, true);
@@ -7175,6 +10156,363 @@ impl ModServerExtension for ModifierBridgeServer {
                 apply_economy_to_team(team, values);
             }
 
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "set_training_xp_roster" {
+            let Ok(payload) = std::str::from_utf8(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+            let mut parts = payload.split('|');
+            let Ok(team_id) = parts.next().unwrap_or_default().parse::<usize>() else {
+                return ModServerCommandResult::Handled;
+            };
+            let Ok(count) = parts.next().unwrap_or_default().parse::<usize>() else {
+                return ModServerCommandResult::Handled;
+            };
+            let active_player_team_id = TRAINING_XP_PLAYER_TEAM_ID.load(Ordering::SeqCst);
+            if active_player_team_id == usize::MAX
+                || team_id != active_player_team_id
+                || ctx.database.teams.get(team_id).is_none()
+            {
+                return ModServerCommandResult::Handled;
+            }
+            if (TRAINING_XP_X2_TEAM_ID.load(Ordering::SeqCst) != usize::MAX
+                && TRAINING_XP_X2_ATHLETE_ID.load(Ordering::SeqCst) != usize::MAX)
+                || training_xp_x1_5_state().is_some()
+            {
+                return ModServerCommandResult::Handled;
+            }
+
+            let mut submitted = Vec::with_capacity(count);
+            let mut submitted_ids = BTreeSet::new();
+            for _ in 0..count {
+                let Some(raw) = parts.next() else {
+                    return ModServerCommandResult::Handled;
+                };
+                let Some((athlete_raw, multiplier_raw)) = raw.split_once(':') else {
+                    return ModServerCommandResult::Handled;
+                };
+                let Ok(athlete_id) = athlete_raw.parse::<usize>() else {
+                    return ModServerCommandResult::Handled;
+                };
+                let Ok(multiplier_tenths) = multiplier_raw.parse::<u32>() else {
+                    return ModServerCommandResult::Handled;
+                };
+                if !training_xp_roster_multiplier_supported(multiplier_tenths)
+                    || !submitted_ids.insert(athlete_id)
+                {
+                    return ModServerCommandResult::Handled;
+                }
+
+                // Keep Apply on the same server-side access pattern that was runtime-proven
+                // by the single-player Training feature. Avoid a full Athlete collection scan
+                // from inside this ModServerCommand callback; validate each submitted athlete
+                // directly and require its authoritative contract to belong to Player Team.
+                let Some(athlete) = ctx.database.athletes.get(athlete_id) else {
+                    return ModServerCommandResult::Handled;
+                };
+                let belongs_to_team = matches!(
+                    &athlete.contract,
+                    Contract::InContract {
+                        team_id: athlete_team_id,
+                        ..
+                    } if *athlete_team_id == team_id
+                );
+                if !belongs_to_team {
+                    return ModServerCommandResult::Handled;
+                }
+
+                submitted.push((athlete_id, multiplier_tenths));
+            }
+            if parts.next().is_some() {
+                return ModServerCommandResult::Handled;
+            }
+
+            let previous = training_xp_roster_state().filter(|state| state.team_id == team_id);
+            let Ok(next_state) =
+                build_training_xp_roster_state_for_apply(previous.as_ref(), team_id, &submitted)
+            else {
+                return ModServerCommandResult::Handled;
+            };
+            let Ok(mut slot) = training_xp_roster_state_store().lock() else {
+                return ModServerCommandResult::Handled;
+            };
+            if let Err(reason) = persist_training_xp_roster_state(ctx, Some(&next_state)) {
+                append_training_xp_lifecycle_report(&format!(
+                    "=== TRAINING XP PERSISTENCE EVENT ===\nState: APPLY_PERSIST_FAILED\nTeam key: {team_id}\nReason: {reason}\nThe complete roster Apply was rejected and the previous authoritative runtime state was preserved.",
+                ));
+                return ModServerCommandResult::Handled;
+            }
+            *slot = Some(next_state);
+            drop(slot);
+            if let Ok(mut before) = training_xp_lifecycle_before_store().lock() {
+                *before = None;
+            }
+
+            if TRAINING_XP_RESEARCH_ENABLED.load(Ordering::SeqCst) {
+                let applied_state = training_xp_roster_state();
+                let mut lines = submitted
+                    .iter()
+                    .map(|(athlete_id, multiplier_tenths)| {
+                        let carry = applied_state
+                            .as_ref()
+                            .and_then(|state| state.athletes.get(athlete_id))
+                            .map(|entry| format_training_xp_x1_5_carry_summary(&entry.carry_tenths))
+                            .unwrap_or_else(|| "cleared / vanilla".to_string());
+                        format!(
+                            "Athlete {athlete_id}: {} | carry {carry}",
+                            format_training_xp_multiplier(*multiplier_tenths),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                lines.sort();
+                append_training_xp_lifecycle_report(&format!(
+                    "=== TRAINING XP ROSTER MULTIPLIER EVENT ===\nState: ROSTER_CONFIGURATION_APPLIED\nTeam key: {team_id}\nRoster entries: {}\n{}\nMultiplier changes clear only that athlete's prior carry without payout. Unchanged multipliers preserve carry. x1.0 is vanilla and stores no active feature entry.",
+                    submitted.len(),
+                    lines.join("\n"),
+                ));
+            }
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "enable_training_xp_research" {
+            let Ok(payload) = std::str::from_utf8(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+            let Ok(team_id) = payload.trim().parse::<usize>() else {
+                return ModServerCommandResult::Handled;
+            };
+            enable_training_xp_research(ctx, team_id);
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "disable_training_xp_research" {
+            let Ok(payload) = std::str::from_utf8(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+            let Ok(team_id) = payload.trim().parse::<usize>() else {
+                return ModServerCommandResult::Handled;
+            };
+            disable_training_xp_research(team_id);
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "set_training_xp_lifecycle_probe_team" {
+            if !TRAINING_XP_RESEARCH_ENABLED.load(Ordering::SeqCst) {
+                return ModServerCommandResult::Handled;
+            }
+            let Ok(payload) = std::str::from_utf8(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+            let Ok(team_id) = payload.trim().parse::<usize>() else {
+                return ModServerCommandResult::Handled;
+            };
+            if ctx.database.teams.get(team_id).is_none() {
+                return ModServerCommandResult::Handled;
+            }
+            TRAINING_XP_LIFECYCLE_TEAM_ID.store(team_id, Ordering::SeqCst);
+            let armed_snapshot = capture_training_xp_lifecycle_snapshot(ctx, team_id);
+            let armed_marker = armed_snapshot.plan_date_marker.clone();
+            let baseline_report = format_training_xp_session_baseline(&armed_snapshot);
+            if let Ok(mut armed) = training_xp_lifecycle_armed_store().lock() {
+                *armed = Some(armed_snapshot);
+            }
+            if let Ok(mut before) = training_xp_lifecycle_before_store().lock() {
+                *before = None;
+            }
+            append_training_xp_lifecycle_report(&baseline_report);
+            append_training_xp_lifecycle_report(&format!(
+                "=== TRAINING XP PROBE EVENT ===\nState: ARMED\nTeam key: {team_id}\nServer baseline comp-test marker: {armed_marker}\nFull static baseline was captured once. Later management ticks append compact events only."
+            ));
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "set_training_xp_x2_probe" {
+            if training_xp_roster_has_active_multiplier() {
+                append_training_xp_lifecycle_report(
+                    "=== X2 CONTINUOUS WRITE PROBE EVENT ===\nState: ARM_REJECTED_ROSTER_FEATURE_ACTIVE\nNormal Training roster multipliers are active. Clear them to x1.0 before arming a manual multiplier probe.",
+                );
+                return ModServerCommandResult::Handled;
+            }
+            if !TRAINING_XP_RESEARCH_ENABLED.load(Ordering::SeqCst) {
+                return ModServerCommandResult::Handled;
+            }
+            if training_xp_x1_5_state().is_some() {
+                append_training_xp_lifecycle_report(
+                    "=== X2 CONTINUOUS WRITE PROBE EVENT ===\nState: ARM_REJECTED_FLOAT_X1_5_ACTIVE\nFloat x1.5 is already armed. Disarm it before arming x2; no multiplier state changed.",
+                );
+                return ModServerCommandResult::Handled;
+            }
+            let Ok(payload) = std::str::from_utf8(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+            let mut parts = payload.split('|');
+            let Ok(team_id) = parts.next().unwrap_or_default().parse::<usize>() else {
+                return ModServerCommandResult::Handled;
+            };
+            let Ok(athlete_id) = parts.next().unwrap_or_default().parse::<usize>() else {
+                return ModServerCommandResult::Handled;
+            };
+            if parts.next().is_some() || ctx.database.teams.get(team_id).is_none() {
+                return ModServerCommandResult::Handled;
+            }
+            let Some(athlete) = ctx.database.athletes.get(athlete_id) else {
+                return ModServerCommandResult::Handled;
+            };
+            let belongs_to_team = matches!(
+                &athlete.contract,
+                Contract::InContract {
+                    team_id: athlete_team_id,
+                    ..
+                } if *athlete_team_id == team_id
+            );
+            if !belongs_to_team {
+                return ModServerCommandResult::Handled;
+            }
+
+            clear_training_xp_rollover_status();
+            TRAINING_XP_LIFECYCLE_TEAM_ID.store(team_id, Ordering::SeqCst);
+            TRAINING_XP_X2_TEAM_ID.store(team_id, Ordering::SeqCst);
+            TRAINING_XP_X2_ATHLETE_ID.store(athlete_id, Ordering::SeqCst);
+            let armed_snapshot = capture_training_xp_lifecycle_snapshot(ctx, team_id);
+            if let Ok(mut armed) = training_xp_lifecycle_armed_store().lock() {
+                *armed = Some(armed_snapshot);
+            }
+            if let Ok(mut before) = training_xp_lifecycle_before_store().lock() {
+                *before = None;
+            }
+            append_training_xp_lifecycle_report(&format!(
+                "=== X2 CONTINUOUS WRITE PROBE EVENT ===\nState: ARMED\nTeam key: {team_id}\nAthlete ID: {athlete_id}\nContinuous x2 applies to every positive core Training award for this athlete until manually disarmed. Zero-award ticks do nothing. A server lifecycle restart clears it for save safety and records that event."
+            ));
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "clear_training_xp_x2_probe" {
+            if !TRAINING_XP_RESEARCH_ENABLED.load(Ordering::SeqCst) {
+                TRAINING_XP_X2_TEAM_ID.store(usize::MAX, Ordering::SeqCst);
+                TRAINING_XP_X2_ATHLETE_ID.store(usize::MAX, Ordering::SeqCst);
+                return ModServerCommandResult::Handled;
+            }
+            let Ok(payload) = std::str::from_utf8(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+            let Ok(team_id) = payload.trim().parse::<usize>() else {
+                return ModServerCommandResult::Handled;
+            };
+            let armed_team_id = TRAINING_XP_X2_TEAM_ID.load(Ordering::SeqCst);
+            let athlete_id = TRAINING_XP_X2_ATHLETE_ID.load(Ordering::SeqCst);
+            if armed_team_id == team_id && athlete_id != usize::MAX {
+                append_training_xp_lifecycle_report(&format!(
+                    "=== X2 CONTINUOUS WRITE PROBE EVENT ===\nState: DISARMED_MANUAL\nTeam key: {team_id}\nAthlete ID: {athlete_id}\nContinuous x2 was manually disarmed. No further multiplier writes will occur until explicitly armed again."
+                ));
+                TRAINING_XP_X2_TEAM_ID.store(usize::MAX, Ordering::SeqCst);
+                TRAINING_XP_X2_ATHLETE_ID.store(usize::MAX, Ordering::SeqCst);
+            } else {
+                append_training_xp_lifecycle_report(&format!(
+                    "=== X2 CONTINUOUS WRITE PROBE EVENT ===\nState: DISARM_REQUEST_NO_ACTIVE_X2\nTeam key: {team_id}\nNo matching continuous x2 state was armed."
+                ));
+            }
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "set_training_xp_x1_5_probe" {
+            if training_xp_roster_has_active_multiplier() {
+                append_training_xp_lifecycle_report(
+                    "=== FLOAT X1.5 WRITE PROBE EVENT ===\nState: ARM_REJECTED_ROSTER_FEATURE_ACTIVE\nNormal Training roster multipliers are active. Clear them to x1.0 before arming a manual multiplier probe.",
+                );
+                return ModServerCommandResult::Handled;
+            }
+            if !TRAINING_XP_RESEARCH_ENABLED.load(Ordering::SeqCst) {
+                return ModServerCommandResult::Handled;
+            }
+            if TRAINING_XP_X2_TEAM_ID.load(Ordering::SeqCst) != usize::MAX
+                && TRAINING_XP_X2_ATHLETE_ID.load(Ordering::SeqCst) != usize::MAX
+            {
+                append_training_xp_lifecycle_report(
+                    "=== FLOAT X1.5 WRITE PROBE EVENT ===\nState: ARM_REJECTED_X2_ACTIVE\nContinuous x2 is already armed. Disarm x2 before arming Float x1.5; no multiplier state changed.",
+                );
+                return ModServerCommandResult::Handled;
+            }
+            if training_xp_x1_5_state().is_some() {
+                append_training_xp_lifecycle_report(
+                    "=== FLOAT X1.5 WRITE PROBE EVENT ===\nState: ARM_REQUEST_ALREADY_ACTIVE\nFloat x1.5 is already armed. Existing carry and selected athlete were preserved.",
+                );
+                return ModServerCommandResult::Handled;
+            }
+            let Ok(payload) = std::str::from_utf8(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+            let mut parts = payload.split('|');
+            let Ok(team_id) = parts.next().unwrap_or_default().parse::<usize>() else {
+                return ModServerCommandResult::Handled;
+            };
+            let Ok(athlete_id) = parts.next().unwrap_or_default().parse::<usize>() else {
+                return ModServerCommandResult::Handled;
+            };
+            if parts.next().is_some() || ctx.database.teams.get(team_id).is_none() {
+                return ModServerCommandResult::Handled;
+            }
+            let Some(athlete) = ctx.database.athletes.get(athlete_id) else {
+                return ModServerCommandResult::Handled;
+            };
+            let belongs_to_team = matches!(
+                &athlete.contract,
+                Contract::InContract {
+                    team_id: athlete_team_id,
+                    ..
+                } if *athlete_team_id == team_id
+            );
+            if !belongs_to_team {
+                return ModServerCommandResult::Handled;
+            }
+
+            clear_training_xp_rollover_status();
+            TRAINING_XP_LIFECYCLE_TEAM_ID.store(team_id, Ordering::SeqCst);
+            if let Ok(mut state) = training_xp_x1_5_state_store().lock() {
+                *state = Some(TrainingXpX15State {
+                    team_id,
+                    athlete_id,
+                    carry_tenths: [0; 8],
+                    feature_mode: false,
+                });
+            }
+            let armed_snapshot = capture_training_xp_lifecycle_snapshot(ctx, team_id);
+            if let Ok(mut armed) = training_xp_lifecycle_armed_store().lock() {
+                *armed = Some(armed_snapshot);
+            }
+            if let Ok(mut before) = training_xp_lifecycle_before_store().lock() {
+                *before = None;
+            }
+            append_training_xp_lifecycle_report(&format!(
+                "=== FLOAT X1.5 WRITE PROBE EVENT ===\nState: FLOAT_X1_5_ARMED\nTeam key: {team_id}\nAthlete ID: {athlete_id}\nMultiplier: x1.5\nCarry initialized per field: {}\nFloat x1.5 applies to every positive reconstructed core Training award for this athlete until explicitly disarmed. Zero-award ticks preserve carry. Closing the Development window does not change Bridge-side state.",
+                format_training_xp_x1_5_carry_summary(&[0; 8]),
+            ));
+            return ModServerCommandResult::Handled;
+        }
+
+        if command.command == "clear_training_xp_x1_5_probe" {
+            let Ok(payload) = std::str::from_utf8(&command.payload) else {
+                return ModServerCommandResult::Handled;
+            };
+            let Ok(team_id) = payload.trim().parse::<usize>() else {
+                return ModServerCommandResult::Handled;
+            };
+            let active = training_xp_x1_5_state();
+            if let Some(state) = active.filter(|state| !state.feature_mode && state.team_id == team_id) {
+                append_training_xp_lifecycle_report(&format!(
+                    "=== FLOAT X1.5 WRITE PROBE EVENT ===\nState: FLOAT_X1_5_DISARMED\nTeam key: {team_id}\nAthlete ID: {}\nCarry before clear: {}\nCarry action: CARRY_CLEARED\nNo fractional carry was converted into TrainingExp during disarm. No further x1.5 writes will occur until explicitly armed again.",
+                    state.athlete_id,
+                    format_training_xp_x1_5_carry_summary(&state.carry_tenths),
+                ));
+                let _ = clear_training_xp_research_x1_5_state(team_id);
+            } else if TRAINING_XP_RESEARCH_ENABLED.load(Ordering::SeqCst) {
+                append_training_xp_lifecycle_report(&format!(
+                    "=== FLOAT X1.5 WRITE PROBE EVENT ===\nState: DISARM_REQUEST_NO_ACTIVE_X1_5\nTeam key: {team_id}\nNo matching Float x1.5 state was armed."
+                ));
+            } else {
+                let _ = clear_training_xp_research_x1_5_state(team_id);
+            }
             return ModServerCommandResult::Handled;
         }
 
@@ -7320,66 +10658,186 @@ impl ModServerExtension for ModifierBridgeServer {
             return ModServerCommandResult::Handled;
         }
 
+        if command.command == "get_team_strategy_snapshot" {
+            let parsed = parse_team_strategy_snapshot_command_payload(&command.payload);
+            if let Ok((team_id, sequence)) = parsed {
+                let event_payload = if let Some(team) = ctx.database.teams.get(team_id) {
+                    let mut raw = String::new();
+                    let values = [
+                        ("focused", format!("{:?}", team.strategy.focused)),
+                        ("early_jungle", format!("{:?}", team.strategy.early_jungle)),
+                        ("early_serpen", format!("{:?}", team.strategy.early_serpen)),
+                        (
+                            "early_serpen_top",
+                            format!("{:?}", team.strategy.early_serpen_top),
+                        ),
+                        ("object_buildup", format!("{:?}", team.strategy.object_buildup)),
+                        ("object_battle", format!("{:?}", team.strategy.object_battle)),
+                        ("morgard_use", format!("{:?}", team.strategy.morgard_use)),
+                        ("tower_press", format!("{:?}", team.strategy.tower_press)),
+                        (
+                            "morgard_defense",
+                            format!("{:?}", team.strategy.morgard_defense),
+                        ),
+                        ("object_finish", format!("{:?}", team.strategy.object_finish)),
+                        ("minion_wave", format!("{:?}", team.strategy.minion_wave)),
+                        ("game_finish", format!("{:?}", team.strategy.game_finish)),
+                    ];
+                    for (key, value) in values {
+                        append_tsv_row(&mut raw, &[key.to_string(), value]);
+                    }
+                    team_strategy_snapshot_event_payload(sequence, team_id, &raw)
+                } else {
+                    team_strategy_snapshot_error_event_payload(
+                        sequence,
+                        team_id,
+                        "TEAM_LOOKUP|TEAM_NOT_FOUND",
+                    )
+                };
+                let _ = ctx.emit_event_to_command_sender(
+                    command,
+                    TEAM_STRATEGY_SNAPSHOT_EVENT,
+                    event_payload,
+                );
+            }
+            return ModServerCommandResult::Handled;
+        }
+
         if command.command == "set_team_strategy" {
-            let Ok((team_id, raw_strategy)) =
-                parse_team_strategy_set_payload(&command.payload)
-            else {
-                return ModServerCommandResult::Handled;
-            };
-            let Ok(values) = parse_team_strategy_values(&raw_strategy) else {
-                return ModServerCommandResult::Handled;
-            };
+            let result = (|| -> Result<Vec<(String, String, String)>, String> {
+                let (team_id, raw_strategy) = parse_team_strategy_set_payload(&command.payload)
+                    .map_err(|reason| format!("PAYLOAD_PARSE|{reason}"))?;
+                let values = parse_team_strategy_values(&raw_strategy)
+                    .map_err(|reason| format!("VALUE_PARSE|{reason}"))?;
 
-            let new_strategy = (|| {
-                let db = &ctx.database;
-                let target = db.teams.get(team_id).ok_or("TEAM_NOT_FOUND")?;
-                let mut strategy = target.strategy;
+                let new_strategy = {
+                    let db = &ctx.database;
+                    let target = db
+                        .teams
+                        .get(team_id)
+                        .ok_or_else(|| "TEAM_LOOKUP|TEAM_NOT_FOUND".to_string())?;
+                    let mut strategy = target.strategy;
 
-                macro_rules! resolve_field {
-                    ($field:ident, $key:literal) => {{
-                        let desired = values.get($key).ok_or("MISSING_STRATEGY_VALUE")?;
-                        db.teams
-                            .iter()
-                            .find_map(|candidate| {
-                                if format!("{:?}", candidate.strategy.$field) == desired.as_str() {
-                                    Some(candidate.strategy.$field.clone())
-                                } else if format!("{:?}", candidate.last_strategy.$field) == desired.as_str() {
-                                    Some(candidate.last_strategy.$field.clone())
-                                } else {
-                                    candidate
-                                        .team_color_strategy
-                                        .$field
-                                        .as_ref()
-                                        .filter(|value| format!("{:?}", value) == desired.as_str())
-                                        .cloned()
-                                }
-                            })
-                            .ok_or("UNKNOWN_STRATEGY_VALUE")?
-                    }};
+                    macro_rules! resolve_field {
+                        ($field:ident, $key:literal) => {{
+                            let desired = values
+                                .get($key)
+                                .ok_or_else(|| format!("MISSING_STRATEGY_VALUE|{}", $key))?;
+                            db.teams
+                                .iter()
+                                .find_map(|candidate| {
+                                    if format!("{:?}", candidate.strategy.$field) == desired.as_str() {
+                                        Some(candidate.strategy.$field.clone())
+                                    } else if format!("{:?}", candidate.last_strategy.$field)
+                                        == desired.as_str()
+                                    {
+                                        Some(candidate.last_strategy.$field.clone())
+                                    } else {
+                                        candidate
+                                            .team_color_strategy
+                                            .$field
+                                            .as_ref()
+                                            .filter(|value| format!("{:?}", value) == desired.as_str())
+                                            .cloned()
+                                    }
+                                })
+                                .ok_or_else(|| {
+                                    format!(
+                                        "UNKNOWN_STRATEGY_VALUE|{}|{}",
+                                        $key, desired
+                                    )
+                                })?
+                        }};
+                    }
+
+                    strategy.focused = resolve_field!(focused, "focused");
+                    strategy.early_jungle = resolve_field!(early_jungle, "early_jungle");
+                    strategy.early_serpen = resolve_field!(early_serpen, "early_serpen");
+                    strategy.early_serpen_top =
+                        resolve_field!(early_serpen_top, "early_serpen_top");
+                    strategy.object_buildup = resolve_field!(object_buildup, "object_buildup");
+                    strategy.object_battle = resolve_field!(object_battle, "object_battle");
+                    strategy.morgard_use = resolve_field!(morgard_use, "morgard_use");
+                    strategy.tower_press = resolve_field!(tower_press, "tower_press");
+                    strategy.morgard_defense =
+                        resolve_field!(morgard_defense, "morgard_defense");
+                    strategy.object_finish = resolve_field!(object_finish, "object_finish");
+                    strategy.minion_wave = resolve_field!(minion_wave, "minion_wave");
+                    strategy.game_finish = resolve_field!(game_finish, "game_finish");
+                    strategy
+                };
+
+                {
+                    let Some(team) = ctx.database.teams.get_mut(team_id) else {
+                        return Err("TEAM_WRITE|TEAM_NOT_FOUND".to_string());
+                    };
+                    team.strategy = new_strategy;
                 }
 
-                strategy.focused = resolve_field!(focused, "focused");
-                strategy.early_jungle = resolve_field!(early_jungle, "early_jungle");
-                strategy.early_serpen = resolve_field!(early_serpen, "early_serpen");
-                strategy.early_serpen_top =
-                    resolve_field!(early_serpen_top, "early_serpen_top");
-                strategy.object_buildup = resolve_field!(object_buildup, "object_buildup");
-                strategy.object_battle = resolve_field!(object_battle, "object_battle");
-                strategy.morgard_use = resolve_field!(morgard_use, "morgard_use");
-                strategy.tower_press = resolve_field!(tower_press, "tower_press");
-                strategy.morgard_defense =
-                    resolve_field!(morgard_defense, "morgard_defense");
-                strategy.object_finish = resolve_field!(object_finish, "object_finish");
-                strategy.minion_wave = resolve_field!(minion_wave, "minion_wave");
-                strategy.game_finish = resolve_field!(game_finish, "game_finish");
-                Ok::<_, &'static str>(strategy)
+                let authoritative = ctx
+                    .database
+                    .teams
+                    .get(team_id)
+                    .ok_or_else(|| "TEAM_WRITE|READBACK_TEAM_NOT_FOUND".to_string())?;
+                let actual_fields = [
+                    ("focused", format!("{:?}", authoritative.strategy.focused)),
+                    (
+                        "early_jungle",
+                        format!("{:?}", authoritative.strategy.early_jungle),
+                    ),
+                    (
+                        "early_serpen",
+                        format!("{:?}", authoritative.strategy.early_serpen),
+                    ),
+                    (
+                        "early_serpen_top",
+                        format!("{:?}", authoritative.strategy.early_serpen_top),
+                    ),
+                    (
+                        "object_buildup",
+                        format!("{:?}", authoritative.strategy.object_buildup),
+                    ),
+                    (
+                        "object_battle",
+                        format!("{:?}", authoritative.strategy.object_battle),
+                    ),
+                    (
+                        "morgard_use",
+                        format!("{:?}", authoritative.strategy.morgard_use),
+                    ),
+                    (
+                        "tower_press",
+                        format!("{:?}", authoritative.strategy.tower_press),
+                    ),
+                    (
+                        "morgard_defense",
+                        format!("{:?}", authoritative.strategy.morgard_defense),
+                    ),
+                    (
+                        "object_finish",
+                        format!("{:?}", authoritative.strategy.object_finish),
+                    ),
+                    (
+                        "minion_wave",
+                        format!("{:?}", authoritative.strategy.minion_wave),
+                    ),
+                    (
+                        "game_finish",
+                        format!("{:?}", authoritative.strategy.game_finish),
+                    ),
+                ];
+                team_strategy_readback_mismatches(&values, &actual_fields)
             })();
 
-            if let Ok(strategy) = new_strategy {
-                if let Some(team) = ctx.database.teams.get_mut(team_id) {
-                    team.strategy = strategy;
-                }
-            }
+            let team_id = parse_team_strategy_set_payload(&command.payload)
+                .map(|(team_id, _)| team_id)
+                .unwrap_or(usize::MAX);
+            let event_payload = team_strategy_server_result_payload(team_id, result);
+            let _ = ctx.emit_event_to_command_sender(
+                command,
+                TEAM_STRATEGY_APPLY_EVENT,
+                event_payload,
+            );
             return ModServerCommandResult::Handled;
         }
 
@@ -7647,9 +11105,245 @@ mod global_history_wire_tests {
     use super::*;
 
     #[test]
+    fn training_xp_full_roster_gate_accepts_every_representable_multiplier_at_x1_or_above() {
+        for value in [10, 11, 50, 100, 230, 234, 1_000, 10_000, 100_000, u32::MAX] {
+            assert!(training_xp_roster_multiplier_supported(value));
+        }
+        for value in [0, 1, 9] {
+            assert!(!training_xp_roster_multiplier_supported(value));
+        }
+    }
+
+    #[test]
+    fn training_xp_x1_5_fractional_carry_pays_half_xp_exactly_over_two_awards() {
+        assert_eq!(split_training_xp_x1_5_bonus(17, 0), Some((8, 5, 85)));
+        assert_eq!(split_training_xp_x1_5_bonus(17, 5), Some((9, 0, 90)));
+    }
+
+    #[test]
+    fn training_xp_x1_5_fractional_carry_is_field_local_input() {
+        assert_eq!(split_training_xp_x1_5_bonus(13, 0), Some((6, 5, 65)));
+        assert_eq!(split_training_xp_x1_5_bonus(13, 5), Some((7, 0, 70)));
+    }
+
+    #[test]
+    fn training_xp_x1_5_split_rejects_zero_awards_and_invalid_carry() {
+        assert_eq!(split_training_xp_x1_5_bonus(0, 5), None);
+        assert_eq!(split_training_xp_x1_5_bonus(17, 10), None);
+    }
+
+    #[test]
+    fn training_xp_generalized_tenths_math_supports_high_multipliers_exactly() {
+        let vanilla_award = 17i64;
+        for multiplier_tenths in [11, 15, 27, 49, 50, 100, 230, 234, 1_000, 10_000, 100_000] {
+            for previous_carry in 0u8..=9 {
+                let raw = vanilla_award
+                    .checked_mul(i64::from(multiplier_tenths - 10))
+                    .and_then(|value| value.checked_add(i64::from(previous_carry)))
+                    .unwrap();
+                assert_eq!(
+                    split_training_xp_multiplier_bonus(
+                        vanilla_award,
+                        multiplier_tenths,
+                        previous_carry,
+                    ),
+                    Some((raw / 10, (raw % 10) as u8, raw)),
+                );
+            }
+        }
+        assert_eq!(split_training_xp_multiplier_bonus(17, 27, 0), Some((28, 9, 289)));
+        assert_eq!(split_training_xp_multiplier_bonus(17, 100_000, 0), Some((169_983, 0, 1_699_830)));
+    }
+
+    #[test]
+    fn training_xp_checked_bonus_math_rejects_overflow_instead_of_wrapping() {
+        assert_eq!(
+            split_training_xp_multiplier_bonus(i64::MAX, u32::MAX, 9),
+            None,
+        );
+    }
+
+    #[test]
+    fn training_xp_multiplier_change_clears_old_carry_but_unchanged_preserves_it() {
+        let previous = TrainingXpRosterAthleteState {
+            multiplier_tenths: 15,
+            carry_tenths: [5, 0, 5, 0, 5, 0, 5, 0],
+        };
+        let same = training_xp_roster_entry_for_apply(Some(&previous), 15).unwrap();
+        assert_eq!(same.carry_tenths, previous.carry_tenths);
+        let changed = training_xp_roster_entry_for_apply(Some(&previous), 22).unwrap();
+        assert_eq!(changed.carry_tenths, [0; 8]);
+        assert!(training_xp_roster_entry_for_apply(Some(&previous), 10).is_none());
+    }
+
+    #[test]
+    fn training_xp_roster_apply_builder_is_atomic_and_rejects_duplicates() {
+        let previous = TrainingXpRosterState {
+            team_id: 92,
+            athletes: HashMap::from([(
+                874,
+                TrainingXpRosterAthleteState {
+                    multiplier_tenths: 15,
+                    carry_tenths: [5, 0, 5, 0, 5, 0, 5, 0],
+                },
+            )]),
+        };
+        let values = [(873, 10), (874, 15), (875, 100), (876, 230), (877, 100_000)];
+        let built = build_training_xp_roster_state_for_apply(Some(&previous), 92, &values).unwrap();
+        assert!(!built.athletes.contains_key(&873));
+        assert_eq!(built.athletes.get(&874).unwrap().carry_tenths, [5, 0, 5, 0, 5, 0, 5, 0]);
+        assert_eq!(built.athletes.get(&875).unwrap().carry_tenths, [0; 8]);
+        assert_eq!(built.athletes.get(&876).unwrap().multiplier_tenths, 230);
+        assert_eq!(built.athletes.get(&877).unwrap().multiplier_tenths, 100_000);
+
+        assert_eq!(
+            build_training_xp_roster_state_for_apply(None, 92, &[(873, 12), (873, 15)])
+                .unwrap_err(),
+            "TRAINING_XP_DUPLICATE_ATHLETE",
+        );
+        assert_eq!(
+            build_training_xp_roster_state_for_apply(None, 92, &[(873, 9)]).unwrap_err(),
+            "TRAINING_XP_MULTIPLIER_NOT_VALIDATED",
+        );
+    }
+
+    #[test]
+    fn training_xp_persistence_roundtrip_preserves_multiplier_and_all_eight_carries() {
+        let state = TrainingXpRosterState {
+            team_id: 92,
+            athletes: HashMap::from([
+                (
+                    874,
+                    TrainingXpRosterAthleteState {
+                        multiplier_tenths: 31,
+                        carry_tenths: [5, 0, 9, 1, 2, 3, 4, 5],
+                    },
+                ),
+                (
+                    877,
+                    TrainingXpRosterAthleteState {
+                        multiplier_tenths: 100_000,
+                        carry_tenths: [0, 1, 2, 3, 4, 5, 6, 7],
+                    },
+                ),
+            ]),
+        };
+        let raw = serialize_training_xp_persisted_state(&state);
+        let parsed = parse_training_xp_persisted_state(&raw).unwrap();
+        assert_eq!(parsed.team_id, 92);
+        assert_eq!(parsed.athletes.len(), 2);
+        for athlete_id in [874, 877] {
+            let expected = state.athletes.get(&athlete_id).unwrap();
+            let actual = parsed.athletes.get(&athlete_id).unwrap();
+            assert_eq!(actual.multiplier_tenths, expected.multiplier_tenths);
+            assert_eq!(actual.carry_tenths, expected.carry_tenths);
+        }
+    }
+
+    #[test]
+    fn training_xp_persistence_rejects_invalid_schema_entries_and_carry() {
+        assert_eq!(
+            parse_training_xp_persisted_state("2|92|0|").unwrap_err(),
+            "TRAINING_XP_PERSISTENCE_SCHEMA_UNSUPPORTED",
+        );
+        assert_eq!(
+            parse_training_xp_persisted_state("1|92|1|874:9:0,0,0,0,0,0,0,0").unwrap_err(),
+            "TRAINING_XP_PERSISTENCE_INVALID_ENTRY",
+        );
+        assert_eq!(
+            parse_training_xp_persisted_state("1|92|1|874:31:0,0,0,0,0,0,0,10").unwrap_err(),
+            "TRAINING_XP_PERSISTENCE_INVALID_CARRY",
+        );
+        assert_eq!(
+            parse_training_xp_persisted_state("1|92|2|874:31:0,0,0,0,0,0,0,0;874:31:0,0,0,0,0,0,0,0")
+                .unwrap_err(),
+            "TRAINING_XP_PERSISTENCE_DUPLICATE_ATHLETE",
+        );
+        assert!(parse_training_xp_persisted_state("garbage").is_err());
+    }
+
+    #[test]
+    fn training_xp_separate_save_slot_without_training_key_loads_no_state() {
+        let career_a = TrainingXpRosterState {
+            team_id: 92,
+            athletes: HashMap::from([(
+                874,
+                TrainingXpRosterAthleteState {
+                    multiplier_tenths: 31,
+                    carry_tenths: [5; 8],
+                },
+            )]),
+        };
+        let career_a_raw = serialize_training_xp_persisted_state(&career_a);
+
+        let career_b = parse_training_xp_persisted_slot(None).unwrap();
+        assert!(career_b.is_none());
+
+        let restored_a = parse_training_xp_persisted_slot(Some(&career_a_raw))
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored_a.team_id, 92);
+        assert_eq!(restored_a.athletes.get(&874).unwrap().multiplier_tenths, 31);
+        assert_eq!(restored_a.athletes.get(&874).unwrap().carry_tenths, [5; 8]);
+    }
+
+    #[test]
+    fn training_xp_persistence_schema_contains_only_normal_roster_state() {
+        let state = TrainingXpRosterState {
+            team_id: 92,
+            athletes: HashMap::from([(
+                874,
+                TrainingXpRosterAthleteState {
+                    multiplier_tenths: 31,
+                    carry_tenths: [0; 8],
+                },
+            )]),
+        };
+        let raw = serialize_training_xp_persisted_state(&state);
+        assert_eq!(raw, "1|92|1|874:31:0,0,0,0,0,0,0,0");
+        assert!(!raw.to_ascii_lowercase().contains("research"));
+    }
+
+    #[test]
+    fn training_xp_persisted_stale_athletes_are_purged_without_touching_valid_entries() {
+        let mut state = TrainingXpRosterState {
+            team_id: 92,
+            athletes: HashMap::from([
+                (
+                    874,
+                    TrainingXpRosterAthleteState {
+                        multiplier_tenths: 31,
+                        carry_tenths: [5; 8],
+                    },
+                ),
+                (
+                    999,
+                    TrainingXpRosterAthleteState {
+                        multiplier_tenths: 49,
+                        carry_tenths: [7; 8],
+                    },
+                ),
+            ]),
+        };
+        let removed = retain_training_xp_persisted_athletes(&mut state, |athlete_id| athlete_id == 874);
+        assert_eq!(removed, 1);
+        assert_eq!(state.athletes.len(), 1);
+        assert_eq!(state.athletes.get(&874).unwrap().multiplier_tenths, 31);
+        assert_eq!(state.athletes.get(&874).unwrap().carry_tenths, [5; 8]);
+        assert!(!state.athletes.contains_key(&999));
+    }
+
+    #[test]
+    fn training_xp_vanilla_state_serializes_as_no_active_entries() {
+        let state = build_training_xp_roster_state_for_apply(None, 92, &[(873, 10), (874, 10)]).unwrap();
+        assert!(state.athletes.is_empty());
+        assert_eq!(serialize_training_xp_persisted_state(&state), "1|92|0|");
+    }
+
+    #[test]
     fn global_history_responses_use_production_bridge_identity() {
         let leagues = response_ok_global_leagues(7, &[r#"{"id":0,"name":"LCK"}"#.to_string()]);
-        assert!(leagues.starts_with("OK|GLOBAL_LEAGUES|0.2.59|0.5.5|7|1|"));
+        assert!(leagues.starts_with("OK|GLOBAL_LEAGUES|0.2.75|0.5.6|7|1|"));
 
         let competition = response_ok_global_league_competition(
             7,
@@ -7657,7 +11351,7 @@ mod global_history_wire_tests {
             r#"{"id":0,"league_type":"Spring"}"#,
         );
         assert!(competition.starts_with(
-            "OK|GLOBAL_LEAGUE_COMPETITION|0.2.59|0.5.5|7|0|"
+            "OK|GLOBAL_LEAGUE_COMPETITION|0.2.75|0.5.6|7|0|"
         ));
     }
 
@@ -7671,7 +11365,7 @@ mod global_history_wire_tests {
             &[r#"{"id":787}"#.to_string()],
         );
         assert!(response.starts_with(
-            "OK|GLOBAL_TEAM_HISTORY|0.2.59|0.5.5|7|85|89|1|"
+            "OK|GLOBAL_TEAM_HISTORY|0.2.75|0.5.6|7|85|89|1|"
         ));
     }
 
@@ -8066,6 +11760,106 @@ mod staff_role_payload_tests {
     }
 
     #[test]
+    fn team_strategy_server_result_payload_reports_verified_authoritative_success() {
+        assert_eq!(
+            String::from_utf8(team_strategy_server_result_payload(85, Ok(Vec::new()))).unwrap(),
+            "OK|SERVER_WRITE_VERIFIED|85"
+        );
+    }
+
+    #[test]
+    fn team_strategy_server_result_payload_preserves_all_readback_mismatches() {
+        let mismatches = vec![
+            (
+                "focused".to_string(),
+                "Bottom".to_string(),
+                "Top".to_string(),
+            ),
+            (
+                "early_jungle".to_string(),
+                "CounterJungle".to_string(),
+                "GrowthAndCover".to_string(),
+            ),
+        ];
+        assert_eq!(
+            String::from_utf8(team_strategy_server_result_payload(85, Ok(mismatches))).unwrap(),
+            "WRITE_OK|READBACK_MISMATCH|85|focused|Bottom|Top|early_jungle|CounterJungle|GrowthAndCover"
+        );
+    }
+
+    #[test]
+    fn team_strategy_server_result_payload_preserves_exact_failure_reason() {
+        assert_eq!(
+            String::from_utf8(team_strategy_server_result_payload(
+                85,
+                Err("UNKNOWN_STRATEGY_VALUE|focused|Unexpected".to_string()),
+            ))
+            .unwrap(),
+            "ERR|85|UNKNOWN_STRATEGY_VALUE|focused|Unexpected"
+        );
+    }
+
+    #[test]
+    fn team_strategy_readback_mismatches_compares_every_supplied_field() {
+        let requested = HashMap::from([
+            ("focused".to_string(), "Bottom".to_string()),
+            ("early_jungle".to_string(), "CounterJungle".to_string()),
+            ("game_finish".to_string(), "Aggressive".to_string()),
+        ]);
+        let actual = [
+            ("focused", "Top".to_string()),
+            ("early_jungle", "CounterJungle".to_string()),
+            ("game_finish", "Defensive".to_string()),
+        ];
+        assert_eq!(
+            team_strategy_readback_mismatches(&requested, &actual),
+            Ok(vec![
+                (
+                    "focused".to_string(),
+                    "Bottom".to_string(),
+                    "Top".to_string(),
+                ),
+                (
+                    "game_finish".to_string(),
+                    "Aggressive".to_string(),
+                    "Defensive".to_string(),
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn team_strategy_snapshot_command_payload_round_trips_team_and_sequence() {
+        let payload = team_strategy_snapshot_command_payload(92, 17);
+        assert_eq!(parse_team_strategy_snapshot_command_payload(&payload), Ok((92, 17)));
+        assert_eq!(
+            parse_team_strategy_snapshot_command_payload(b"92"),
+            Err("MISSING_SEQUENCE")
+        );
+    }
+
+    #[test]
+    fn team_strategy_snapshot_event_payload_preserves_all_fields() {
+        let raw = "focused\tBottom\nearly_jungle\tCounterJungle\nearly_serpen\tTake\nearly_serpen_top\tTop\nobject_buildup\tPush\nobject_battle\tFight\nmorgard_use\tSplit14\ntower_press\tTop\nmorgard_defense\tDefend\nobject_finish\tSecure\nminion_wave\tPush\ngame_finish\tEnd";
+        let payload = team_strategy_snapshot_event_payload(17, 92, raw);
+        assert_eq!(
+            parse_team_strategy_snapshot_event_payload(&payload),
+            Ok((17, 92, Ok(raw.to_string())))
+        );
+        assert_eq!(parse_team_strategy_values(raw).unwrap().len(), 12);
+        let error_payload =
+            team_strategy_snapshot_error_event_payload(18, 92, "TEAM_LOOKUP|TEAM_NOT_FOUND");
+        assert_eq!(
+            parse_team_strategy_snapshot_event_payload(&error_payload),
+            Ok((
+                18,
+                92,
+                Err("TEAM_LOOKUP|TEAM_NOT_FOUND".to_string())
+            ))
+        );
+    }
+
+    #[test]
     fn team_strategy_set_payload_round_trips_all_fields() {
         let raw = [
             "focused\tBottom",
@@ -8117,6 +11911,28 @@ fn init(_ctx: &GameCtx) -> ModRegistration {
     reg.set_extension(ModifierBridgeClient);
     reg.set_server_extension(ModifierBridgeServer);
     reg
+}
+
+
+#[cfg(test)]
+mod training_xp_lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn training_plan_comp_test_marker_normalizes_multiline_debug_value() {
+        let raw = "TeamTrainingPlan {\n    comp_test_count_date: Some(\n        2026-01-05,\n    ),\n    comp_test_history: [],\n}";
+        assert_eq!(
+            normalize_training_plan_date_marker(raw),
+            "Some( 2026-01-05, )"
+        );
+    }
+
+    #[test]
+    fn signed_training_xp_delta_keeps_explicit_positive_sign() {
+        assert_eq!(signed_delta(75), "+75");
+        assert_eq!(signed_delta(0), "+0");
+        assert_eq!(signed_delta(-12), "-12");
+    }
 }
 
 declare_mod!(init);

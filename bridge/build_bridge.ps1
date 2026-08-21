@@ -1,11 +1,11 @@
-param(
+﻿param(
     [string]$Project = $PSScriptRoot,
     [string]$SdkDir = (Join-Path $PSScriptRoot "..\..\mod-sdk"),
     [switch]$QualityGate
 )
 
 $ErrorActionPreference = "Stop"
-$expectedSdkVersion = "0.5.5"
+$expectedSdkVersion = "0.5.6"
 
 $sdk = Resolve-Path -LiteralPath $SdkDir
 $depsDir = Join-Path $sdk "deps"
@@ -31,7 +31,7 @@ if ($pinned) {
     Write-Host "Using Rust toolchain $pinned"
 }
 
-# TFM2 0.5.5 classic SDK rlibs contain LLVM bitcode objects. MSVC link.exe
+# TFM2 0.5.6 classic SDK rlibs contain LLVM bitcode objects. MSVC link.exe
 # cannot consume those archives directly (LNK1107). Use the rust-lld shipped
 # with the SDK-pinned Rust toolchain so the linker can perform LLVM LTO.
 $sysroot = (& rustc --print sysroot).Trim()
@@ -52,7 +52,7 @@ $gameCore = Get-ChildItem -LiteralPath $depsDir -Filter "libgame_core-*.rlib" | 
 if (-not $gameCore) { Write-Error "libgame_core .rlib not found in $depsDir" }
 
 # Global Team/history reads are now serialized inside the production Bridge. Pin the
-# serde_json crate that matches game_core 0.5.5 instead of relying on a host install.
+# serde_json crate that matches game_core 0.5.6 instead of relying on a host install.
 $serdeJson = Join-Path $depsDir "libserde_json-9ce4f0220edb6ae7.rlib"
 if (-not (Test-Path -LiteralPath $serdeJson)) { Write-Error "Pinned serde_json .rlib not found: $serdeJson" }
 
@@ -83,7 +83,7 @@ $flags = @(
 if (Test-Path -LiteralPath $nativeDir) { $flags += @("-L", "native=$nativeDir") }
 $env:CARGO_ENCODED_RUSTFLAGS = $flags -join [char]31
 
-# Avoid stale artifacts from older SDK builds while testing the 0.5.5 bridge.
+# Avoid stale artifacts from older SDK builds while testing the 0.5.6 bridge.
 if (Test-Path -LiteralPath $targetDir) {
     Write-Host "Cleaning previous bridge target directory..."
     Remove-Item -LiteralPath $targetDir -Recurse -Force
@@ -101,8 +101,19 @@ if ($QualityGate) {
     cargo clippy --release --manifest-path $manifest --target-dir $targetDir --all-targets -- -D warnings
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+    # The SDK-pinned serde_json rlib carries Windows import metadata that is valid for
+    # the production cdylib link, but the Rust lib-test executable also defines those
+    # serde_json symbols locally. lld-link reports that test-only combination as
+    # LNK4217 (locally defined symbol imported). Suppress only that specific linker
+    # diagnostic for the test executable; keep the normal production DLL link strict.
+    $testFlags = $flags + @("-C", "link-arg=/ignore:4217")
+    $env:CARGO_ENCODED_RUSTFLAGS = $testFlags -join [char]31
+
     cargo test --release --manifest-path $manifest --target-dir $targetDir --lib
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    # Restore the normal SDK-aware flags before the production cdylib build.
+    $env:CARGO_ENCODED_RUSTFLAGS = $flags -join [char]31
 
     Write-Host "Bridge quality gate passed."
 }

@@ -16,15 +16,43 @@ struct LocaleFile {
     strings: HashMap<String, String>,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AppThemePreference {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct AppSettings {
     language: String,
+    #[serde(default)]
+    theme: AppThemePreference,
+}
+
+impl AppSettings {
+    fn with_language(&self, language: String) -> Self {
+        Self {
+            language,
+            theme: self.theme,
+        }
+    }
+
+    fn with_theme(&self, theme: AppThemePreference) -> Self {
+        Self {
+            language: self.language.clone(),
+            theme,
+        }
+    }
 }
 
 pub struct Localization {
     fallback: LocaleFile,
     locales: HashMap<String, LocaleFile>,
     current_language: String,
+    current_theme: AppThemePreference,
     #[cfg(feature = "dev")]
     diagnostics: Vec<String>,
     missing_keys: RefCell<BTreeSet<String>>,
@@ -44,7 +72,9 @@ impl Localization {
         let locale_dir = Self::locale_dir();
         Self::load_external_locales(&locale_dir, &mut locales, &mut diagnostics);
 
-        let requested_language = Self::load_or_create_settings(&mut diagnostics);
+        let settings = Self::load_or_create_settings(&mut diagnostics);
+        let requested_language = settings.language.clone();
+        let current_theme = settings.theme;
 
         let current_language = if locales.contains_key(&requested_language) {
             requested_language
@@ -52,9 +82,7 @@ impl Localization {
             diagnostics.push(format!(
                 "Saved language '{requested_language}' is unavailable; using {DEFAULT_LANGUAGE}"
             ));
-            let fallback_settings = AppSettings {
-                language: DEFAULT_LANGUAGE.to_string(),
-            };
+            let fallback_settings = settings.with_language(DEFAULT_LANGUAGE.to_string());
             if let Err(error) = Self::save_settings(&fallback_settings) {
                 diagnostics.push(error);
             }
@@ -65,6 +93,7 @@ impl Localization {
             fallback,
             locales,
             current_language,
+            current_theme,
             #[cfg(feature = "dev")]
             diagnostics,
             missing_keys: RefCell::new(BTreeSet::new()),
@@ -75,6 +104,10 @@ impl Localization {
 
     pub fn current_language(&self) -> &str {
         &self.current_language
+    }
+
+    pub fn current_theme(&self) -> AppThemePreference {
+        self.current_theme
     }
 
     pub fn current_language_name(&self) -> &str {
@@ -99,10 +132,24 @@ impl Localization {
             return Err(format!("Language '{language}' is not available"));
         }
 
-        Self::save_settings(&AppSettings {
-            language: language.to_string(),
-        })?;
+        let settings = AppSettings {
+            language: self.current_language.clone(),
+            theme: self.current_theme,
+        }
+        .with_language(language.to_string());
+        Self::save_settings(&settings)?;
         self.current_language = language.to_string();
+        Ok(())
+    }
+
+    pub fn select_theme(&mut self, theme: AppThemePreference) -> Result<(), String> {
+        let settings = AppSettings {
+            language: self.current_language.clone(),
+            theme: self.current_theme,
+        }
+        .with_theme(theme);
+        Self::save_settings(&settings)?;
+        self.current_theme = theme;
         Ok(())
     }
 
@@ -295,50 +342,52 @@ impl Localization {
         Self::app_dir().join("tfm2_editor_settings.json")
     }
 
-    fn load_or_create_settings(diagnostics: &mut Vec<String>) -> String {
+    fn load_or_create_settings(diagnostics: &mut Vec<String>) -> AppSettings {
         let path = Self::settings_path();
 
         match fs::read_to_string(&path) {
             Ok(raw) => match serde_json::from_str::<AppSettings>(&raw) {
-                Ok(settings) if !settings.language.trim().is_empty() => settings.language,
+                Ok(settings) if !settings.language.trim().is_empty() => settings,
                 Ok(_) => {
                     diagnostics.push(format!(
                         "Invalid settings {}: 'language' cannot be empty; using {DEFAULT_LANGUAGE}",
                         path.display()
                     ));
-                    Self::write_default_settings(diagnostics);
-                    DEFAULT_LANGUAGE.to_string()
+                    Self::write_default_settings(diagnostics)
                 }
                 Err(error) => {
                     diagnostics.push(format!(
                         "Invalid settings {}: {error}; using {DEFAULT_LANGUAGE}",
                         path.display()
                     ));
-                    Self::write_default_settings(diagnostics);
-                    DEFAULT_LANGUAGE.to_string()
+                    Self::write_default_settings(diagnostics)
                 }
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Self::write_default_settings(diagnostics);
-                DEFAULT_LANGUAGE.to_string()
+                Self::write_default_settings(diagnostics)
             }
             Err(error) => {
                 diagnostics.push(format!(
                     "Could not read settings {}: {error}; using {DEFAULT_LANGUAGE}",
                     path.display()
                 ));
-                DEFAULT_LANGUAGE.to_string()
+                AppSettings {
+                    language: DEFAULT_LANGUAGE.to_string(),
+                    theme: AppThemePreference::System,
+                }
             }
         }
     }
 
-    fn write_default_settings(diagnostics: &mut Vec<String>) {
+    fn write_default_settings(diagnostics: &mut Vec<String>) -> AppSettings {
         let settings = AppSettings {
             language: DEFAULT_LANGUAGE.to_string(),
+            theme: AppThemePreference::System,
         };
         if let Err(error) = Self::save_settings(&settings) {
             diagnostics.push(error);
         }
+        settings
     }
 
     fn save_settings(settings: &AppSettings) -> Result<(), String> {
@@ -427,4 +476,44 @@ mod tests {
         assert_eq!(locales.len(), 1);
         let _ = fs::remove_dir_all(dir);
     }
+    #[test]
+    fn legacy_settings_default_theme_to_system() {
+        let settings: AppSettings = serde_json::from_str(r#"{"language":"en-US"}"#).unwrap();
+        assert_eq!(settings.language, "en-US");
+        assert_eq!(settings.theme, AppThemePreference::System);
+    }
+
+    #[test]
+    fn language_update_preserves_saved_theme() {
+        let settings = AppSettings {
+            language: "en-US".to_string(),
+            theme: AppThemePreference::Dark,
+        };
+        let updated = settings.with_language("zh-CN".to_string());
+        assert_eq!(updated.language, "zh-CN");
+        assert_eq!(updated.theme, AppThemePreference::Dark);
+    }
+
+    #[test]
+    fn theme_update_preserves_saved_language() {
+        let settings = AppSettings {
+            language: "zh-CN".to_string(),
+            theme: AppThemePreference::System,
+        };
+        let updated = settings.with_theme(AppThemePreference::Light);
+        assert_eq!(updated.language, "zh-CN");
+        assert_eq!(updated.theme, AppThemePreference::Light);
+    }
+
+    #[test]
+    fn settings_theme_serializes_as_lowercase_value() {
+        let settings = AppSettings {
+            language: "en-US".to_string(),
+            theme: AppThemePreference::Dark,
+        };
+        let raw = serde_json::to_string(&settings).unwrap();
+        assert!(raw.contains(r#""language":"en-US""#));
+        assert!(raw.contains(r#""theme":"dark""#));
+    }
+
 }
