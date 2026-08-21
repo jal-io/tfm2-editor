@@ -9,9 +9,9 @@ Welcome to the user guide for **TFM2 Editor**, an unofficial live editor and com
 
 Created and maintained by **jal-io**.
 
-> **Current release:** v0.5.0  
-> **Required Bridge:** v0.2.59  
-> **Supported game version:** Teamfight Manager 2 v0.5.5  
+> **Current release:** v0.5.2  
+> **Required Bridge:** v0.2.75  
+> **Supported game version:** Teamfight Manager 2 v0.5.6  
 > **Platform:** Windows
 
 [Download the latest release](https://github.com/jal-io/tfm2-editor/releases/latest) ·
@@ -33,10 +33,11 @@ The Windows desktop **TFM2 Editor application must be downloaded separately from
 
 - **Steam Workshop:** installs and updates the Bridge mod used by the game
 - **GitHub Releases:** provides the Windows desktop Editor application
+- **Optional language pack:** `lang.zh-cn.zip` adds Simplified Chinese support
 
 Both the Editor and Bridge should be kept on the matching release versions.
 
-## Main features in v0.5.0
+## Main features in v0.5.2
 
 ### Search
 
@@ -70,13 +71,12 @@ Both the Editor and Bridge should be kept on the matching release versions.
 
 ### Team
 
-v0.5.0 adds the expanded **Team workspace** to the Community release.
-
-It includes:
+The expanded **Team workspace** includes:
 
 - Team overview and management information
 - Roster and staff tools
 - Team Condition
+- **Training XP multipliers for the player team**
 - Contract Center
 - Finance Center
 - Recruitment Center
@@ -84,13 +84,31 @@ It includes:
 - League Standings
 - Match History
 - Team Stats
-- Strategy tools
+- Strategy tools and presets
 - Historical Performance
 - Historical Synergy
 - Full Historical Synergy Explorer
 - Gaming House, facilities, fans and team summary information
 
-![TFM2 Editor v0.5.0 Team workspace](images/team-main-v0.5.0.png)
+![TFM2 Editor Team workspace](images/team-main-v0.5.0.png)
+
+### New in v0.5.2
+
+**Training XP multipliers**
+
+Set per-player Training XP multipliers, apply one value to the full roster, reset to x1.0 and keep settings per save.
+
+**Simplified Chinese**
+
+Install the optional `lang.zh-cn.zip` language pack to add `简体中文`. English remains built in.
+
+**Theme selection**
+
+Choose **System**, **Light** or **Dark** directly from the Editor header. System follows the Windows theme and the selected option is remembered between restarts.
+
+**Team Strategy preset improvements**
+
+Preset Save now stores the current Strategy editor values correctly and supports Overwrite, Rename + Overwrite and Save as New without changing the separate Apply-to-Team action.
 
 ### Transfers
 
@@ -113,7 +131,7 @@ TFM2 Editor displays the detected Bridge and compatibility state in the header.
 
 Known unsupported combinations block active game-data access until a matching Editor and Bridge are installed.
 
-The older **v0.4.2 generation is not compatible with v0.5.0**. Update both the Editor and Bridge together.
+For v0.5.2 use **TFM2 Editor v0.5.2**, **TFM2 Editor Bridge v0.2.75** and **Teamfight Manager 2 v0.5.6**.
 
 ## Important
 
