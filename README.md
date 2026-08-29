@@ -6,9 +6,9 @@ It connects to the running game through **TFM2 Editor Bridge**, allowing you to 
 
 Created and maintained by **jal-io**.
 
-> **Current release:** v0.5.2  
-> **Required Bridge:** v0.2.75  
-> **Supported game version:** Teamfight Manager 2 v0.5.6  
+> **Current release:** v0.5.3  
+> **Required Bridge:** v0.2.78  
+> **Supported game version:** Teamfight Manager 2 v0.5.7  
 > **Platform:** Windows
 
 [Download the latest release](https://github.com/jal-io/tfm2-editor/releases/latest) ·
@@ -37,46 +37,17 @@ Unlike a traditional save or database editor, TFM2 Editor works with the current
 
 Start Teamfight Manager 2, load your career, then launch TFM2 Editor to inspect and modify supported career data through the Bridge.
 
-## New in v0.5.2
+## New in v0.5.3
 
-### Training XP multipliers
+### Teamfight Manager 2 v0.5.7 compatibility
 
-Training XP multipliers are now available for the player-controlled team.
+TFM2 Editor v0.5.3 is a compatibility-focused update for **Teamfight Manager 2 v0.5.7**.
 
-- Set individual multipliers for each current roster player
-- Set one multiplier for the full roster
-- Reset the roster to x1.0
-- Per-save persistence
-- One-decimal multiplier support
-- Vanilla training timing, eligibility and progression rules remain in control
-
-### Simplified Chinese
-
-- Added Simplified Chinese (`简体中文`) support
-- English remains built into the Editor
-- Simplified Chinese is distributed through the optional `lang.zh-cn.zip` language pack
-- Language selection is available directly from the Editor header
-- The selected language is remembered between restarts
-- Added CJK-capable system font fallback
-
-### Theme selection
-
-The Editor header now includes a **Theme** selector directly beside **Language**:
-
-- **System** — follows the Windows theme
-- **Light** — forces Light mode
-- **Dark** — forces Dark mode
-
-The selected theme is remembered between restarts.
-
-### Team Strategy preset improvements
-
-- New presets save the exact current Strategy editor values
-- Existing presets can be overwritten cleanly
-- Presets can be renamed while overwriting
-- **Save as New** keeps the original preset and creates a second preset
-- Split Strategy values such as 1-3-1 and 1-4 are preserved correctly
-- Applying a preset to the team remains separate from saving the preset
+- Updated the desktop Editor to v0.5.3
+- Updated TFM2 Editor Bridge to v0.2.78
+- Updated compatibility protection for the new game version
+- Preserved the existing v0.5.2 Community feature set
+- No new user-facing features were added in this release
 
 ## Features
 
@@ -192,7 +163,7 @@ The Editor permanently displays the detected Bridge and compatibility state:
 
 Known unsupported combinations disconnect active game-data access and block reads and writes until a compatible Bridge is active.
 
-Older release generations are not compatible with the v0.5.2 release combination. Update both the Editor and Bridge together.
+Older release generations are not compatible with the v0.5.3 release combination. Update both the Editor and Bridge together.
 
 ## Installation
 
@@ -200,29 +171,29 @@ Older release generations are not compatible with the v0.5.2 release combination
 
 1. Subscribe to [TFM2 Editor Bridge](https://steamcommunity.com/sharedfiles/filedetails/?id=3775240765) on Steam Workshop.
 2. Download the latest desktop Editor from [GitHub Releases](https://github.com/jal-io/tfm2-editor/releases/latest).
-3. Extract `TFM2.Editor.v0.5.2.Release.0.5.6.zip`.
-4. Start Teamfight Manager 2 v0.5.6.
+3. Extract `TFM2.Editor.v0.5.3.Release.0.5.7.zip`.
+4. Start Teamfight Manager 2 v0.5.7.
 5. Enable **TFM2 Editor Bridge** in the Mods menu.
 6. Restart the game.
 7. Load your career.
-8. Start `tfm2_editor_0.5.2.exe`.
+8. Start `tfm2_editor_0.5.3.exe`.
 9. Confirm the Editor header shows:
 
 ```text
-Connected · Bridge v0.2.75 · Compatibility: OK
+Connected · Bridge v0.2.78 · Compatibility: OK
 ```
 
 If the Editor shows **Disconnected**, click **Reconnect**.
 
 ### Optional Simplified Chinese language pack
 
-Download `lang.zh-cn.zip` from the same GitHub release and extract it into the same folder as `tfm2_editor_0.5.2.exe`.
+Download `lang.zh-cn.zip` from the same GitHub release and extract it into the same folder as `tfm2_editor_0.5.3.exe`.
 
 The result should contain:
 
 ```text
 TFM2 Editor/
-├── tfm2_editor_0.5.2.exe
+├── tfm2_editor_0.5.3.exe
 └── locales/
     └── zh-CN.json
 ```
@@ -264,7 +235,7 @@ Use TFM2 Editor at your own risk.
 ## Documentation
 
 - [TFM2 Editor Documentation](https://jal-io.github.io/tfm2-editor/)
-- [Installation Guide](https://jal-io.github.io/tfm2-editor/installation.html)
+- [Installation Guide](https://jal-io.github.io/jal-io/tfm2-editor/installation.html)
 - [Feature Guide and Screenshots](https://jal-io.github.io/tfm2-editor/features.html)
 - [Changelog](CHANGELOG.md)
 
