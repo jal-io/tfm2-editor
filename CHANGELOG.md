@@ -2,6 +2,25 @@
 
 All notable public changes to TFM2 Editor are documented here.
 
+## v0.5.3 — 2026-08-29
+
+### Compatibility
+
+- Updated TFM2 Editor to v0.5.3.
+- Updated TFM2 Editor Bridge to v0.2.78.
+- Added support for Teamfight Manager 2 v0.5.7.
+- Updated the Editor / Bridge compatibility generation for the new game version.
+- Older release generations are blocked from active game-data access when the matching v0.5.3 Bridge is required.
+
+### Release scope
+
+- Clean compatibility migration from the existing v0.5.2 Community release.
+- Preserved the complete v0.5.2 Community feature set.
+- No new user-facing Community features were added in this release.
+- Training XP, Simplified Chinese, CJK font support, Theme selection and Team Strategy preset improvements remain included unchanged.
+
+---
+
 ## v0.5.2 — 2026-08-21
 
 ### Compatibility
