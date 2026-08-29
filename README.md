@@ -235,7 +235,7 @@ Use TFM2 Editor at your own risk.
 ## Documentation
 
 - [TFM2 Editor Documentation](https://jal-io.github.io/tfm2-editor/)
-- [Installation Guide](https://jal-io.github.io/jal-io/tfm2-editor/installation.html)
+- [Installation Guide](https://jal-io.github.io/tfm2-editor/installation.html)
 - [Feature Guide and Screenshots](https://jal-io.github.io/tfm2-editor/features.html)
 - [Changelog](CHANGELOG.md)
 
