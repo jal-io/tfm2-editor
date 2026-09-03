@@ -6,9 +6,9 @@ It connects to the running game through **TFM2 Editor Bridge**, allowing you to 
 
 Created and maintained by **jal-io**.
 
-> **Current release:** v0.5.3  
-> **Required Bridge:** v0.2.78  
-> **Supported game version:** Teamfight Manager 2 v0.5.7  
+> **Current release:** v0.5.4  
+> **Required Bridge:** v0.2.79  
+> **Supported game version:** Teamfight Manager 2 v0.5.8  
 > **Platform:** Windows
 
 [Download the latest release](https://github.com/jal-io/tfm2-editor/releases/latest) ·
@@ -37,16 +37,16 @@ Unlike a traditional save or database editor, TFM2 Editor works with the current
 
 Start Teamfight Manager 2, load your career, then launch TFM2 Editor to inspect and modify supported career data through the Bridge.
 
-## New in v0.5.3
+## New in v0.5.4
 
-### Teamfight Manager 2 v0.5.7 compatibility
+### Teamfight Manager 2 v0.5.8 compatibility
 
-TFM2 Editor v0.5.3 is a compatibility-focused update for **Teamfight Manager 2 v0.5.7**.
+TFM2 Editor v0.5.4 is a compatibility-focused update for **Teamfight Manager 2 v0.5.8**.
 
-- Updated the desktop Editor to v0.5.3
-- Updated TFM2 Editor Bridge to v0.2.78
+- Updated the desktop Editor to v0.5.4
+- Updated TFM2 Editor Bridge to v0.2.79
 - Updated compatibility protection for the new game version
-- Preserved the existing v0.5.2 Community feature set
+- Preserved the existing v0.5.3 Community feature set
 - No new user-facing features were added in this release
 
 ## Features
@@ -163,7 +163,7 @@ The Editor permanently displays the detected Bridge and compatibility state:
 
 Known unsupported combinations disconnect active game-data access and block reads and writes until a compatible Bridge is active.
 
-Older release generations are not compatible with the v0.5.3 release combination. Update both the Editor and Bridge together.
+Older release generations are not compatible with the v0.5.4 release combination. Update both the Editor and Bridge together.
 
 ## Installation
 
@@ -171,29 +171,29 @@ Older release generations are not compatible with the v0.5.3 release combination
 
 1. Subscribe to [TFM2 Editor Bridge](https://steamcommunity.com/sharedfiles/filedetails/?id=3775240765) on Steam Workshop.
 2. Download the latest desktop Editor from [GitHub Releases](https://github.com/jal-io/tfm2-editor/releases/latest).
-3. Extract `TFM2.Editor.v0.5.3.Release.0.5.7.zip`.
-4. Start Teamfight Manager 2 v0.5.7.
+3. Extract `TFM2.Editor.v0.5.4.Release.0.5.8.zip`.
+4. Start Teamfight Manager 2 v0.5.8.
 5. Enable **TFM2 Editor Bridge** in the Mods menu.
 6. Restart the game.
 7. Load your career.
-8. Start `tfm2_editor_0.5.3.exe`.
+8. Start `tfm2_editor_0.5.4.exe`.
 9. Confirm the Editor header shows:
 
 ```text
-Connected · Bridge v0.2.78 · Compatibility: OK
+Connected · Bridge v0.2.79 · Compatibility: OK
 ```
 
 If the Editor shows **Disconnected**, click **Reconnect**.
 
 ### Optional Simplified Chinese language pack
 
-Download `lang.zh-cn.zip` from the same GitHub release and extract it into the same folder as `tfm2_editor_0.5.3.exe`.
+Download `lang.zh-cn.zip` from the same GitHub release and extract it into the same folder as `tfm2_editor_0.5.4.exe`.
 
 The result should contain:
 
 ```text
 TFM2 Editor/
-├── tfm2_editor_0.5.3.exe
+├── tfm2_editor_0.5.4.exe
 └── locales/
     └── zh-CN.json
 ```
