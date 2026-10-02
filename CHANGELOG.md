@@ -2,6 +2,99 @@
 
 All notable public changes to TFM2 Editor are documented here.
 
+## v1.0.0 — 2026-10-02
+
+### Major Stable API migration
+
+- Updated TFM2 Editor to v1.0.0.
+- Updated TFM2 Editor Bridge to v1.0.1.
+- Added support for Teamfight Manager 2 v0.6.2.
+- Migrated the public Editor and shared Bridge from the previous legacy SDK generation to the new official Stable API.
+- Rebuilt the supported Community workflows on the new Stable data and action paths.
+- The previous v0.5.x Editor / Bridge generation is not compatible with the new v1.0 generation.
+
+### Restored Community functionality
+
+- Restored the six public Community areas: Search, Player Editor, Staff Editor, Team, Recruitment and Economy.
+- Restored Player, Staff and Team databases, sorting, Quick Filters, Advanced Search, Saved Filters and Saved Lists.
+- Restored Player name, attributes, positions, proficiency, Actual Potential, Champion Mastery, Communication, condition and stamina editing.
+- Restored Staff name, attributes, Communication, salary and supported active-contract editing.
+- Restored Team finance, Recruitment Budget, Salary Budget, fans, existing merchandise and Strategy editing.
+- Restored Strategy Presets.
+- Restored Competition Center, League Standings, Team Schedule, Match History, finished series/set results and MVP information where available.
+- Restored Team Stats and Performance Center.
+- Restored Historical Performance, Historical Synergy and Full Historical Synergy Explorer using supported career evidence.
+- Missing match, replay or scouting evidence is not fabricated.
+
+### Player transfers
+
+- Ported supported Player Quick Move to the game's Stable transfer system.
+- Supported contracted-player moves use the official Stable transfer action.
+- Supported free-agent Player moves use the game's Stable transfer flow and game-assigned contract behavior where applicable.
+- Removed reliance on legacy raw team-relation mutation.
+- Uncertain transfer actions are not automatically retried.
+
+### Contracts
+
+- Restored standalone active salary and contract end-date editing for supported Player and Staff contracts.
+- Supported full-contract editing is restricted to validated active same-team cases.
+- Existing unsupported fields and incentives are preserved instead of being overwritten.
+- Contract incentive construction/editing is currently unavailable.
+- Manual free-agent contract signing through the old contract builder is currently unavailable.
+
+### Temporarily unavailable
+
+The following previous Community actions do not currently have a validated safe Stable API replacement and are disabled in v1.0.0:
+
+- Staff recruitment, signing and movement between teams.
+- Releasing Players or Staff directly to Free Agency.
+- Transfer Always Success.
+- Instant Retry.
+- Manual free-agent contract signing/default generation.
+- Contract incentive editing.
+- Training XP multipliers.
+
+Unsupported actions are blocked rather than emulated through unsafe legacy behavior.
+
+### Stable data limitations
+
+- Scouted / club-known Potential estimates are unavailable when no reliable populated Stable evidence exists.
+- Actual Potential is not substituted for missing scouting estimates.
+- Nationality is not exposed as an independent writable field; supported region/language information is used where available.
+- Facility, stadium and gaming-house information remains read-only.
+- Missing scouting reports, replay evidence or historical records are shown as unavailable rather than invented.
+
+### Startup and compatibility
+
+- Added the v1.0.0 compatibility notice explaining the TFM2 v0.6.2 Stable API migration and temporarily unavailable functionality.
+- Added optional Ko-fi support access from the notice.
+- Ko-fi support is completely optional and does not unlock any Editor functionality.
+- Hardened the compatibility boundary between the previous v0.5.x generation and the new v1.0 generation.
+- Unsupported Editor / Bridge combinations are blocked from active game-data access.
+- There is no legacy fallback or mixed old/new runtime path.
+
+### Language and appearance
+
+- English remains built into the Editor.
+- Simplified Chinese (简体中文) remains supported.
+- Language selection persists between restarts.
+- System / Light / Dark theme selection remains available and persists between restarts.
+
+### Release validation
+
+- Community formatting passed.
+- Strict Community Clippy with `-D warnings` passed.
+- Community tests passed: 67 distinct tests including the supplied-save parser fixture.
+- Shared Bridge formatting and strict Clippy passed.
+- Shared Bridge tests passed: 26 / 26.
+- Combined executed Community + Bridge tests: 93 distinct passed.
+- Community / Development separation validation passed.
+- Stable Bridge entrypoint validation passed with no legacy entrypoint.
+- Final Community v1.0.0 runtime smoke testing passed on Teamfight Manager 2 v0.6.2.
+- Proceed and save/reload behavior was included in the release smoke test.
+
+---
+
 ## v0.5.4 — 2026-09-03
 
 ### Compatibility
