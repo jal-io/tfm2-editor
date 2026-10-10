@@ -2,6 +2,43 @@
 
 All notable public changes to TFM2 Editor are documented here.
 
+## v1.1.0 — 2026-10-10
+
+### Compatibility
+
+- Updated Community Editor to v1.1.0 and TFM2 Editor Bridge to v1.0.9.
+- Added support for Teamfight Manager 2 v0.6.3 through the official Stable API.
+- Preserved the existing compatibility safeguards. Bridge v1.0.9 is the current recommended release; the supported minimum remains v1.0.7, subject to compatibility checks.
+
+### Player and Staff editing
+
+- Added Player Age editing.
+- Added Staff Age editing.
+- Restored releasing supported contracted players directly to Free Agency.
+- Player Release removes the active roster relationship and changes the player's contract status without deleting or retiring the player.
+- Added a clear release confirmation and an "already a Free Agent" message. Already-free players are not sent through a redundant release action.
+- Preserved the established safety checks and readback behavior for supported game changes.
+
+### Localization
+
+- Expanded English and Simplified Chinese (简体中文) coverage for the Community interface.
+- Updated new feature labels, dialogs, warnings, status messages and offline Bridge notices.
+- Retained built-in English fallback, external Chinese locale support and persisted language settings.
+
+### Validation
+
+- Community release quality gates passed: 97 tests passed, 0 failed, 1 external-fixture test ignored.
+- Shared Bridge quality gate passed: 108 tests passed, 0 failed, 1 external-fixture test ignored.
+- The ignored older-save fixture-dependent tests were not counted as passed.
+- Final release binaries passed the reported offline Kaspersky scan and launch checks.
+- Player Age, Staff Age and Player Release were verified in-game by the project maintainer.
+
+### Still unavailable
+
+Staff recruitment/signing/movement, Staff Release to Free Agency, Transfer Always Success, Instant Retry, manual free-agent contract signing, contract incentive editing and Training XP multipliers remain unavailable in the public Community release.
+
+---
+
 ## v1.0.0 — 2026-10-02
 
 ### Major Stable API migration
