@@ -2,6 +2,50 @@
 
 All notable public changes to TFM2 Editor are documented here.
 
+## v1.2.0 — 2026-10-16
+
+### Major performance update
+
+- Promoted major LEAN architecture and responsiveness improvements to Community.
+- Optimized Match History delivery using the guarded 192 KiB transport, complete ordered reassembly, and the newest 10,000 completed matches.
+- Added Refresh Spam Guard, request coalescing, asynchronous reads and stale-response rejection.
+- Restored Search selection autoload into Player Editor and own-team-first ordering in supported workflows.
+
+### Roster Tags
+
+- Introduced individual and bulk **Roster Tags** in Player Editor and Team Management.
+- Users can **Apply**, **Remove**, edit or replace Follow Team tags, including repeated **Apply → Remove → Apply** with different team tag values.
+- **Follow Team** tracks only explicitly tagged players. Tracked players update their team tags on transfers, including supported in-game transfers when the Editor is closed.
+- Follow Team's existing Free Agent behavior removes the visible team tag while retaining tracking for later signing.
+- Never-tagged players remain untagged when joining a tagged team; they are not automatically enrolled.
+- Protected **Custom Tags** from bulk and automatic updates.
+- Removed persistent **Excluded** side effects from manual Remove; retained team tag overrides, guarded Name writes, verified prefix ownership and readback safeguards.
+
+### Ability Rating, contracts and transfers
+
+- Added read-only **Ability Rating** based on eight fundamental abilities to supported Player Editor, Search, filtering, sorting, Saved Lists and export views.
+- Preserved the original 12-attribute **Actual Rating** calculation.
+- Improved supported Player and Staff active-contract editing, including incentive-free contract handling and guarded readback.
+- Improved Free Agent signing and supported Player transfers through the official Stable transfer system. Signing no longer automatically opens a contract dialog; manual supported Edit Contract remains available.
+- Preserved Player/Staff Age editing, guarded Player Release and existing Community functionality.
+
+### Compatibility
+
+- Updated Community Editor to **v1.2.0**, ONE Shared Bridge to **v1.0.20** and game target to **TFM2 v0.6.4** (official Stable SDK v0.6.4 / ABI 10).
+- Introduced **Protocol 25** with an intentional **hardblock** between the new generation and Community v1.1.0 / Bridge v1.0.9 / Protocol 24 in both directions.
+- Unsupported generations are refused before game-data modifications. Update both the desktop Editor and Workshop Bridge.
+- English and Simplified Chinese (简体中文) remain supported.
+
+### Validation and limitations
+
+- Final candidate quality checks reported **19/19 PASS**; **162 Community**, **319 Development** and **185 Bridge** automated tests passed with no failures. Each suite had one ignored missing-fixture test, not counted as passed.
+- Maintainer reported the Windows candidate looked OK; this does not establish that every game or career-transition scenario has been tested.
+- Staff recruitment/signing/movement and Staff Release, Transfer Always Success, Instant Retry, manual free-agent contract signing, incentive editing and Training XP multipliers remain unavailable.
+- Full contract edits remain restricted to supported active contracts. Facility, stadium and gaming-house information remains read-only.
+- Back up career saves before using the Editor.
+
+---
+
 ## v1.1.0 — 2026-10-10
 
 ### Compatibility
