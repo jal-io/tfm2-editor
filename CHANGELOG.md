@@ -2,6 +2,39 @@
 
 All notable public changes to TFM2 Editor are documented here.
 
+## v1.2.1 — 2026-10-25
+
+### Staff movement and release
+
+- Added supported **Staff Movement** between teams and Free Agency through the existing Transfers interface.
+- Added **Staff Release to Free Agency** through the existing Community confirmation workflow.
+- Reused the verified Staff Release game-write engine and authoritative server readback; success is reported only after verification.
+- Preserved the existing public confirmation, inline statuses and generic failure presentation.
+
+### Bulk editing and existing features
+
+- Added **Bulk Age and Salary** editing for selected Players and Staff, using one familiar Bulk Edit window and Apply flow without manual Preview Changes.
+- Preserved supported selection across search filters and team views.
+- Retained safeguards for verified write outcomes and uncertain operations without blind repeat writes.
+- Preserved Player Release, Player Movement, Roster Tags, Ability Rating, contract editing and the LEAN/asynchronous performance improvements from v1.2.0.
+
+### Compatibility
+
+- Updated Community Editor to **v1.2.1**, Shared Bridge to **v1.0.24**, and game target to **Teamfight Manager 2 v0.6.5** (Stable ABI 10).
+- Introduced **Protocol 26**; previous Editor/Bridge Protocol 25 generations are intentionally incompatible. Update both the desktop Editor and Workshop Bridge.
+- English and Simplified Chinese (简体中文) remain supported.
+
+### Validation and limitations
+
+- Final release checks reported **19/19 PASS**, with **170 Community** and **256 tests in each Bridge variant** passing. Missing external fixtures remain **NOT TESTED**, not passed.
+- Final Community and Development executables and public/private Bridge DLLs passed the reported active Kaspersky acceptance checks.
+- The project maintainer confirmed successful native Community Staff Release.
+- Transfer Always Success, Instant Retry, manual Free Agent contract signing outside supported movement flows, contract incentive editing and Training XP multipliers remain unavailable.
+- Supported active-contract restrictions and read-only facility, stadium and gaming-house information remain unchanged.
+- Back up career saves before using the Editor.
+
+---
+
 ## v1.2.0 — 2026-10-16
 
 ### Major performance update
