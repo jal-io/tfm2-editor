@@ -6,10 +6,10 @@ It connects to the running game through **TFM2 Editor Bridge**, allowing you to 
 
 Created and maintained by **jal-io**.
 
-> **Current release:** v1.2.0  
-> **Required Bridge:** v1.0.20 or a compatible newer Protocol 25 Bridge  
-> **Protocol:** 25  
-> **Supported game version:** Teamfight Manager 2 v0.6.4  
+> **Current release:** v1.2.1  
+> **Required Bridge:** v1.0.24 or a compatible Protocol 26 Bridge  
+> **Protocol:** 26  
+> **Supported game version:** Teamfight Manager 2 v0.6.5  
 > **Platform:** Windows
 
 [Download the latest release](https://github.com/jal-io/tfm2-editor/releases/latest) ·
@@ -22,9 +22,9 @@ Created and maintained by **jal-io**.
 
 The desktop **TFM2 Editor application is not included** with the Workshop subscription and must be downloaded separately from GitHub Releases.
 
-**Community v1.2.0 and Bridge v1.0.20 establish a new Protocol 25 generation.** Update both together; old Editor/Bridge generations are intentionally hard-blocked.
+**Community v1.2.1 requires Bridge v1.0.24 / Protocol 26.** Update both together; previous Editor/Bridge generations, including Protocol 25, are intentionally incompatible.
 
-English is built into the Editor. Simplified Chinese (简体中文) is also supported and is included with the v1.2.0 release. A separate `lang.zh-cn.zip` language package is available as a GitHub release asset.
+English is built into the Editor. Simplified Chinese (简体中文) is also supported and is included with the v1.2.1 release. A separate `lang.zh-cn.zip` language package is available as a GitHub release asset.
 
 ## What is a live editor?
 
@@ -32,7 +32,24 @@ Unlike a traditional save or database editor, TFM2 Editor works with the current
 
 Start Teamfight Manager 2, load your career, then launch TFM2 Editor to inspect and modify supported career data through the Bridge.
 
-## New in v1.2.0
+## New in v1.2.1
+
+### Player, Staff and Bulk Editing — TFM2 v0.6.5
+
+Community **v1.2.1** with **TFM2 Editor Bridge v1.0.24 / Protocol 26** restores supported Staff Movement and Staff Release and adds streamlined Bulk Age and Salary editing.
+
+- **Staff Movement:** move supported contracted staff between teams or recruit supported Free Agent staff using the established Transfers interface.
+- **Staff Release:** release supported contracted staff to Free Agency through the existing confirmation flow.
+- **Bulk Age and Salary:** edit selected Players or Staff with one familiar Bulk Edit window and Apply flow, without a manual Preview Changes step.
+- **Persistent selection:** keep supported selections across search filters and team views.
+- **Verified operations:** successful changes require authoritative server verification; uncertain writes are not blindly repeated.
+- **Player Release:** retained and verified, alongside supported player movement and contracts.
+- **Performance and roster features:** retained LEAN optimizations, asynchronous reads, faster Match History, Roster Tags and Ability Rating.
+- Updated for **Teamfight Manager 2 v0.6.5**, official Stable API (ABI 10).
+
+**Compatibility:** Protocol 26 requires updating both the desktop Editor and Workshop Bridge. Older Protocol 25 combinations are incompatible.
+
+## Previous update: v1.2.0
 
 ### Major performance and feature update — TFM2 v0.6.4
 
@@ -70,6 +87,7 @@ Community v1.2.0 and **TFM2 Editor Bridge v1.0.20 / Protocol 25** deliver major 
 - Automatic loading of selected players in Player Editor
 - Ability Rating display, sorting and filtering where supported
 - Own-team-first ordering in applicable Team selection workflows
+- Bulk Age and Salary editing for selected Players and Staff with selection preserved across supported filters and team views
 
 ### Player Editor
 
@@ -89,6 +107,7 @@ Community v1.2.0 and **TFM2 Editor Bridge v1.0.20 / Protocol 25** deliver major 
 - Condition and stamina editing
 - Active salary and contract end-date editing
 - Supported active same-team contract editing
+- Bulk Age and Salary editing for selected Players through Search
 
 Scouted or club-known Potential estimates are currently unavailable when the Stable API does not provide reliable populated evidence. They are not substituted with Actual Potential.
 
@@ -101,8 +120,9 @@ Scouted or club-known Potential estimates are currently unavailable when the Sta
 - Staff Communication editing
 - Active salary and contract end-date editing
 - Supported active same-team contract editing
-
-Staff recruitment, signing and movement between teams are currently unavailable.
+- Supported Staff Movement between teams and Free Agency
+- Staff Release to Free Agency through the existing Transfers confirmation
+- Bulk Age and Salary editing for selected Staff through Search
 
 ### Team
 
@@ -136,11 +156,14 @@ Historical analysis is based on supported completed-career evidence. Missing mat
 
 Facility, stadium and gaming-house information remains read-only.
 
-### Recruitment and Player Movement
+### Recruitment, Player and Staff Movement
 
 - Move supported contracted players between teams
 - Move supported free-agent players through the game's Stable transfer system
 - Release supported contracted players to Free Agency
+- Move supported contracted staff between teams
+- Recruit supported Free Agent staff through Staff Movement
+- Release supported contracted staff to Free Agency
 - Automatic destination-team tag updates for explicitly tracked Follow Team players
 - Supported roster and recruitment views
 - Generated contract and salary behavior is handled by the game where applicable
@@ -169,13 +192,11 @@ Uncertain transfer actions are not automatically repeated.
 
 The new Stable API does not currently expose a safe replacement for every feature from the previous TFM2 Editor generation.
 
-The following actions are currently unavailable in Community v1.2.0:
+The following actions are currently unavailable in Community v1.2.1:
 
-- Staff recruitment, signing and movement between teams
-- Releasing Staff directly to Free Agency
 - Transfer Always Success
 - Instant Retry
-- Manual free-agent contract signing/default generation
+- Manual Free Agent contract signing outside supported movement flows
 - Contract incentive editing
 - Training XP multipliers
 
@@ -185,16 +206,16 @@ TFM2 Editor does not emulate unsupported features through unsafe legacy writes.
 
 ## Compatibility safety
 
-**Community v1.2.0 requires Bridge v1.0.20 or a compatible newer Bridge using Protocol 25**, for Teamfight Manager 2 v0.6.4 (Stable SDK ABI 10).
+**Community v1.2.1 requires Bridge v1.0.24 or a compatible Bridge using Protocol 26**, for Teamfight Manager 2 v0.6.5 (Stable SDK ABI 10).
 
-- **Community v1.2.0 + Bridge v1.0.20 / Protocol 25:** supported.
-- **Community v1.1.0 + new Bridge v1.0.20:** **hard-blocked**.
-- **Community v1.2.0 + old Bridge v1.0.9 / Protocol 24:** **hard-blocked**.
-- Other unsupported or cross-generation combinations are rejected before any game changes.
+- **Community v1.2.1 + Bridge v1.0.24 / Protocol 26:** supported.
+- **Community v1.2.0 / Protocol 25 + Bridge v1.0.24:** **hard-blocked**.
+- **Community v1.2.1 + Bridge v1.0.20 / Protocol 25:** **hard-blocked**.
+- Other unsupported or cross-generation combinations are rejected before game-data modifications.
 
-Incompatible generations appear as **RED** and cannot perform game-data writes. Compatible future Protocol 25 Bridge patch releases may be accepted under the existing compatibility rules.
+Incompatible generations appear as **RED** and cannot perform game-data writes. Compatible future Protocol 26 Bridge patch releases may be accepted under the existing compatibility rules.
 
-**Update both the desktop Editor and Workshop Bridge.** Do not mix v1.1.0 and v1.2.0 components. The earlier v1.1.0 release remains a historical release, not a compatible counterpart to the new Bridge.
+**Update both the desktop Editor and Workshop Bridge.** Previous Protocol 25 releases remain available as historical downloads, but are not compatible with Protocol 26.
 
 ## Installation
 
@@ -202,19 +223,19 @@ Incompatible generations appear as **RED** and cannot perform game-data writes. 
 
 1. Subscribe to [TFM2 Editor Bridge](https://steamcommunity.com/sharedfiles/filedetails/?id=3775240765) on Steam Workshop.
 2. Download the latest desktop Editor from [GitHub Releases](https://github.com/jal-io/tfm2-editor/releases/latest).
-3. Extract `TFM2.Editor.v1.2.0.Release.0.6.4.zip`.
-4. Start Teamfight Manager 2 v0.6.4.
+3. Extract `TFM2.Editor.v1.2.1.Release.0.6.5.zip`.
+4. Start Teamfight Manager 2 v0.6.5.
 5. Enable **TFM2 Editor Bridge** in the Mods menu.
 6. Restart the game.
 7. Load your career.
-8. Start `tfm2_editor_1.2.0.exe`.
-9. Confirm the Editor is connected to **Bridge v1.0.20** with **Compatibility: OK**.
+8. Start `tfm2_editor_1.2.1.exe`.
+9. Confirm the Editor is connected to **Bridge v1.0.24** with **Compatibility: OK**.
 
 If the Editor shows **Disconnected**, click **Reconnect**.
 
 ### Simplified Chinese
 
-Simplified Chinese is supported by the v1.2.0 desktop Editor.
+Simplified Chinese is supported by the v1.2.1 desktop Editor.
 
 The main release package includes the locale file. A separate `lang.zh-cn.zip` release asset is also available if you need to restore or install the language file separately.
 
@@ -222,7 +243,7 @@ The expected layout is:
 
 ```text
 TFM2 Editor/
-├── tfm2_editor_1.2.0.exe
+├── tfm2_editor_1.2.1.exe
 └── locales/
     └── zh-CN.json
 ```
