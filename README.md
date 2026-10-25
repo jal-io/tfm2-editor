@@ -166,7 +166,7 @@ Facility, stadium and gaming-house information remains read-only.
 - Release supported contracted staff to Free Agency
 - Automatic destination-team tag updates for explicitly tracked Follow Team players
 - Supported roster and recruitment views
-- Generated contract and salary behavior is handled by the game where applicable
+- Supported Free Agent players and staff can be moved directly to a selected team without creating a contract manually first. The game generates the initial contract automatically; users may edit supported contract terms afterward if desired.
 
 Uncertain transfer actions are not automatically repeated.
 
@@ -196,7 +196,6 @@ The following actions are currently unavailable in Community v1.2.1:
 
 - Transfer Always Success
 - Instant Retry
-- Manual Free Agent contract signing outside supported movement flows
 - Contract incentive editing
 - Training XP multipliers
 
