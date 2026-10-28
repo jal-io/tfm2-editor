@@ -1,15 +1,14 @@
-# TFM2 Editor
+# TFM2 Live Editor
 
-**TFM2 Editor is an unofficial live editor and companion tool for Teamfight Manager 2.**
+**TFM2 Live Editor is an unofficial live editor and companion tool for Teamfight Manager 2.**
 
 It connects to the running game through **TFM2 Editor Bridge**, allowing you to inspect and modify supported data in your active career while the game is running.
 
 Created and maintained by **jal-io**.
 
-> **Current release:** v1.2.1  
-> **Required Bridge:** v1.0.24 or a compatible Protocol 26 Bridge  
-> **Protocol:** 26  
-> **Supported game version:** Teamfight Manager 2 v0.6.5  
+> **Current release:** v1.2.2  
+> **Required Bridge:** v1.0.25 (matching release)  
+> **Supported game version:** Teamfight Manager 2 v0.7.0 (Stable API, ABI 10)  
 > **Platform:** Windows
 
 [Download the latest release](https://github.com/jal-io/tfm2-editor/releases/latest) ·
@@ -22,9 +21,9 @@ Created and maintained by **jal-io**.
 
 The desktop **TFM2 Editor application is not included** with the Workshop subscription and must be downloaded separately from GitHub Releases.
 
-**Community v1.2.1 requires Bridge v1.0.24 / Protocol 26.** Update both together; previous Editor/Bridge generations, including Protocol 25, are intentionally incompatible.
+**TFM2 Live Editor v1.2.2 requires a matching Bridge v1.0.25.** Update the desktop Editor and Workshop Bridge together if you receive a compatibility warning.
 
-English is built into the Editor. Simplified Chinese (简体中文) is also supported and is included with the v1.2.1 release. A separate `lang.zh-cn.zip` language package is available as a GitHub release asset.
+English is built into the Editor. Simplified Chinese (简体中文) and Korean (한국어) are included with the v1.2.2 release. Keep the `locales` folder alongside the executable.
 
 ## What is a live editor?
 
@@ -32,7 +31,19 @@ Unlike a traditional save or database editor, TFM2 Editor works with the current
 
 Start Teamfight Manager 2, load your career, then launch TFM2 Editor to inspect and modify supported career data through the Bridge.
 
-## New in v1.2.1
+## New in v1.2.2
+
+### TFM2 v0.7.0 and Korean language support
+
+- Updated compatibility for **Teamfight Manager 2 v0.7.0** using the official Stable API (ABI 10).
+- Added **Korean localization (한국어)** alongside English and Simplified Chinese.
+- Updated Settings language labels to **简体中文 (Chinese)** and **한국어 (Korean)**.
+- Added Korean Hangul rendering through the existing Windows system-font fallback; no Korean font is bundled.
+- Preserved supported Player, Staff, Team, Search, Bulk Edit, movement, release, finance and historical features from v1.2.1.
+
+Restoring the remaining functionality from the original 0.5.x Editor remains a substantial task. Thank you for your patience and continued support!
+
+## Previous update: v1.2.1
 
 ### Player, Staff and Bulk Editing — TFM2 v0.6.5
 
@@ -49,7 +60,7 @@ Community **v1.2.1** with **TFM2 Editor Bridge v1.0.24 / Protocol 26** restores 
 
 **Compatibility:** Protocol 26 requires updating both the desktop Editor and Workshop Bridge. Older Protocol 25 combinations are incompatible.
 
-## Previous update: v1.2.0
+## Earlier update: v1.2.0
 
 ### Major performance and feature update — TFM2 v0.6.4
 
@@ -147,7 +158,7 @@ The Community release includes the expanded **Team** workspace.
 - Historical Performance
 - Historical Synergy
 - Full Historical Synergy Explorer
-- Fans and popularity
+- Fan Count editing for the player-controlled team and popularity information
 - Existing merchandise editing
 - Gaming House, facility and stadium information
 - Team Summary
@@ -166,7 +177,7 @@ Facility, stadium and gaming-house information remains read-only.
 - Release supported contracted staff to Free Agency
 - Automatic destination-team tag updates for explicitly tracked Follow Team players
 - Supported roster and recruitment views
-- Supported Free Agent players and staff can be moved directly to a selected team without creating a contract manually first. The game generates the initial contract automatically; users may edit supported contract terms afterward if desired.
+- Supported Free Agent players and staff can be moved directly to a selected team without manually creating a contract first. Initial contract handling follows the supported Player or Staff movement workflow; supported contract terms can be edited afterward where available.
 
 Uncertain transfer actions are not automatically repeated.
 
@@ -183,8 +194,9 @@ Uncertain transfer actions are not automatically repeated.
 
 - Built-in English
 - Simplified Chinese (简体中文)
+- Korean (한국어)
 - Persisted Language selection
-- CJK-capable system font fallback
+- CJK-capable system font fallback, including Korean Hangul on supported Windows installations
 - Theme selector with System / Light / Dark
 - Persisted Theme selection
 
@@ -192,7 +204,7 @@ Uncertain transfer actions are not automatically repeated.
 
 The new Stable API does not currently expose a safe replacement for every feature from the previous TFM2 Editor generation.
 
-The following actions are currently unavailable in Community v1.2.1:
+The following actions are currently unavailable in the v1.2.2 public release:
 
 - Transfer Always Success
 - Instant Retry
@@ -205,16 +217,11 @@ TFM2 Editor does not emulate unsupported features through unsafe legacy writes.
 
 ## Compatibility safety
 
-**Community v1.2.1 requires Bridge v1.0.24 or a compatible Bridge using Protocol 26**, for Teamfight Manager 2 v0.6.5 (Stable SDK ABI 10).
+**TFM2 Live Editor v1.2.2 is intended for Teamfight Manager 2 v0.7.0 (Stable API, ABI 10)** and requires the matching **TFM2 Editor Bridge v1.0.25**.
 
-- **Community v1.2.1 + Bridge v1.0.24 / Protocol 26:** supported.
-- **Community v1.2.0 / Protocol 25 + Bridge v1.0.24:** **hard-blocked**.
-- **Community v1.2.1 + Bridge v1.0.20 / Protocol 25:** **hard-blocked**.
-- Other unsupported or cross-generation combinations are rejected before game-data modifications.
+Incompatible Editor and Bridge combinations are blocked from game-data access. If the Editor reports a compatibility warning, update the outdated component using the latest desktop release or Workshop Bridge. Do not bypass a blocked connection.
 
-Incompatible generations appear as **RED** and cannot perform game-data writes. Compatible future Protocol 26 Bridge patch releases may be accepted under the existing compatibility rules.
-
-**Update both the desktop Editor and Workshop Bridge.** Previous Protocol 25 releases remain available as historical downloads, but are not compatible with Protocol 26.
+Internal compatibility details and version-generation history are recorded in [CHANGELOG.md](CHANGELOG.md); the public Editor displays actionable update guidance.
 
 ## Installation
 
@@ -222,30 +229,31 @@ Incompatible generations appear as **RED** and cannot perform game-data writes. 
 
 1. Subscribe to [TFM2 Editor Bridge](https://steamcommunity.com/sharedfiles/filedetails/?id=3775240765) on Steam Workshop.
 2. Download the latest desktop Editor from [GitHub Releases](https://github.com/jal-io/tfm2-editor/releases/latest).
-3. Extract `TFM2.Editor.v1.2.1.Release.0.6.5.zip`.
-4. Start Teamfight Manager 2 v0.6.5.
+3. Extract `TFM2.Editor.v1.2.2.Release.0.7.0.zip`.
+4. Start Teamfight Manager 2 v0.7.0.
 5. Enable **TFM2 Editor Bridge** in the Mods menu.
 6. Restart the game.
 7. Load your career.
-8. Start `tfm2_editor_1.2.1.exe`.
-9. Confirm the Editor is connected to **Bridge v1.0.24** with **Compatibility: OK**.
+8. Start `tfm2_editor_1.2.2.exe`.
+9. Confirm the Editor reports **Compatibility: OK** before editing.
 
 If the Editor shows **Disconnected**, click **Reconnect**.
 
-### Simplified Chinese
+### Languages: English, Chinese and Korean
 
-Simplified Chinese is supported by the v1.2.1 desktop Editor.
+English is embedded in the Editor. The v1.2.2 release includes **Simplified Chinese (简体中文)** and **Korean (한국어)** locale files.
 
-The main release package includes the locale file. A separate `lang.zh-cn.zip` release asset is also available if you need to restore or install the language file separately.
-
-The expected layout is:
+Language selection is available in Settings and persists across restarts. Keep the locale files beside the executable:
 
 ```text
 TFM2 Editor/
-├── tfm2_editor_1.2.1.exe
+├── tfm2_editor_1.2.2.exe
 └── locales/
-    └── zh-CN.json
+    ├── zh-CN.json
+    └── ko-KR.json
 ```
+
+Korean Hangul rendering uses the existing Windows system-font fallback; no separate font download is required on supported installations.
 
 ### Manual Bridge installation
 
