@@ -1,6 +1,31 @@
 # Changelog
 
-All notable public changes to TFM2 Editor are documented here.
+All notable public changes to TFM2 Live Editor are documented here.
+
+## v1.2.2 — 2026-10-28
+
+### TFM2 0.7.0 compatibility
+
+- Updated the public Editor to **v1.2.2**, Development Editor to **v1.1.16-dev**, and the shared Bridge to **v1.0.25** for **Teamfight Manager 2 v0.7.0** (Stable ABI 10).
+- Advanced the compatibility generation to **Protocol 27**. Incompatible older Editor/Bridge generations remain blocked by the existing safety checks.
+- Official Stable SDK 0.7.0 analysis found no changes to the Stable game-access API library compared with the 0.6.5 SDK; preserved the existing verified read and write implementations.
+- Preserved the supported v1.2.1 editing features and the existing guarded write/readback behavior.
+
+### Korean localization and presentation
+
+- Added **Korean (한국어)** alongside English and Simplified Chinese (简体中文), with complete localization key and placeholder coverage.
+- Added Hangul rendering through the existing Windows Malgun Gothic system-font fallback, preserving Chinese and Latin fallback behavior without bundling a font.
+- Improved Settings language display names to **简体中文 (Chinese)** and **한국어 (Korean)**.
+- Standardized the public startup title to **TFM2 Live Editor v1.2.2** and kept its release notes brief and user-facing.
+- Kept internal compatibility diagnostics out of public warning text while retaining the existing compatibility enforcement and actionable Editor/Bridge update guidance.
+
+### Validation and limitations
+
+- Automated test results reported **172 Community**, **356 Development**, and **256 tests in each Bridge configuration** passing (1,040 total); ignored missing-fixture tests are **NOT TESTED**.
+- Existing feature restrictions remain; the release does not restore unsupported 0.5.x-era editing functions.
+- Back up career saves before using the Editor. As with previous releases, the owner performs native gameplay smoke testing separately.
+
+---
 
 ## v1.2.1 — 2026-10-25
 
