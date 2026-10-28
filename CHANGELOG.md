@@ -1,6 +1,6 @@
 # Changelog
 
-All notable public changes to TFM2 Live Editor are documented here.
+All notable public changes to TFM2 Editor are documented here.
 
 ## v1.2.2 — 2026-10-28
 
