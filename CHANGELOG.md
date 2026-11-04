@@ -2,6 +2,24 @@
 
 All notable public changes to TFM2 Editor are documented here.
 
+## v1.2.3 — 2026-11-04
+
+### TFM2 v0.7.1 compatibility
+
+- Updated the public TFM2 Live Editor to **v1.2.3**, Development Editor to **v1.1.17-dev**, and Bridge to **v1.0.26** for **Teamfight Manager 2 v0.7.1** (Stable ABI 10).
+- Advanced the internal compatibility generation to **Protocol 28**, retaining the established Editor/Bridge compatibility checks.
+- The official Stable SDK 0.7.1 comparison found the same Stable API implementation and ABI as v0.7.0; only the SDK base-version file changed in the compared SDK archives.
+- Preserved existing supported features, read/write behavior, localization, interface, and safeguards without functional changes.
+
+### Release scope and limitations
+
+- Clean compatibility update only: **no new features, UI redesign, or gameplay-editing changes**.
+- Existing restrictions on unavailable legacy features remain unchanged.
+- The Workshop installs the Bridge only; the matching desktop Editor must be downloaded separately from GitHub.
+- Back up career saves before editing.
+
+---
+
 ## v1.2.2 — 2026-10-28
 
 ### TFM2 0.7.0 compatibility
