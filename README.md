@@ -6,9 +6,9 @@ It connects to the running game through **TFM2 Editor Bridge**, allowing you to 
 
 Created and maintained by **jal-io**.
 
-> **Current release:** v1.2.2  
-> **Required Bridge:** v1.0.25 (matching release)  
-> **Supported game version:** Teamfight Manager 2 v0.7.0 (Stable API, ABI 10)  
+> **Current release:** v1.2.3  
+> **Required Bridge:** v1.0.26 (matching release)  
+> **Supported game version:** Teamfight Manager 2 v0.7.1 (Stable API, ABI 10)  
 > **Platform:** Windows
 
 [Download the latest release](https://github.com/jal-io/tfm2-editor/releases/latest) ·
@@ -21,9 +21,9 @@ Created and maintained by **jal-io**.
 
 The desktop **TFM2 Editor application is not included** with the Workshop subscription and must be downloaded separately from GitHub Releases.
 
-**TFM2 Live Editor v1.2.2 requires a matching Bridge v1.0.25.** Update the desktop Editor and Workshop Bridge together if you receive a compatibility warning.
+**TFM2 Live Editor v1.2.3 requires a matching Bridge v1.0.26.** Update the desktop Editor and Workshop Bridge together if you receive a compatibility warning.
 
-English is built into the Editor. Simplified Chinese (简体中文) and Korean (한국어) are included with the v1.2.2 release. Keep the `locales` folder alongside the executable.
+English is built into the Editor. Simplified Chinese (简体中文) and Korean (한국어) are included with the v1.2.3 release. Keep the `locales` folder alongside the executable.
 
 ## What is a live editor?
 
@@ -31,7 +31,18 @@ Unlike a traditional save or database editor, TFM2 Editor works with the current
 
 Start Teamfight Manager 2, load your career, then launch TFM2 Editor to inspect and modify supported career data through the Bridge.
 
-## New in v1.2.2
+## New in v1.2.3
+
+### Clean compatibility update — TFM2 v0.7.1
+
+- Updated support for **Teamfight Manager 2 v0.7.1** and the official Stable API (ABI 10).
+- Preserved existing Player, Staff, Team, Search, Bulk Edit, movement, release, finance, strategy and historical features.
+- Preserved English, Simplified Chinese (简体中文), Korean (한국어), and existing UI and safety behavior.
+- **No new features or UI changes** in this compatibility-only update.
+
+Restoring the remaining functionality from the original 0.5.x Editor is still a substantial task. Thank you for your patience and continued support!
+
+## Previous update: v1.2.2
 
 ### TFM2 v0.7.0 and Korean language support
 
@@ -43,7 +54,7 @@ Start Teamfight Manager 2, load your career, then launch TFM2 Editor to inspect 
 
 Restoring the remaining functionality from the original 0.5.x Editor remains a substantial task. Thank you for your patience and continued support!
 
-## Previous update: v1.2.1
+## Earlier update: v1.2.1
 
 ### Player, Staff and Bulk Editing — TFM2 v0.6.5
 
@@ -204,7 +215,7 @@ Uncertain transfer actions are not automatically repeated.
 
 The new Stable API does not currently expose a safe replacement for every feature from the previous TFM2 Editor generation.
 
-The following actions are currently unavailable in the v1.2.2 public release:
+The following actions are currently unavailable in the v1.2.3 public release:
 
 - Transfer Always Success
 - Instant Retry
@@ -217,7 +228,7 @@ TFM2 Editor does not emulate unsupported features through unsafe legacy writes.
 
 ## Compatibility safety
 
-**TFM2 Live Editor v1.2.2 is intended for Teamfight Manager 2 v0.7.0 (Stable API, ABI 10)** and requires the matching **TFM2 Editor Bridge v1.0.25**.
+**TFM2 Live Editor v1.2.3 is intended for Teamfight Manager 2 v0.7.1 (Stable API, ABI 10)** and requires the matching **TFM2 Editor Bridge v1.0.26**.
 
 Incompatible Editor and Bridge combinations are blocked from game-data access. If the Editor reports a compatibility warning, update the outdated component using the latest desktop release or Workshop Bridge. Do not bypass a blocked connection.
 
@@ -229,25 +240,25 @@ Internal compatibility details and version-generation history are recorded in [C
 
 1. Subscribe to [TFM2 Editor Bridge](https://steamcommunity.com/sharedfiles/filedetails/?id=3775240765) on Steam Workshop.
 2. Download the latest desktop Editor from [GitHub Releases](https://github.com/jal-io/tfm2-editor/releases/latest).
-3. Extract `TFM2.Editor.v1.2.2.Release.0.7.0.zip`.
-4. Start Teamfight Manager 2 v0.7.0.
+3. Extract `TFM2.Editor.v1.2.3.Release.0.7.1.zip`.
+4. Start Teamfight Manager 2 v0.7.1.
 5. Enable **TFM2 Editor Bridge** in the Mods menu.
 6. Restart the game.
 7. Load your career.
-8. Start `tfm2_editor_1.2.2.exe`.
+8. Start `tfm2_editor_1.2.3.exe`.
 9. Confirm the Editor reports **Compatibility: OK** before editing.
 
 If the Editor shows **Disconnected**, click **Reconnect**.
 
 ### Languages: English, Chinese and Korean
 
-English is embedded in the Editor. The v1.2.2 release includes **Simplified Chinese (简体中文)** and **Korean (한국어)** locale files.
+English is embedded in the Editor. The v1.2.3 release includes **Simplified Chinese (简体中文)** and **Korean (한국어)** locale files.
 
 Language selection is available in Settings and persists across restarts. Keep the locale files beside the executable:
 
 ```text
 TFM2 Editor/
-├── tfm2_editor_1.2.2.exe
+├── tfm2_editor_1.2.3.exe
 └── locales/
     ├── zh-CN.json
     └── ko-KR.json
